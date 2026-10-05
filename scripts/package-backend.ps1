@@ -96,10 +96,9 @@ try {
     }
 
     Write-Host "Staging backend for Tauri resources..." -ForegroundColor DarkGray
-    if (Test-Path $GuiRes) {
-        Remove-Item -Recurse -Force $GuiRes
-    }
+    # Keep the tracked README.md placeholder; clear everything else.
     New-Item -ItemType Directory -Force -Path $GuiRes | Out-Null
+    Get-ChildItem $GuiRes -Force | Where-Object Name -ne "README.md" | Remove-Item -Recurse -Force
     Copy-Item -Path (Join-Path $Dist "*") -Destination $GuiRes -Recurse -Force
 
     $sizeMb = [math]::Round((Get-ChildItem $GuiRes -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
