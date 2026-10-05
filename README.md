@@ -169,6 +169,12 @@ assets, and writes the NSIS installer to
 `jarvis-studio-gui\src-tauri\target\release\bundle\nsis\`. Add `-Lean` to
 `scripts\package-backend.ps1` for a small installer that downloads assets on first run.
 
+## Contributing
+
+Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
+and the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? Please
+report it privately as described in [SECURITY.md](SECURITY.md), not in a public issue.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

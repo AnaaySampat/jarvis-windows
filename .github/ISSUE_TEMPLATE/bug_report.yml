@@ -1,0 +1,73 @@
+name: Bug report
+description: Something doesn't work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issue? Don't file it here. See SECURITY.md.
+        Remove API keys and personal data from anything you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Say "Hey Jarvis, ..."
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Voice (wake word / transcription / TTS)
+        - Chat / model routing
+        - Browser autopilot
+        - Desktop control
+        - Phone pairing / remote
+        - HUD / GUI
+        - Installer / startup
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: 0.1.0, or a commit hash
+    validations:
+      required: true
+  - type: dropdown
+    id: run
+    attributes:
+      label: How you run it
+      options:
+        - Installed .exe
+        - python start.py
+        - Backend and GUI started separately
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 23H2
+  - type: input
+    id: provider
+    attributes:
+      label: Model / provider
+      placeholder: Auto, Vertex, Groq, Gemini key, ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from the backend console or server.log.
+      render: text

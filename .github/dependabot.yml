@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: pip
+    directory: /jarvis-studio-backend
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /jarvis-studio-gui
+    schedule:
+      interval: monthly
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: cargo
+    directory: /jarvis-studio-gui/src-tauri
+    schedule:
+      interval: monthly
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
