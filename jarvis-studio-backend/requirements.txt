@@ -23,7 +23,7 @@ piper-tts>=1.4.0
 # ── New Jarvis feature dependencies ──────────────────────────────────────────
 # Camera OCR + translation (ported from Interpreter-v3)
 easyocr>=1.7.0
-opencv-python>=4.8.0
+opencv-python>=5.0.0.93
 pillow>=10.0.0
 # QR codes, screenshots, exact volume, PDFs, speed test
 qrcode>=7.4

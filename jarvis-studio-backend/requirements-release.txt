@@ -44,5 +44,5 @@ playwright>=1.40.0      # browser control (needs `playwright install chromium`)
 uiautomation>=2.0.20    # computer control
 pyautogui>=0.9.54       # computer control
 aiortc>=1.9.0           # live remote-desktop WebRTC stream to the phone (optional)
-opencv-python>=4.8.0    # video recording
+opencv-python>=5.0.0.93    # video recording
 nvidia-ml-py            # GPU telemetry for HUD
