@@ -6,7 +6,7 @@ cryptography>=42.0
 # Application Default Credentials (ADC) for Vertex AI — mints OAuth bearer tokens
 # from the user's `gcloud auth application-default login` so Gemini calls bill to
 # their Google Cloud project (and its trial credits). No API key needed.
-google-auth>=2.0
+google-auth>=2.59.1
 openwakeword>=0.6.0
 onnxruntime>=1.16
 pyaudio>=0.2.14
