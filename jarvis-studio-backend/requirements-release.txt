@@ -29,7 +29,7 @@ pygame>=2.5.0           # audio playback
 
 # ── features ──
 qrcode>=7.4
-mss>=9.0.1
+mss>=10.2.0
 pycaw>=20230407
 comtypes>=1.2.0
 pypdf>=4.0.0
