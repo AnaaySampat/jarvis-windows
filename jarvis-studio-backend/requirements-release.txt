@@ -22,7 +22,7 @@ pyaudio>=0.2.14
 faster-whisper>=1.0.0
 
 # ── text-to-speech ──
-piper-tts>=1.4.0        # offline neural British voice (daily driver)
+piper-tts>=1.8.0        # offline neural British voice (daily driver)
 edge-tts>=6.1.0         # free cloud neural voice
 pyttsx3>=2.90           # offline OS voice (last resort)
 pygame>=2.5.0           # audio playback
