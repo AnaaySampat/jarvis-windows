@@ -13,7 +13,7 @@ jobs:
       run:
         working-directory: jarvis-studio-gui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -42,7 +42,7 @@ jobs:
       run:
         working-directory: jarvis-studio-gui/src-tauri
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -65,7 +65,7 @@ jobs:
       run:
         working-directory: jarvis-studio-backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
