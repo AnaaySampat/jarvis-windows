@@ -1,0 +1,62 @@
+# ── Secrets (never commit API keys / credentials) ───────────────────────────
+jarvis-studio-backend/secrets.json
+jarvis-studio-backend/config.json
+jarvis-studio-backend/schedule.json
+jarvis-studio-backend/server.log
+secrets.json
+**/secrets.json
+.spotify_cache
+*.spotify_cache
+jarvis-studio-backend/.spotify_cache
+*.env
+.env
+# Credentials / OAuth tokens / service accounts (defensive — none should ever exist in-tree)
+*credential*.json
+*service-account*.json
+*service_account*.json
+application_default_credentials.json
+gha-creds-*.json
+*.pem
+*.key
+token.json
+**/token.json
+# Runtime transcripts / logs that don't carry a .log extension
+@AutomationLog.txt
+**/@AutomationLog.txt
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+.venv-build/
+venv/
+jarvis-studio-backend/build/
+jarvis-studio-backend/dist/
+jarvis-studio-backend/.preload-cache/
+jarvis-studio-gui/src-tauri/resources/jarvis-backend/**
+!jarvis-studio-gui/src-tauri/resources/jarvis-backend/.gitkeep
+!jarvis-studio-gui/src-tauri/resources/jarvis-backend/README.md
+
+# ── Node / Vite ──────────────────────────────────────────────────────────────
+node_modules/
+jarvis-studio-gui/dist/
+jarvis-studio-gui/node_modules/
+jarvis-studio-gui/vite-dev*.log
+jarvis-studio-gui/vite-dev*.out.log
+jarvis-studio-gui/vite-dev*.err.log
+jarvis-studio-gui/jarvis-overlay*.png
+jarvis-studio-gui/jarvis-home-screen*.png
+
+# ── Rust / Tauri build artifacts ─────────────────────────────────────────────
+jarvis-studio-gui/src-tauri/target/
+
+# ── IDE / agent ──────────────────────────────────────────────────────────────
+.claude/
+
+# Generated knowledge graph — rebuild with `graphify extract . --code-only`
+graphify-out/
+
+# ── OS noise ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log

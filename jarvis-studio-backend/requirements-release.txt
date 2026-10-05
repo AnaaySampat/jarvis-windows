@@ -1,0 +1,48 @@
+# "Balanced" dependency set for the frozen installer.
+# Full local voice stack (wake word + offline STT fallback + Piper neural TTS)
+# AND browser control (Playwright), minus the multi-GB camera-OCR extras
+# (easyocr/opencv/torch). Camera-OCR degrades gracefully when absent; screen-vision
+# and primary speech-to-text use the cloud. To bundle everything, use requirements.txt.
+# NB: browser control also needs a one-time `playwright install chromium`.
+
+# ── core / transport ──
+websockets>=12.0
+httpx>=0.27.0
+cryptography>=42.0     # remote-control crypto identity (Tailscale phone pairing)
+numpy>=1.24
+pillow>=10.0.0
+google-auth>=2.0
+
+# ── wake word (local, required) ──
+openwakeword>=0.6.0
+onnxruntime>=1.16
+pyaudio>=0.2.14
+
+# ── offline STT fallback (primary STT is Groq cloud) ──
+faster-whisper>=1.0.0
+
+# ── text-to-speech ──
+piper-tts>=1.4.0        # offline neural British voice (daily driver)
+edge-tts>=6.1.0         # free cloud neural voice
+pyttsx3>=2.90           # offline OS voice (last resort)
+pygame>=2.5.0           # audio playback
+
+# ── features ──
+qrcode>=7.4
+mss>=9.0.1
+pycaw>=20230407
+comtypes>=1.2.0
+pypdf>=4.0.0
+fpdf2>=2.7.0
+speedtest-cli>=2.1.3
+psutil>=5.9.0
+send2trash>=1.8.0
+spotipy>=2.23.0
+pygetwindow>=0.0.9
+pyperclip>=1.8.2
+playwright>=1.40.0      # browser control (needs `playwright install chromium`)
+uiautomation>=2.0.20    # computer control
+pyautogui>=0.9.54       # computer control
+aiortc>=1.9.0           # live remote-desktop WebRTC stream to the phone (optional)
+opencv-python>=4.8.0    # video recording
+nvidia-ml-py            # GPU telemetry for HUD

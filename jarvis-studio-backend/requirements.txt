@@ -1,0 +1,64 @@
+websockets>=12.0
+httpx>=0.27.0
+# Remote mobile control: ECDSA P-256 host/device identity + signed handshake for
+# the Tailscale-gated phone pairing (autonomy/device_identity.py).
+cryptography>=42.0
+# Application Default Credentials (ADC) for Vertex AI — mints OAuth bearer tokens
+# from the user's `gcloud auth application-default login` so Gemini calls bill to
+# their Google Cloud project (and its trial credits). No API key needed.
+google-auth>=2.0
+openwakeword>=0.6.0
+onnxruntime>=1.16
+pyaudio>=0.2.14
+numpy>=1.24
+faster-whisper>=1.0.0
+edge-tts>=6.1.0
+pyttsx3>=2.90
+pygame>=2.5.0
+# Premium offline neural TTS (British "JARVIS" voice; voice model auto-downloads
+# on first use to <storage>/tts/piper/). ElevenLabs (premium cloud TTS) needs no
+# package — just an elevenlabs_api_key in app-data secrets.json + internet.
+piper-tts>=1.4.0
+
+# ── New Jarvis feature dependencies ──────────────────────────────────────────
+# Camera OCR + translation (ported from Interpreter-v3)
+easyocr>=1.7.0
+opencv-python>=4.8.0
+pillow>=10.0.0
+# QR codes, screenshots, exact volume, PDFs, speed test
+qrcode>=7.4
+mss>=9.0.1
+pycaw>=20230407
+comtypes>=1.2.0
+pypdf>=4.0.0
+fpdf2>=2.7.0
+speedtest-cli>=2.1.3
+# Live HUD system telemetry (CPU/RAM/disk/net/battery)
+psutil>=5.9.0
+# Optional GPU utilisation for the HUD (NVIDIA). Either works; both are optional:
+#   pip install nvidia-ml-py   (preferred)
+#   pip install GPUtil
+nvidia-ml-py
+GPUtil>=1.4.0
+# Recoverable file deletion (deletes go to the Recycle Bin instead of forever)
+send2trash>=1.8.0
+# App control framework — Spotify integration (optional; needs API keys in
+# app-data secrets.json: spotify_client_id / spotify_client_secret)
+spotipy>=2.23.0
+# Browser control — JARVIS's hands (optional; feature stays dormant if absent).
+# Playwright drives a dedicated Chromium it owns and injects JS to find/click
+# real page elements. ONE-TIME setup after pip install:  playwright install chromium
+playwright>=1.40.0
+# Read-only desktop senses (kept from the old control module): pygetwindow =
+# active-window title for live context; pyperclip = on-demand clipboard read.
+pygetwindow>=0.0.9
+pyperclip>=1.8.2
+# Supervised computer control (optional; dormant if absent): uiautomation reads
+# the Windows accessibility tree (list/click named controls), pyautogui types,
+# presses keys and scrolls — its top-left-corner FAILSAFE abort stays on.
+uiautomation>=2.0.20
+pyautogui>=0.9.54
+# Live remote-desktop: streams this PC's screen to the paired phone over WebRTC
+# (mss grabs → PyAV/VP8 encode → DTLS-SRTP). Optional — the feature reports
+# "unavailable on this PC" and everything else runs if this isn't installed.
+aiortc>=1.9.0

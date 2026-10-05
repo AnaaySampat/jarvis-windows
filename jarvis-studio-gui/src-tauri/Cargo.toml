@@ -1,0 +1,36 @@
+[package]
+name = "jarvis-studio-gui"
+version = "0.1.0"
+description = "JARVIS — local AI voice assistant"
+edition = "2021"
+
+[lib]
+name = "jarvis_studio_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Windows Job Object APIs — used to tie the spawned Python backend's lifetime to
+# this GUI process so it can't orphan (and lock the installer) on a crash/kill.
+# 0.59 is already in the tree via Tauri, so this adds no extra build.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

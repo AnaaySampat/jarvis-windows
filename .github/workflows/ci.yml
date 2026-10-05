@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  frontend:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: jarvis-studio-gui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: jarvis-studio-gui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate icons
+        run: npm run icons
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+  rust-check:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: jarvis-studio-gui/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: jarvis-studio-gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate icons
+        working-directory: jarvis-studio-gui
+        run: npm ci && npm run icons
+
+      - name: Cargo check
+        run: cargo check
+
+  backend:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: jarvis-studio-backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Compile Python sources
+        run: python -m compileall -q .
+
+      # The test suite needs far less than requirements.txt: no torch (easyocr),
+      # no Playwright, no aiortc, no Windows-automation stack. This list is the
+      # verified minimum for `unittest discover` — extend it if a new test pulls
+      # in a module that is imported at module scope.
+      - name: Install test dependencies
+        run: pip install websockets httpx cryptography numpy pyaudio faster-whisper
+
+      - name: Run tests
+        run: python -m unittest discover -s . -p "test_*.py" -t .

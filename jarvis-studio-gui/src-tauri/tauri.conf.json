@@ -1,0 +1,109 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "JARVIS",
+  "version": "0.1.0",
+  "identifier": "com.jarvis.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "J.A.R.V.I.S",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 500,
+        "decorations": true,
+        "center": true,
+        "visible": true
+      },
+      {
+        "label": "overlay",
+        "title": "",
+        "width": 60,
+        "height": 56,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "contentProtected": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": false,
+        "visible": false
+      },
+      {
+        "label": "browser-panel",
+        "title": "JARVIS",
+        "width": 400,
+        "height": 800,
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "contentProtected": true,
+        "skipTaskbar": false,
+        "resizable": false,
+        "shadow": true,
+        "focus": false,
+        "visible": false,
+        "x": 0,
+        "y": 0
+      },
+      {
+        "label": "control-overlay",
+        "title": "JARVIS",
+        "width": 580,
+        "height": 132,
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "contentProtected": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": true,
+        "focus": false,
+        "visible": false,
+        "x": 0,
+        "y": 0
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://localhost:1420 http://127.0.0.1:1420 ws://localhost:1420 ws://localhost:1421 ws://localhost:8765 ws://127.0.0.1:8765"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "JARVIS voice assistant for Windows",
+    "longDescription": "A JARVIS-style AI voice assistant with an Iron-Man HUD interface. Wake word, local transcription, cloud LLM, and PC automation.",
+    "copyright": "Copyright © 2026 JARVIS contributors",
+    "category": "Productivity",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer-assets/jarvis-header.bmp",
+        "sidebarImage": "installer-assets/jarvis-sidebar.bmp",
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "startMenuFolder": "JARVIS"
+      }
+    },
+    "resources": {
+      "resources/jarvis-backend/": "jarvis-backend/"
+    }
+  }
+}
