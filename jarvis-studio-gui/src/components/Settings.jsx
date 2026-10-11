@@ -162,6 +162,54 @@ function RemotePairingSection({ devicePairing, devices, onCreatePairing,
   );
 }
 
+// The user's Android TV — network ADB from this PC (backend actions/tv.py); nothing is
+// installed on the TV. Saved only once the TV answers, i.e. after the user accepts
+// "Allow USB debugging?" on it.
+function TvSection({ tvState, onTv }) {
+  const config = tvState && tvState.config;
+  const result = tvState && tvState.result;
+  const [typed, setHost] = useState(null);           // null = show the saved address
+  const host = typed ?? (config ? config.host : "");
+  // Busy until the backend answers with a fresh tv.state (a new object).
+  const [sentWith, setSentWith] = useState(undefined);
+  const busy = sentWith !== undefined && sentWith === tvState;
+  useEffect(() => { onTv && onTv("tv.state"); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="settings-sec">
+      <label>{config ? `TV — ${config.model || "connected"}` : "TV (Android TV)"}</label>
+      <div className="settings-hint">
+        Control an Android TV on this network by voice — “play Stranger Things on the TV”.
+        On the TV: Settings → Device Preferences → About → press <b>Build</b> 7 times, then
+        Developer options → <b>USB debugging</b>. Enter the TV&apos;s IP (Settings → Network)
+        and Connect.
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <input type="text" placeholder="192.168.1.50" value={host}
+          onChange={(e) => setHost(e.target.value.trim())} />
+        <button className="dirlist-addbtn" disabled={busy || !host}
+          onClick={() => { setSentWith(tvState); onTv && onTv("tv.pair", { host }); }}>
+          {busy ? "Waiting for the TV…" : config ? "Reconnect" : "Connect"}
+        </button>
+      </div>
+      {busy && (
+        <div className="settings-hint" style={{ marginTop: 6 }}>
+          If the TV asks “Allow USB debugging?”, tick <b>Always allow</b> and press OK.
+        </div>
+      )}
+      {!busy && result && (
+        <div className={result.ok ? "settings-hint" : "settings-warn"} style={{ marginTop: 6 }}>
+          {result.summary}
+        </div>
+      )}
+      {config && (
+        <button className="dir-rm" style={{ marginTop: 8 }}
+          onClick={() => { setHost(null); onTv && onTv("tv.unpair"); }}>Forget this TV</button>
+      )}
+    </div>
+  );
+}
+
 /**
  * Smart routing (backend: llm/model_ranker.py). An LLM with Google Search ranks every
  * model the keys can reach; each request goes to the weakest model that is still good
@@ -348,13 +396,13 @@ const SECTIONS = [
   { id: "autopilot", label: "Autopilot", icon: "⌖", words: "autopilot browser desktop operator reasoning vision screenshot" },
   { id: "interface", label: "Interface", icon: "▣", words: "overlay pill floating interface apps hide" },
   { id: "files", label: "Files & Location", icon: "⌂", words: "storage folder directories files read location weather pin" },
-  { id: "devices", label: "Devices", icon: "⌁", words: "phone remote pairing qr pin tailscale devices mobile" },
+  { id: "devices", label: "Devices", icon: "⌁", words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix" },
   { id: "system", label: "System", icon: "⚙", words: "system ram resources repair components" },
 ];
 let lastSection = "ai";   // reopen where the user left off (per app session)
 
 export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocation, onRefreshModels, onRerankModels, onRepairSetup,
-  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice }) {
+  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv }) {
   // Re-discover models when the panel opens so the dropdown is current (e.g. a
   // local Ollama model pulled since launch, or a key just added in another client).
   // Cheap — the backend skips the network when credentials are unchanged.
@@ -818,6 +866,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                 onRevokeDevice={onRevokeDevice}
               />
             )}
+            {current.id === "devices" && <TvSection tvState={tvState} onTv={onTv} />}
 
             {current.id === "system" && (<>
               <div className="settings-sec">

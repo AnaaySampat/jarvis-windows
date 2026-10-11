@@ -740,6 +740,11 @@ def _run_one(spec: dict) -> dict:
         else:
             ok, msg = _app_dispatch(spec)
 
+    # ── The user's Android TV over network ADB (see tv.py) ────────────────────
+    elif atype in ("tv", "tv_control"):
+        from . import tv as _tv
+        return {"target": target, **_tv.run(spec)}
+
     # ── Whole-task autopilot goals (silent operator loop — see autopilot.py) ──
     # Deferred: the loop awaits an LLM per step, so main.py runs it (same
     # pattern as needs_vision / needs_image_gen). The "message" is the card
@@ -1010,6 +1015,28 @@ def execute_actions(text: str) -> Tuple[str, List[dict]]:
     return clean, results
 
 
+# One reply's actions. A runaway generation must not all execute: live 2026-10-11,
+# gemini-2.5-flash-lite put 215 tool calls in ONE reply — 213 identical TV "key up"s —
+# and every one ran, four minutes of the TV pressing up. A real compound request is a
+# handful of distinct actions, and repeats have counts ("down 3", volume steps).
+_MAX_SPECS_PER_REPLY = 12
+_MAX_SAME_SPEC = 3
+
+
+def _drop_runaway(specs: "List[dict]") -> "List[dict]":
+    seen: "dict[str, int]" = {}
+    out: "List[dict]" = []
+    for spec in specs:
+        key = json.dumps(spec, sort_keys=True, default=str)
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] <= _MAX_SAME_SPEC and len(out) < _MAX_SPECS_PER_REPLY:
+            out.append(spec)
+    if len(out) < len(specs):
+        print(f"[Actions] dropped {len(specs) - len(out)} repeated/excess action(s) "
+              f"from one reply ({len(specs)} emitted)", flush=True)
+    return out
+
+
 def run_specs(specs: "List[dict]") -> List[dict]:
     """Run a list of already-parsed action specs through the SAME subsume filter,
     permission gate and dispatch that :func:`execute_actions` applies to ``[ACTION]``
@@ -1018,7 +1045,8 @@ def run_specs(specs: "List[dict]") -> List[dict]:
     and the native function-calling path (whose tool calls become specs via
     ``live_tools.to_spec``), so the two can't drift apart."""
     results: List[dict] = []
-    for spec in _strip_subsumed([s for s in (specs or []) if isinstance(s, dict)]):
+    specs = _drop_runaway([s for s in (specs or []) if isinstance(s, dict)])
+    for spec in _strip_subsumed(specs):
         atype = str(spec.get("type") or "").lower().strip()
         if not atype:
             print(f"[Actions] ignored action with empty type: {spec!r}", flush=True)

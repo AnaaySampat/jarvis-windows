@@ -62,3 +62,5 @@ pyautogui>=0.9.54
 # (mss grabs → PyAV/VP8 encode → DTLS-SRTP). Optional — the feature reports
 # "unavailable on this PC" and everything else runs if this isn't installed.
 aiortc>=1.9.0
+# Android TV control over network ADB (actions/tv.py); optional, lazy-imported.
+adb-shell>=0.4.4

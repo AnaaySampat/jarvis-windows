@@ -270,6 +270,7 @@ function ActionCard({ results, runAction }) {
     web_search: "🔍", web_answer: "🔍",
     schedule: "🗓️", silence: "🤫", sleep_mode: "😴",
     browser: "🌐", web: "🌐", browser_task: "🤖", computer: "🖱", computer_task: "🤖",
+    tv: "📺", tv_task: "📺",
   })[t] ?? "⚡";
   return (
     <div className="action-cards">

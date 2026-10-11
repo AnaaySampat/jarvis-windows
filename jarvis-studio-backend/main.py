@@ -46,6 +46,7 @@ from llm import gemini_bridge, live_audio, live_tools, model_discovery, vertex_a
 from actions import execute_actions, run_specs, run_action, needs_permission, _BROWSER_READONLY
 from actions import skills, fs_access, recorder, computer, browser, app_launcher
 import autopilot
+import tv_operator
 import storage
 import memory_store
 import routines
@@ -1568,7 +1569,7 @@ _COMPLETION_CLAIM_RE = re.compile(
     r"\b(?:is|are|it['’]?s)\s+now\b|"
     r"\b(?:set|changed|changing|switched|switching|turned|turning|toggled|toggling|"
     r"opened|opening|closed|closing|started|starting|stopped|stopping|"
-    r"launched|launching|played|playing|paused|pausing|muted|muting|unmuted|"
+    r"launched|launching|played|playing|paused|pausing|resumed|resuming|muted|muting|unmuted|"
     r"unmuting|created|creating|made|making|generated|generating|enabled|enabling|"
     r"disabled|disabling|adjusted|adjusting|updated|updating|applied|applying|"
     r"recolou?red|recolou?ring|moved|moving|hidden|hiding|shown|showing)\b)",
@@ -1791,21 +1792,27 @@ async def _stream_and_speak(prompt: str, record_history: bool = True,
     return full_raw
 
 
+async def _vision_answer(result: dict) -> "tuple[bool, str]":
+    """A deferred {needs_vision} result → (ok, answer). The image is the one the result
+    carries (the TV's screen, from tv_control look), else a capture of this PC's."""
+    img = result.get("image") or await asyncio.get_running_loop().run_in_executor(
+        None, skills.capture_screen_b64)
+    if not img:
+        return False, "I couldn't capture your screen — the screenshot libraries may be missing."
+    q = (result.get("question") or "Describe what is on the screen and anything notable.").strip()
+    answer = await vision_query(img, (result.get("context") or "") + q + _SCREEN_READ_GUIDANCE)
+    return (True, answer) if answer else \
+        (False, "I had a look but couldn't quite make out the details, sir.")
+
+
 async def _handle_vision(result: dict) -> None:
     """Capture the screen, ask the vision model the result's question, and speak
     the answer. Shared by the first turn, the agentic loop AND the permission-
     approval path — an approved see_screen returns a deferred {needs_vision} result
     that, before this, the approval loops silently dropped (only feed_to_model was
     handled), so "what's on my screen?" did nothing after the user approved."""
-    loop = asyncio.get_running_loop()
     await emit("status", "thinking")
-    img = await loop.run_in_executor(None, skills.capture_screen_b64)
-    if not img:
-        answer = "I couldn't capture your screen — the screenshot libraries may be missing."
-    else:
-        q = (result.get("question") or "Describe what is on the screen and anything notable.").strip()
-        answer = (await vision_query(img, q + _SCREEN_READ_GUIDANCE)
-                  or "I had a look but couldn't quite make out the details, sir.")
+    _ok, answer = await _vision_answer(result)
     print(f"[Vision] {answer[:120]}", flush=True)
     await emit("response", answer)
     if _tts and not skills.is_muted():
@@ -1925,7 +1932,7 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
     # leftover correction from a prior task can't affect this one.
     _control_paused = False
     _pending_corrections = []
-    icon = "🖱" if kind == "computer" else "🌐"
+    icon = {"computer": "🖱", "tv": "📺"}.get(kind, "🌐")
     sid = f"{time.time()}"
     await emit("status", "working")
     await emit("stream_start", {"sid": sid})
@@ -1989,12 +1996,18 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
 
     final = "I couldn't finish that, sir."
     try:
-        res = await autopilot.run_task(kind, goal, interrupted=_interrupted,
-                                       on_step=on_step, on_shot=on_shot, ask=ask,
-                                       paused=_control_is_paused,
-                                       corrections=_pop_corrections,
-                                       reconsent=reconsent,
-                                       hint=playbooks.autopilot_hint(goal))
+        if kind == "tv":                 # the TV, by sight (tv_operator.py)
+            res = await tv_operator.run_task(goal, interrupted=_interrupted,
+                                             on_step=on_step, on_shot=on_shot, ask=ask,
+                                             paused=_control_is_paused,
+                                             corrections=_pop_corrections)
+        else:
+            res = await autopilot.run_task(kind, goal, interrupted=_interrupted,
+                                           on_step=on_step, on_shot=on_shot, ask=ask,
+                                           paused=_control_is_paused,
+                                           corrections=_pop_corrections,
+                                           reconsent=reconsent,
+                                           hint=playbooks.autopilot_hint(goal))
         summary = (res.get("summary") or "").strip()
         if res.get("stopped"):
             final = "Stopped, sir."
@@ -2026,7 +2039,7 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
         note_outcome(f"({kind} autopilot task) goal: {goal!r} → "
                      f"{'completed' if res.get('ok') else 'stopped before finishing'}: "
                      f"{final}{did}")
-        if res.get("ok") and not res.get("stopped"):
+        if res.get("ok") and not res.get("stopped") and kind != "tv":
             try:
                 playbooks.capture_auto(goal, res.get("trace") or [])
             except Exception:  # noqa: BLE001
@@ -2255,20 +2268,6 @@ async def _execute_voice_tool(call: dict) -> dict:
 
     atype = spec.get("type")
 
-    # see_screen → capture the screen + ask the vision model; hand the answer
-    # back so JARVIS relays it in its own voice.
-    if atype == "see_screen":
-        await emit("status", "thinking")
-        img = await loop.run_in_executor(None, skills.capture_screen_b64)
-        if not img:
-            answer = "I couldn't capture the screen — the screenshot libraries may be missing."
-        else:
-            q = (spec.get("question") or "Describe what is on the screen.").strip()
-            answer = (await vision_query(img, q + _SCREEN_READ_GUIDANCE)
-                      or "I had a look but couldn't quite make out the details.")
-        await emit("action", [{"type": "see_screen", "ok": bool(img), "message": answer}])
-        return respond({"result": answer})
-
     # generate_image → produce a picture and render it as an action card.
     if atype == "generate_image":
         await emit("status", "thinking")
@@ -2283,6 +2282,16 @@ async def _execute_voice_tool(call: dict) -> dict:
 
     # Everything else runs synchronously via run_action (blocking → executor).
     res = await loop.run_in_executor(None, run_action, spec)
+
+    # see_screen / tv_control look → ask the vision model about the screen (the
+    # PC's, or the TV image the result carries); hand the answer back so JARVIS
+    # relays it in its own voice.
+    if res.get("needs_vision"):
+        await emit("status", "thinking")
+        ok_v, answer = await _vision_answer(res)
+        await emit("action", [{"type": res.get("type") or "see_screen", "ok": ok_v,
+                               "message": answer}])
+        return respond({"result": answer})
 
     # web_search → a grounded Gemini answer pulled live from Google (no browser).
     # Hand the ANSWER back as the tool result so the voice model relays it in its
@@ -3252,6 +3261,30 @@ async def _emit_memory() -> None:
     })
 
 
+async def _emit_tv(result: "dict | None" = None) -> None:
+    from actions import tv
+    await emit("tv.state", {"config": tv.config(), "result": result})
+
+
+async def handle_tv_state(_data) -> None:
+    await _emit_tv()
+
+
+async def handle_tv_pair(data) -> None:
+    """Settings → Devices: connect to the TV and save it once it answers. Can take
+    up to ~30 s while the TV shows "Allow USB debugging?"."""
+    from actions import tv
+    ok, msg = await asyncio.get_running_loop().run_in_executor(
+        None, tv.pair, str((data or {}).get("host") or ""))
+    await _emit_tv({"ok": ok, "summary": msg})
+
+
+async def handle_tv_unpair(_data) -> None:
+    from actions import tv
+    tv.unpair()
+    await _emit_tv()
+
+
 async def handle_memory_list(_data) -> None:
     await _emit_memory()
 
@@ -3978,6 +4011,12 @@ async def main(use_text: bool) -> None:
     register_handler("memory_list", handle_memory_list)
     register_handler("memory_remember", handle_memory_remember)
     register_handler("memory_forget", handle_memory_forget)
+    # Android TV setup — local HUD only (host-configuring, never on the remote allowlist).
+    register_handler("tv.state", handle_tv_state)
+    register_handler("tv.pair", handle_tv_pair)
+    register_handler("tv.unpair", handle_tv_unpair)
+    from actions import tv as _tv
+    _tv.attach_loop(_main_loop)
     # ── Remote mobile control ────────────────────────────────────────────────
     # Bring up the crypto identity registry. If it fails (e.g. cryptography wheel
     # missing in a frozen build), remote stays OFF and the socket keeps its

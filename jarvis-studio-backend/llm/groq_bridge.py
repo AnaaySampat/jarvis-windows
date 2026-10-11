@@ -330,6 +330,27 @@ ACTION_CATALOG = (
     "read_file/list_dir: allowed folders only (Settings → Read-only Terminal); reads need approval."
 )
 
+# Only once a TV is set up (actions/tv.py) — see _system_messages.
+_TV_PROMPT = (
+    "PAIRED TV\nThe user's TV is set up. Anything about the TV — 'on my TV', 'the TV', "
+    "'put on <show>' when they mean the TV — goes to tv_control, not the PC tools. Short "
+    "follow-ups after a TV request ('pause', 'resume', 'louder', 'next', 'turn it off') "
+    "are about the TV too: call tv_control again every time — what is playing or paused "
+    "is only known from its result. Netflix and YouTube playback are confirmed from the "
+    "TV itself. To see the screen use 'look'. Anything that needs navigating or picking "
+    "something on screen (menus, a particular search result, a setting) is ONE 'task' "
+    "call with the whole goal: it opens the app, sees the screen and presses the buttons "
+    "itself, so add no other TV calls for it, and never navigate with a series of 'key' "
+    "presses — you can't see where they land ('key' is for a button the user names). "
+    "Use the direct actions (play, pause, volume…) when one fits. Nothing inside Netflix "
+    "can be seen (it blocks screenshots); there, only play/pause/resume and 'key' work."
+)
+_TV_ACTION_SHAPE = (
+    '{"type":"tv","do":"play|open_app|pause|resume|volume_up|volume_down|set_volume|mute|'
+    'power_on|power_off|key|status|look|task","target":"show / app / button / level / '
+    'question / goal","app":"netflix|youtube","season":1,"episode":1}'
+)
+
 # Full prompt (core + catalog) — kept for any caller that still expects one blob.
 SYSTEM_PROMPT = SYSTEM_CORE + "\n\n" + ACTION_CATALOG
 
@@ -1297,7 +1318,7 @@ def reply_is_quote_wrapped(text: str = "", task_tier: str = "") -> bool:
 # where a low temperature drops far fewer of multiple tasks and malforms less.
 # Ordinary conversation keeps some warmth. Cheap word check, run per turn.
 _ACTIONY_RE = re.compile(
-    r"\b(open|close|launch|start|stop|play|pause|search|google|set|turn|mute|"
+    r"\b(open|close|launch|start|stop|play|pause|resume|search|google|set|turn|mute|"
     r"unmute|volume|screenshot|capture|record|remind|reminder|timer|schedule|"
     r"shut\s*down|shutdown|restart|reboot|sleep|lock|delete|remember|forget|click|"
     r"type|scroll|browse|browser|navigate|go\s+to|show|hide|expand|collapse|"
@@ -1828,6 +1849,9 @@ def _system_messages(user_text: str = "") -> list:
             msgs.append({"role": "system", "content": ACTION_CATALOG})
     msgs.append({"role": "system", "content": "FILE STORAGE (where you save things):\n"
                 + storage.describe()})
+    if live_tools._tv_paired():
+        msgs.append({"role": "system", "content": _TV_PROMPT if native else
+                     _TV_PROMPT + "\n" + _TV_ACTION_SHAPE})
     facts = memory_store.facts_block()
     if facts:
         msgs.append({"role": "system",

@@ -77,6 +77,7 @@ export function useWebSocket() {
   const [memory, setMemory] = useState(null);             // Memory view snapshot {facts, playbooks, learned, conversations, current, location}
   const [devicePairing, setDevicePairing] = useState(null); // active QR pairing payload {ok,payload,pin,host,...}
   const [devices, setDevices] = useState([]);              // paired-phone roster
+  const [tvState, setTvState] = useState(null);            // {config:{host,model}|null, result:{ok,summary}|null}
 
   const wsRef      = useRef(null);
   const wsUrlRef   = useRef(null);
@@ -268,6 +269,9 @@ export function useWebSocket() {
             break;
           case "device.list":
             setDevices(Array.isArray(msg.data) ? msg.data : []);
+            break;
+          case "tv.state":
+            setTvState(msg.data || null);
             break;
           // ── Agent Activity feed (autopilot steps + page screenshots) ──────
           case "agent_task": {
@@ -620,7 +624,7 @@ export function useWebSocket() {
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     activeApp, overlay, agentTasks, conversations, setupProgress,
-    devicePairing, devices,
+    devicePairing, devices, tvState,
     createPairing, listDevices, revokeDevice,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand, triggerListen, stopSpeech,
     stopControl, pauseControl, sendCorrection, finishListen, pttStart,

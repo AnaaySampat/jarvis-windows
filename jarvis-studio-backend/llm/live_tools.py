@@ -151,6 +151,52 @@ def _location_lookup_tools(places_ok: bool, web_ok: bool) -> list:
     return tools
 
 
+def _tv_paired() -> bool:
+    try:
+        from actions import tv
+        return tv.configured()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _tv_tools(paired: bool) -> list:
+    """`tv_control` — only once a TV is set up (Settings → Devices), so the model never
+    reaches for a TV that isn't there. Each action has its handler in actions/tv.py."""
+    if not paired:
+        return []
+    return [_fn("tv_control",
+        "Control the user's TV (an Android TV on the home network). Use for anything "
+        "about 'the TV' or 'on my TV' — never the PC tools. 'play' puts a named show or "
+        "film on Netflix, or a video/music search on YouTube, and plays it. 'look' sees "
+        "the TV's screen and answers about it ('what's on my TV?'). 'task' does a "
+        "multi-step job by sight — navigating menus, picking a specific search result, "
+        "changing a TV setting — that no other action covers. Neither can see inside "
+        "Netflix: it blocks screenshots.",
+        {"action": _str("What to do on the TV.",
+                        ["play", "open_app", "pause", "resume", "volume_up", "volume_down",
+                         "set_volume", "mute", "power_on", "power_off", "key", "status",
+                         "look", "task"]),
+         "target": _str("play: the show, film or video to put on (omit to resume). "
+                        "open_app: the app name. key: a remote button the user named — up, "
+                        "down, left, right, ok, back, home, next, previous, fast forward, "
+                        "rewind, channel up, channel down, input, captions (add a number to "
+                        "press it several times, e.g. 'down 3'); never a series of presses "
+                        "to navigate — that's a task. set_volume: the level 0-100. "
+                        "volume_up/volume_down: how many steps (default 5). look: the "
+                        "question about the screen. task: the whole goal in plain "
+                        "English, e.g. 'on YouTube, play the second result for lofi'."),
+         "app": _str("For play: 'netflix' for shows and films (default), 'youtube' for "
+                     "videos, music or anything the user says is on YouTube.",
+                     ["netflix", "youtube"]),
+         "season": {"type": "INTEGER", "description":
+                    "For play on Netflix: the season number — only when the user names a "
+                    "season or episode ('from the beginning' = 1). Omit to resume where "
+                    "they left off."},
+         "episode": {"type": "INTEGER", "description":
+                     "For play on Netflix: the episode number, with season."}},
+        ["action"])]
+
+
 def function_declarations(places_ok: "bool | None" = None,
                           web_ok: "bool | None" = None) -> list:
     """The tool palette advertised to the model — tailored to the active provider
@@ -378,6 +424,7 @@ def function_declarations(places_ok: "bool | None" = None,
              "new_time": _str("New time when editing an item."),
              "new_task": _str("New task text when editing an item.")},
             ["action"]),
+        *_tv_tools(_tv_paired()),
     ]
 
 
@@ -447,6 +494,11 @@ _SPEC = {
                                     "task": a.get("task", ""), "match": a.get("task", ""),
                                     "new_time": a.get("new_time", ""),
                                     "new_task": a.get("new_task", "")},
+    "tv_control":        lambda a: {"type": "tv", "do": a.get("action", ""),
+                                    "target": a.get("target", ""),
+                                    "app": a.get("app", ""),
+                                    "season": a.get("season", 0),
+                                    "episode": a.get("episode", 0)},
 }
 
 

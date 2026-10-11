@@ -14,6 +14,7 @@ WebSocket also serves a cryptographically paired phone over Tailscale. See
 | Which operator runs a goal | `jarvis-studio-backend/task_router.py` |
 | Model routing / tiers / fallback | `jarvis-studio-backend/llm/groq_bridge.py` |
 | Raw actions (apps, fs, computer, browser) | `jarvis-studio-backend/actions/` |
+| Android TV (network ADB, screen capture) / TV operator by sight | `jarvis-studio-backend/actions/tv.py` / `tv_operator.py` — Netflix blocks every screenshot (DRM, by design) |
 | Transport, auth, remote allowlist | `jarvis-studio-backend/server/websocket_server.py` |
 | Phone pairing crypto + registry | `jarvis-studio-backend/autonomy/device_identity.py` |
 | HUD windows/components | `jarvis-studio-gui/src/` (`hud/`, `components/`) |

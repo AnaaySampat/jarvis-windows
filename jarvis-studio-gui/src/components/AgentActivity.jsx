@@ -60,7 +60,7 @@ export default function AgentActivity({ tasks, onClose, onClear }) {
               return (
                 <div key={t.id} className="activity-task">
                   <div className="activity-task-hd">
-                    <span className="activity-task-ico">{t.kind === "computer" ? "🖱" : "🌐"}</span>
+                    <span className="activity-task-ico">{{ computer: "🖱", tv: "📺" }[t.kind] || "🌐"}</span>
                     <span className="activity-task-goal">{t.goal}</span>
                     <span className={`activity-pill ${st.cls}`}>{st.label}</span>
                   </div>
