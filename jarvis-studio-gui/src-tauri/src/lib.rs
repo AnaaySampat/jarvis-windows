@@ -39,7 +39,10 @@ fn random_token() -> String {
 
 fn bundled_backend_dir(app: &tauri::App) -> Option<PathBuf> {
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let dir = resource_dir.join("jarvis-backend");
+        // resource_dir() is a \\?\ verbatim path. The backend derives every bundled
+        // asset path from it, and a verbatim path doesn't normalise the "/" that
+        // CTranslate2 appends, so the Whisper model failed to load.
+        let dir = dunce::simplified(&resource_dir).join("jarvis-backend");
         if dir.join("jarvis-backend.exe").is_file() {
             return Some(dir);
         }
