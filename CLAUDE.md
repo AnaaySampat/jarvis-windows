@@ -44,10 +44,17 @@ cd jarvis-studio-backend; python -m unittest discover -s . -p "test_*.py" -t .
 cd jarvis-studio-gui; npm run build
 ```
 
-423 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
+425 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
 installs a hand-picked minimum — add to that list if a new test needs a module).
 For anything touching the live voice/WS wiring, run the app (`python start.py`),
 don't stop at compiling.
+
+**Replay tests** (`test_replay.py`, `replay_fixtures.json`) play real model replies back
+through the real pipeline. To capture new ones, start JARVIS with
+`JARVIS_RECORD_TURNS=1`: each turn lands in `%APPDATA%\Jarvis\recorded_turns.jsonl` in
+fixture shape (turn_recorder.py); add `results` (what each action returned, with
+`feed_to_model` where the real one has it) and `expect`, and it's a test. When a model
+does something surprising, record it and keep it.
 
 ## Conventions
 

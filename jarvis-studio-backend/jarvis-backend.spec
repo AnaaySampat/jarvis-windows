@@ -65,6 +65,7 @@ hiddenimports = [
     "mcp_client",
     "memory_sync",
     "memory_digest",
+    "turn_recorder",
     "websockets",
     "websockets.legacy",
     "websockets.legacy.server",

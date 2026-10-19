@@ -1,0 +1,205 @@
+[
+  {
+    "name": "a TV follow-up 'resume' claimed without a tool call is rechecked, then done for real",
+    "source": "live 2026-09-30 on the phone: 'Resumed — back to Arcane' with no tool call; the same guard runs here",
+    "context": {
+      "tvPaired": true
+    },
+    "user": "resume the tv",
+    "model": [
+      {
+        "text": "Resumed — back to Arcane."
+      },
+      {
+        "toolCalls": [
+          {
+            "name": "tv_control",
+            "args": {
+              "action": "resume"
+            }
+          }
+        ]
+      }
+    ],
+    "results": [
+      {
+        "ok": true,
+        "message": "Netflix is playing."
+      }
+    ],
+    "expect": {
+      "specs": [
+        {
+          "type": "tv",
+          "do": "resume"
+        }
+      ],
+      "shown": "Netflix is playing"
+    },
+    "known": "The claim itself is spoken while it streams, before the recheck runs the real action (the phone holds it back) — TODO.md"
+  },
+  {
+    "name": "a request the words don't cue loads the planner, then uses the tool it brought in",
+    "source": "tool groups (2026-10-19)",
+    "context": {},
+    "user": "hmm, anything going on?",
+    "model": [
+      {
+        "toolCalls": [
+          {
+            "name": "load_tools",
+            "args": {
+              "groups": [
+                "planner"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "toolCalls": [
+          {
+            "name": "manage_schedule",
+            "args": {
+              "action": "get"
+            }
+          }
+        ]
+      },
+      {
+        "text": "You have nothing on today, sir."
+      }
+    ],
+    "results": [
+      {
+        "ok": true,
+        "message": "Nothing today.",
+        "feed_to_model": {
+          "name": "agenda",
+          "content": "Nothing today."
+        }
+      }
+    ],
+    "expect": {
+      "specs": [
+        {
+          "type": "load_tools"
+        },
+        {
+          "type": "schedule",
+          "do": "get"
+        }
+      ],
+      "said": "nothing on today",
+      "notOffered": [
+        "manage_schedule"
+      ]
+    }
+  },
+  {
+    "name": "'send this to the TV' moves what's playing on the PC",
+    "source": "2026-10-19 feature: tv_control cast with no target",
+    "context": {
+      "tvPaired": true
+    },
+    "user": "send this to the tv",
+    "model": [
+      {
+        "toolCalls": [
+          {
+            "name": "tv_control",
+            "args": {
+              "action": "cast"
+            }
+          }
+        ]
+      }
+    ],
+    "results": [
+      {
+        "ok": true,
+        "message": "Playing “lofi” on YouTube on the TV from 12:34. Paused it on the PC."
+      }
+    ],
+    "expect": {
+      "specs": [
+        {
+          "type": "tv",
+          "do": "cast",
+          "target": ""
+        }
+      ],
+      "offered": [
+        "tv_control"
+      ],
+      "shown": "Paused it on the PC"
+    }
+  },
+  {
+    "name": "'turn on the TV' is a verified power action, not a key press",
+    "source": "Wake-on-LAN (2026-10-19): power_on wakes a TV that's fully off",
+    "context": {
+      "tvPaired": true
+    },
+    "user": "turn on the tv",
+    "model": [
+      {
+        "toolCalls": [
+          {
+            "name": "tv_control",
+            "args": {
+              "action": "power_on"
+            }
+          }
+        ]
+      }
+    ],
+    "results": [
+      {
+        "ok": true,
+        "message": "Turned the TV on (woke it over the network)."
+      }
+    ],
+    "expect": {
+      "specs": [
+        {
+          "type": "tv",
+          "do": "power_on"
+        }
+      ],
+      "shown": "Turned the TV on"
+    }
+  },
+  {
+    "name": "remembering a fact goes through the memory tool",
+    "source": "core memory tool; facts now sync to the phone (memory_sync.py)",
+    "context": {},
+    "user": "remember that my sister's name is Priya",
+    "model": [
+      {
+        "toolCalls": [
+          {
+            "name": "remember_fact",
+            "args": {
+              "text": "My sister's name is Priya"
+            }
+          }
+        ]
+      }
+    ],
+    "results": [
+      {
+        "ok": true,
+        "message": "Noted, sir — I'll remember that."
+      }
+    ],
+    "expect": {
+      "specs": [
+        {
+          "type": "remember"
+        }
+      ],
+      "shown": "remember that"
+    }
+  }
+]

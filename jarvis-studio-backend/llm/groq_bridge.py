@@ -3052,6 +3052,18 @@ async def _stream_route(route: "quota.Route", messages: list, max_tokens: int,
 
 async def stream_prompt(text: str, record_history: bool = True, slim: bool = False,
                         tool_sink: "list | None" = None, task_tier: str = ""):
+    """One model step (see _stream_prompt), also handed to turn_recorder — which keeps
+    it only while recording real turns as replay fixtures (JARVIS_RECORD_TURNS=1)."""
+    import turn_recorder
+    before = len(tool_sink) if tool_sink is not None else 0
+    full = ""
+    async for delta, full in _stream_prompt(text, record_history, slim, tool_sink, task_tier):
+        yield delta, full
+    turn_recorder.step(tool_sink[before:] if tool_sink is not None else [], full)
+
+
+async def _stream_prompt(text: str, record_history: bool = True, slim: bool = False,
+                         tool_sink: "list | None" = None, task_tier: str = ""):
     """Async generator that streams the model reply token-by-token.
 
     Yields ``(delta, full_raw)`` per chunk so the pipeline can show text and

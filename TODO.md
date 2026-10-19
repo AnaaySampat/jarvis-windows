@@ -23,6 +23,11 @@ pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (uncha
 - [ ] **TV with two addresses** (home IP + Tailscale IP), and the "different network"
   message from a PC on the other router's Wi-Fi.
 - [ ] **Update notice**: needs a GitHub release newer than the installed version.
+- [ ] **A false "done" is spoken before the claim check runs** (found by test_replay.py,
+  2026-10-19): a streamed reply like "Resumed — back to Arcane." with no tool call is
+  spoken while it streams; the recheck then runs the real action. The phone holds such
+  a reply back. Fix idea: on an action-like request, hold speech until the step ends and
+  it's known whether the model called a tool. Costs latency only on those turns.
 - [ ] **Nightly memory digest** (unit-tested with a fake model): leave the PC on
   overnight after a day of use; next morning check `[Digest]` in the log, Memory for new
   facts, and `journal/<date>.md`.

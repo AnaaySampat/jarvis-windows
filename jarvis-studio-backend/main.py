@@ -52,6 +52,7 @@ import storage
 import memory_store
 import routines
 import mcp_client
+import turn_recorder
 import reminders
 import playbooks
 import places
@@ -2575,18 +2576,22 @@ async def _run_pipeline(text: str, emit_transcription: bool = True,
     text when it differs from what the model gets."""
     global _wa_chat
     async with _pipeline_lock:
-        if wa_chat is None:
-            await _pipeline_turn(text, emit_transcription, task_tier, shown)
-            return
-        _wa_chat = wa_chat
-        add_tap(tap)
-        skills.set_quiet(True)
+        turn_recorder.begin(text)          # a no-op unless JARVIS_RECORD_TURNS=1
         try:
-            await _pipeline_turn(text, emit_transcription, task_tier, shown)
+            if wa_chat is None:
+                await _pipeline_turn(text, emit_transcription, task_tier, shown)
+                return
+            _wa_chat = wa_chat
+            add_tap(tap)
+            skills.set_quiet(True)
+            try:
+                await _pipeline_turn(text, emit_transcription, task_tier, shown)
+            finally:
+                remove_tap(tap)
+                skills.set_quiet(False)
+                _wa_chat = None
         finally:
-            remove_tap(tap)
-            skills.set_quiet(False)
-            _wa_chat = None
+            turn_recorder.end()
 
 
 async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
