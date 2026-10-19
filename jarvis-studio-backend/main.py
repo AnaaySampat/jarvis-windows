@@ -51,6 +51,7 @@ import tv_operator
 import storage
 import memory_store
 import routines
+import mcp_client
 import reminders
 import playbooks
 import places
@@ -3535,6 +3536,48 @@ async def handle_tv_set_mac(data) -> None:
     await _emit_tv({"ok": ok, "summary": msg})
 
 
+async def _emit_mcp() -> None:
+    await emit("mcp.state", mcp_client.state())
+
+
+async def handle_mcp_state(_data) -> None:
+    await _emit_mcp()
+
+
+async def handle_mcp_save(data) -> None:
+    """Settings ▸ MCP servers: add or change one server, then (re)connect it. Header
+    and env values left blank keep what was saved (Settings never sees them)."""
+    data = data or {}
+    name = str(data.get("name") or "").strip()
+    servers = mcp_client.load_config()
+    old = servers.get(name, {})
+    cfg = dict(data.get("config") or {})
+    for key in ("env", "headers"):
+        given = dict(cfg.get(key) or {})
+        cfg[key] = {k: (v if v else (old.get(key) or {}).get(k, "")) for k, v in given.items()}
+    clean, why = mcp_client.clean_server(name, cfg)
+    if clean is None:
+        await emit("mcp.state", {**mcp_client.state(), "result": {"ok": False, "summary": why}})
+        return
+    servers[name] = clean
+    mcp_client.save_config(servers)
+    await mcp_client.restart(name)
+    await emit("mcp.state", {**mcp_client.state(),
+                             "result": {"ok": True, "summary": f"Saved {name}; connecting…"}})
+
+
+async def handle_mcp_remove(data) -> None:
+    name = str((data or {}).get("name") or "")
+    servers = mcp_client.load_config()
+    if servers.pop(name, None) is not None:
+        mcp_client.save_config(servers)
+    await mcp_client.restart(name)
+
+
+async def handle_mcp_restart(data) -> None:
+    await mcp_client.restart(str((data or {}).get("name") or ""))
+
+
 async def handle_memory_list(_data) -> None:
     await _emit_memory()
 
@@ -4385,6 +4428,11 @@ async def main(use_text: bool) -> None:
     register_handler("tv.pair", handle_tv_pair)
     register_handler("tv.unpair", handle_tv_unpair)
     register_handler("tv.set_mac", handle_tv_set_mac)
+    # MCP servers — local HUD only: a server is a program this PC runs.
+    register_handler("mcp.state", handle_mcp_state)
+    register_handler("mcp.save", handle_mcp_save)
+    register_handler("mcp.remove", handle_mcp_remove)
+    register_handler("mcp.restart", handle_mcp_restart)
     from actions import tv as _tv
     _tv.attach_loop(_main_loop)
     # ── Remote mobile control ────────────────────────────────────────────────
@@ -4486,6 +4534,8 @@ async def main(use_text: bool) -> None:
     # The WhatsApp channel, when the user turned it on (Settings ▸ Devices).
     if whatsapp_channel.settings()["enabled"]:
         _track_task(_start_whatsapp(), "whatsapp")
+    # MCP servers (Settings ▸ MCP servers): each keeps its session on this loop.
+    mcp_client.start(asyncio.get_running_loop(), on_change=_emit_mcp)
 
     # ── First-run asset provisioning ────────────────────────────────────────────
     # The installer ships lean, so the heavy runtime assets (Chromium, the Whisper
@@ -4521,6 +4571,8 @@ async def main(use_text: bool) -> None:
     except (KeyboardInterrupt, asyncio.CancelledError):
         print("\n[Jarvis] Shutting down.")
     finally:
+        with contextlib.suppress(Exception):
+            await mcp_client.stop_all()
         for t in hud_tasks:
             t.cancel()
         with contextlib.suppress(asyncio.CancelledError):

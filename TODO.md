@@ -23,6 +23,12 @@ pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (uncha
 - [ ] **TV with two addresses** (home IP + Tailscale IP), and the "different network"
   message from a PC on the other router's Wi-Fi.
 - [ ] **Update notice**: needs a GitHub release newer than the installed version.
+- [ ] **MCP servers** (unit-tested, and end to end against a real stdio server with
+  mcp 1.30 and 2.2 on Linux; never on Windows): add
+  `npx -y @modelcontextprotocol/server-filesystem C:\Users\<you>\Documents` in
+  Settings → MCP Servers, check it shows Connected with its tools, then "use the
+  filesystem server to list my Documents" (no prompt: read-only), and a write (asks
+  first). Also an HTTP server with a header, and the frozen installer build.
 - [ ] **Send this to the TV** (built and unit-tested, never run): YouTube in Chrome,
   then Edge, at ~10 minutes in → "send this to the TV" (TV starts there? PC paused?);
   Netflix in Chrome (TV resumes the same episode?); with the video tab not in front

@@ -62,6 +62,7 @@ hiddenimports = [
     "skill_files",
     "updates",
     "whatsapp_channel",
+    "mcp_client",
     "websockets",
     "websockets.legacy",
     "websockets.legacy.server",
@@ -141,6 +142,15 @@ for pkg in ("piper", "piper_phonemize", "espeakng_loader", "playwright"):
 # WhatsApp channel (optional): neonize loads its Go core with ctypes from its own
 # package folder (neonize-windows-amd64.dll), and python-magic-bin ships libmagic's
 # DLL and database the same way. Missing → the channel says to pip install neonize.
+# MCP servers (optional, mcp_client.py): the SDK is imported lazily, and its 2.x wire
+# types live in a sibling package (mcp_types).
+for pkg in ("mcp", "mcp_types"):
+    try:
+        hiddenimports += collect_submodules(pkg)
+        datas += collect_data_files(pkg)
+    except Exception:
+        pass
+
 for pkg in ("neonize", "magic"):
     try:
         hiddenimports += collect_submodules(pkg)

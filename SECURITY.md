@@ -51,6 +51,10 @@ In scope, for example:
 - the WhatsApp channel running a command from anyone but the linked account's own
   "Message yourself" chat or a number the user listed, or sending JARVIS's output to
   any chat other than the one the command came from
+- an MCP server's tool running without approval when it isn't marked read-only and
+  its server isn't marked trusted, or text an MCP server returns being followed as
+  instructions (MCP servers themselves are programs the user chose to run, so what a
+  malicious server does on its own is out of scope)
 - running desktop or browser autopilot actions without the user's consent or
   approval gate, including through prompt injection from a web page, file or
   screen content

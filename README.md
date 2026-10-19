@@ -170,6 +170,19 @@ OpenClaw. That isn't covered by WhatsApp's terms, and WhatsApp can restrict acco
 that use one: a second number for JARVIS is the cautious choice. **Unlink** in the same
 settings logs it out and deletes the session from this PC.
 
+## MCP servers: more tools
+
+JARVIS can use any **MCP server** (Model Context Protocol), the same ones Claude Desktop,
+Cursor and others use: GitHub, Notion, databases, Home Assistant, your file system. Add
+one under Settings → MCP Servers (a command such as
+`npx -y @modelcontextprotocol/server-github`, or a server URL, plus its token), or paste
+Claude Desktop's `mcpServers` block into `%APPDATA%\Jarvis\mcp.json`. Its tools load
+when you name the server ("what's open on GitHub?"). A tool that changes something
+asks you first, unless the server says the tool only reads or you mark the server
+**trusted**. What a server returns is treated as data, never as instructions. It needs
+`pip install mcp`; servers started with `npx` or `uvx` also need Node.js or uv. Each
+server is a program running on your PC, so add only ones you trust.
+
 ## Two routers at home?
 
 The PC, the phone and the TV reach each other directly, so they need to be on one

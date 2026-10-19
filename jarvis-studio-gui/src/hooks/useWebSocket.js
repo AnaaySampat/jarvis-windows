@@ -79,6 +79,7 @@ export function useWebSocket() {
   const [devicePairing, setDevicePairing] = useState(null); // active QR pairing payload {ok,payload,pin,host,...}
   const [devices, setDevices] = useState([]);              // paired-phone roster
   const [tvState, setTvState] = useState(null);
+  const [mcpState, setMcpState] = useState(null);          // MCP servers {available, config, servers, result}
   const [waState, setWaState] = useState(null);            // WhatsApp channel {status, qr, number, error, enabled, allow}            // {config:{host,model}|null, result:{ok,summary}|null}
 
   const wsRef      = useRef(null);
@@ -292,6 +293,9 @@ export function useWebSocket() {
             break;
           case "tv.state":
             setTvState(msg.data || null);
+            break;
+          case "mcp.state":
+            setMcpState(msg.data || null);
             break;
           case "whatsapp.state":
             setWaState(msg.data || null);
@@ -649,7 +653,7 @@ export function useWebSocket() {
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     activeApp, overlay, agentTasks, conversations, setupProgress,
-    devicePairing, devices, tvState, waState,
+    devicePairing, devices, tvState, waState, mcpState,
     createPairing, listDevices, revokeDevice,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand, triggerListen, stopSpeech,
     stopControl, pauseControl, sendCorrection, finishListen, pttStart,

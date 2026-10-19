@@ -174,6 +174,131 @@ const WA_STATUS = {
   error: "Not connected",
 };
 
+/**
+ * MCP servers (backend: mcp_client.py). Each server's tools become JARVIS tools; a
+ * call that changes something is asked about first unless the server is trusted.
+ * Secret values (env vars, headers) are write-only here: the backend never sends
+ * them back, and leaving one blank keeps what's saved.
+ */
+const MCP_STATUS = { ready: "Connected", starting: "Connecting…", failed: "Failed",
+                     stopped: "Stopped", disabled: "Off" };
+
+function splitCommand(line) {
+  return [...(line || "").matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
+}
+
+function parseSecrets(text) {
+  const out = {};
+  for (const line of (text || "").split("\n")) {
+    const i = line.indexOf("=") >= 0 ? line.indexOf("=") : line.indexOf(":");
+    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+
+function McpSection({ mcpState, onMcp }) {
+  const st = mcpState || { available: true, servers: [] };
+  const [name, setName] = useState("");
+  const [target, setTarget] = useState("");
+  const [secrets, setSecrets] = useState("");
+  const [trusted, setTrusted] = useState(false);
+  useEffect(() => { onMcp && onMcp("mcp.state"); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const send = (srv, patch) => {
+    const keep = Object.fromEntries((srv.secrets || []).map((k) => [k, ""]));   // "" = keep
+    const config = srv.transport === "http"
+      ? { url: srv.url, headers: keep }
+      : { command: srv.command, args: srv.args, env: keep };
+    onMcp && onMcp("mcp.save", { name: srv.name, config: { ...config, trusted: srv.trusted,
+                                                         disabled: srv.disabled, ...patch } });
+  };
+  const add = () => {
+    const isUrl = /^https?:\/\//i.test(target.trim());
+    const parts = splitCommand(target.trim());
+    const config = isUrl
+      ? { url: target.trim(), headers: parseSecrets(secrets) }
+      : { command: parts[0] || "", args: parts.slice(1), env: parseSecrets(secrets) };
+    onMcp && onMcp("mcp.save", { name: name.trim(), config: { ...config, trusted } });
+    setName(""); setTarget(""); setSecrets(""); setTrusted(false);
+  };
+
+  return (
+    <div className="settings-sec">
+      <label>MCP servers</label>
+      <div className="settings-hint">
+        Give JARVIS more tools with <b>MCP servers</b> — the same ones Claude Desktop and other
+        apps use (GitHub, Notion, databases, your smart home…). Their tools are loaded when you
+        mention the server by name. A tool that changes something asks you first, unless you
+        trust the server. Only add servers you trust: each one is a program running on this PC.
+      </div>
+      {!st.available && (
+        <div className="settings-warn" style={{ marginTop: 6 }}>
+          MCP needs the <b>mcp</b> Python package: <code>pip install mcp</code>, then restart JARVIS.
+        </div>
+      )}
+      {(st.servers || []).map((srv) => (
+        <div key={srv.name} className="mcp-row" style={{ marginTop: 10 }}>
+          <div>
+            <b>{srv.name}</b> · {MCP_STATUS[srv.status] || srv.status}
+            {srv.status === "ready" ? ` — ${srv.tools.length} tool${srv.tools.length === 1 ? "" : "s"}` : ""}
+          </div>
+          <div className="settings-hint" style={{ wordBreak: "break-all" }}>
+            {srv.url || [srv.command, ...(srv.args || [])].join(" ")}
+            {srv.secrets && srv.secrets.length ? ` · secrets: ${srv.secrets.join(", ")}` : ""}
+          </div>
+          {srv.status === "ready" && srv.tools.length > 0 && (
+            <div className="settings-hint">{srv.tools.join(", ")}</div>
+          )}
+          {srv.error && <div className="settings-warn">{srv.error}</div>}
+          <label className="settings-check">
+            <input type="checkbox" className="sw" checked={!srv.disabled}
+                   onChange={(e) => send(srv, { disabled: !e.target.checked })} />
+            <span>On</span>
+          </label>
+          <label className="settings-check">
+            <input type="checkbox" className="sw" checked={!!srv.trusted}
+                   onChange={(e) => send(srv, { trusted: e.target.checked })} />
+            <span>Trusted — run its tools without asking</span>
+          </label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="dirlist-addbtn" onClick={() => onMcp && onMcp("mcp.restart", { name: srv.name })}>
+              Reconnect
+            </button>
+            <button className="dir-rm" onClick={() => onMcp && onMcp("mcp.remove", { name: srv.name })}>
+              Remove
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className="settings-hint" style={{ marginTop: 12 }}><b>Add a server</b></div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+        <input type="text" placeholder="Name, e.g. github" value={name}
+               onChange={(e) => setName(e.target.value)} />
+        <input type="text" placeholder="Command (npx -y @modelcontextprotocol/server-github) or URL"
+               value={target} onChange={(e) => setTarget(e.target.value)} />
+        <textarea rows={2} placeholder={"Secrets, one per line: GITHUB_TOKEN=… (or a header for a URL: Authorization: Bearer …)"}
+                  value={secrets} onChange={(e) => setSecrets(e.target.value)} />
+        <label className="settings-check">
+          <input type="checkbox" className="sw" checked={trusted} onChange={(e) => setTrusted(e.target.checked)} />
+          <span>Trusted — run its tools without asking</span>
+        </label>
+        <button className="dirlist-addbtn" disabled={!name.trim() || !target.trim()} onClick={add}>
+          Add server
+        </button>
+      </div>
+      {st.result && (
+        <div className={st.result.ok ? "settings-hint" : "settings-warn"} style={{ marginTop: 6 }}>
+          {st.result.summary}
+        </div>
+      )}
+      <div className="settings-hint" style={{ marginTop: 8 }}>
+        Or paste Claude Desktop&apos;s <code>mcpServers</code> into <code>{st.config || "%APPDATA%\\Jarvis\\mcp.json"}</code>,
+        then Reconnect. Servers started with <code>npx</code> or <code>uvx</code> need Node.js or uv installed.
+      </div>
+    </div>
+  );
+}
+
 function WhatsAppSection({ waState, onWhatsApp }) {
   const st = waState || { status: "off", enabled: false, allow: [] };
   const [allow, setAllow] = useState(null);            // null = show the saved list
@@ -509,13 +634,14 @@ const SECTIONS = [
   { id: "autopilot", label: "Autopilot", icon: "⌖", words: "autopilot browser desktop operator reasoning vision screenshot" },
   { id: "interface", label: "Interface", icon: "▣", words: "overlay pill floating interface apps hide" },
   { id: "files", label: "Files & Location", icon: "⌂", words: "storage folder directories files read location weather pin" },
+  { id: "mcp", label: "MCP Servers", icon: "⧉", words: "mcp model context protocol servers tools plugins integrations connectors github notion" },
   { id: "devices", label: "Devices", icon: "⌁", words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix whatsapp message chat" },
   { id: "system", label: "System", icon: "⚙", words: "system ram resources repair components" },
 ];
 let lastSection = "ai";   // reopen where the user left off (per app session)
 
 export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocation, onRefreshModels, onRerankModels, onRepairSetup,
-  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState }) {
+  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState, mcpState }) {
   // Re-discover models when the panel opens so the dropdown is current (e.g. a
   // local Ollama model pulled since launch, or a key just added in another client).
   // Cheap — the backend skips the network when credentials are unchanged.
@@ -1034,6 +1160,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                 onRevokeDevice={onRevokeDevice}
               />
             )}
+            {current.id === "mcp" && <McpSection mcpState={mcpState} onMcp={onTv} />}
             {current.id === "devices" && <TvSection tvState={tvState} onTv={onTv} />}
             {current.id === "devices" && <WhatsAppSection waState={waState} onWhatsApp={onTv} />}
 

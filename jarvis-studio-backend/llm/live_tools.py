@@ -434,7 +434,17 @@ def function_declarations(places_ok: "bool | None" = None,
             ["action"]),
         *_tv_tools(_tv_paired()),
         *_skill_tools(),
+        *_mcp_tools(),
     ]
+
+
+def _mcp_tools() -> list:
+    """Every connected MCP server's tools (mcp_client.py), as declarations."""
+    try:
+        import mcp_client
+        return mcp_client.declarations()
+    except Exception:  # noqa: BLE001 — a broken server never costs the palette
+        return []
 
 
 def _skill_tools() -> list:
@@ -509,14 +519,48 @@ _CUES = {
 _CUE_RE = {g: re.compile(p, re.IGNORECASE) for g, p in _CUES.items()}
 _TOOL_GROUP = {t: g for g, (_d, tools) in GROUPS.items() for t in tools}
 
-_active: "set[str]" = set(GROUPS)   # until the first turn: everything
+# MCP servers' tools (mcp_client.py) are one more group, `mcp`, present only while a
+# server is connected; its cue is "mcp" or a server's name ("…on github").
+MCP_PREFIX = "mcp__"
+
+
+def groups() -> dict:
+    """GROUPS, plus `mcp` while an MCP server is connected."""
+    try:
+        import mcp_client
+        blurb, names = mcp_client.summary(), [d["name"] for d in mcp_client.declarations()]
+    except Exception:  # noqa: BLE001
+        blurb, names = "", []
+    if not names:
+        return GROUPS
+    return {**GROUPS, "mcp": (f"Tools from the user's MCP servers: {blurb}", tuple(names))}
+
+
+def _group_of(name: str) -> "str | None":
+    return "mcp" if name.startswith(MCP_PREFIX) else _TOOL_GROUP.get(name)
+
+
+def _mcp_cue(text: str) -> bool:
+    try:
+        import mcp_client
+        names = mcp_client.server_names()
+    except Exception:  # noqa: BLE001
+        names = []
+    if not names:
+        return False
+    words = "|".join(re.escape(n).replace(r"\-", "[-_ ]?").replace("_", "[-_ ]?") for n in names)
+    return bool(re.search(rf"\b(mcp|{words})\b", text or "", re.IGNORECASE))
+
+
+_active: "set[str]" = set(GROUPS) | {"mcp"}   # until the first turn: everything
 _used: "set[str]" = set()           # groups this turn called or loaded
 _recent: "list[set[str]]" = []      # what the last two turns used (newest last)
 
 
 def groups_for(text: str) -> "set[str]":
     """The groups a request's own words point at."""
-    return {g for g, rx in _CUE_RE.items() if rx.search(text or "")}
+    found = {g for g, rx in _CUE_RE.items() if rx.search(text or "")}
+    return found | {"mcp"} if _mcp_cue(text) else found
 
 
 def begin_turn(text: str) -> "set[str]":
@@ -530,16 +574,18 @@ def begin_turn(text: str) -> "set[str]":
     return set(_active)
 
 
-def activate(groups) -> "list[str]":
+def activate(names) -> "list[str]":
     """Add groups to this turn (load_tools). Returns the ones that are new."""
-    new = [g for g in groups if g in GROUPS and g not in _active]
+    known = groups()
+    new = [g for g in names if g in known and g not in _active]
     _active.update(new)
-    _used.update(g for g in groups if g in GROUPS)
+    _used.update(g for g in names if g in known)
     return new
 
 
 def _load_tools_decl(missing: "list[str]") -> dict:
-    lines = "; ".join(f"{g} = {GROUPS[g][0]}" for g in missing)
+    known = groups()
+    lines = "; ".join(f"{g} = {known[g][0]}" for g in missing)
     return _fn("load_tools",
         "Some of your tools aren't loaded this turn. If the request needs one, call this "
         "FIRST with the group, then use the tool. Groups: " + lines + ".",
@@ -552,8 +598,8 @@ def turn_declarations() -> list:
     """The palette for the current chat turn: CORE, the active groups, and load_tools
     for whatever was left out."""
     out = [d for d in function_declarations()
-           if _TOOL_GROUP.get(d["name"]) in (None, *_active)]
-    missing = [g for g in GROUPS if g not in _active]
+           if _group_of(d["name"]) in (None, *_active)]
+    missing = [g for g in groups() if g not in _active]
     if missing:
         out.append(_load_tools_decl(missing))
     return out
@@ -651,6 +697,9 @@ def recently_used(group: str) -> bool:
 def to_spec(name: str, args: "dict | None") -> dict:
     """Convert a Live-API function call into an action spec for run_action()."""
     args = args or {}
+    if name.startswith(MCP_PREFIX):
+        _used.add("mcp")
+        return {"type": "mcp", "tool": name, "args": args}
     if name in _TOOL_GROUP:
         _used.add(_TOOL_GROUP[name])
     elif name == "tv_control":

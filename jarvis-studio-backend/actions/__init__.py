@@ -120,6 +120,13 @@ def needs_permission(spec: dict) -> "Tuple[bool, str, str]":
             return True, "power", f"{cmd.replace('_', ' ')} the computer"
     if atype in ("delete_file", "delete", "remove_file", "trash"):
         return True, "delete", f"delete “{target or 'that file'}”"
+    # A connected MCP server's tool: asked about unless it only reads, or the user
+    # trusts that server (mcp_client.needs_approval).
+    if atype == "mcp":
+        import mcp_client
+        gated, desc = mcp_client.needs_approval(spec)
+        if gated:
+            return True, "mcp", desc
     # Reading a file is read-only, but the user wants to approve every read.
     if atype in ("read_file", "cat", "view_file", "read_pdf", "pdf_read", "open_pdf"):
         target = spec.get("path") or spec.get("target") or "that file"
@@ -940,20 +947,24 @@ def _run_one(spec: dict) -> dict:
     # ── The model's own plumbing (never shown as a card or spoken) ────────────
     elif atype == "load_tools":
         from llm import live_tools
-        asked = [g for g in spec.get("groups") or [] if g in live_tools.GROUPS]
+        known = live_tools.groups()
+        asked = [g for g in spec.get("groups") or [] if g in known]
         if not asked:
             return {"type": atype, "ok": False, "internal": True, "speak": "",
                     "message": "No such tool group.",
                     "feed_to_model": {"name": "load_tools", "content":
                                       "No such group. Groups: "
-                                      + ", ".join(live_tools.GROUPS) + "."}}
+                                      + ", ".join(known) + "."}}
         live_tools.activate(asked)
-        names = [t for g in asked for t in live_tools.GROUPS[g][1]]
+        names = [t for g in asked for t in known[g][1]]
         return {"type": atype, "ok": True, "internal": True, "speak": "",
                 "message": "Loaded tools: " + ", ".join(asked),
                 "feed_to_model": {"name": "tools loaded", "content":
                                   "Now available: " + ", ".join(names)
                                   + ". Call the one the request needs."}}
+    elif atype == "mcp":
+        import mcp_client
+        return mcp_client.run(spec)
     elif atype == "read_skill":
         import skill_files
         ok, text = skill_files.read(spec.get("name") or target)
