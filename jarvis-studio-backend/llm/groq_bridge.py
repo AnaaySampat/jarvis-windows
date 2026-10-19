@@ -307,8 +307,8 @@ ACTION_CATALOG = (
     '{"type":"open_file","target":"qr_1234.png"} · {"type":"generate_image","prompt":"..."}\n'
     '{"type":"silence","seconds":60} · {"type":"sleep_mode"}\n'
     '{"type":"remember","text":"the user\'s sister is Mia"} · {"type":"forget","text":"sister|everything"}\n'
-    '{"type":"clipboard"} · {"type":"routine","do":"add|list|remove","time":"08:00",'
-    '"days":"weekdays","prompt":"...","match":"..."}\n'
+    '{"type":"clipboard"} · {"type":"routine","do":"add|run|list|remove","name":"movie night",'
+    '"time":"08:00","days":"weekdays","prompt":"..."}\n'
     '{"type":"browser_task","goal":"open youtube and play lofi"}  — sole web action for that job\n'
     '{"type":"computer_task","goal":"in Notepad, type a packing list"}\n'
     '{"type":"browser","do":"open|search|scroll|back|read|close","url":"...","query":"...","site":"youtube","amount":600}\n'
@@ -1252,9 +1252,10 @@ def route_wait_s(model: str = "") -> float:
 
 
 async def _walk_routes(text: str = "", pinned: str = "", task_tier: str = "",
-                       skip: "set[str] | None" = None):
+                       skip: "set[str] | None" = None, slow_last: bool = False):
     """Yield routes to try, best first, skipping models in ``skip`` (the caller adds
-    a model whose failure was model-level).
+    a model whose failure was model-level). ``slow_last`` puts models slow to start
+    a chat reply lately behind the rest (fast_first).
 
     A per-minute limit benches its route for seconds, so when every route is out
     only BRIEFLY the right answer is one short wait — not "I've used up the free
@@ -1263,7 +1264,9 @@ async def _walk_routes(text: str = "", pinned: str = "", task_tier: str = "",
     """
     skip = set() if skip is None else skip
     for attempt in range(2):
-        for route in fast_first(usable_routes(text, pinned, task_tier)):
+        routes = usable_routes(text, pinned, task_tier)
+        # Chat only: the autopilot orders its lanes by its own latency (quota).
+        for route in (fast_first(routes) if slow_last else routes):
             if route.model not in skip:
                 yield route
         if attempt:
@@ -3082,7 +3085,8 @@ async def stream_prompt(text: str, record_history: bool = True, slim: bool = Fal
     full = ""
     skip_models: "set[str]" = set()
     rejected = ""        # the last model-level 400, if that's why nothing answered
-    async for route in _walk_routes(text, task_tier=task_tier, skip=skip_models):
+    async for route in _walk_routes(text, task_tier=task_tier, skip=skip_models,
+                                    slow_last=True):
         # Attach the tool palette on every turn that ISN'T a trivial greeting. We
         # do NOT gate this on the narrow action-keyword heuristic: the native
         # persona always tells the model to "call the matching function", so if a

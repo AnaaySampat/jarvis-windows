@@ -2,7 +2,7 @@
 
 ## 0. 2026-10-19 catch-up with the phone — built, unit-tested, not yet run live
 
-Baseline after it: `python -m unittest` → **352** (one Windows-only path test can only
+Baseline after it: `python -m unittest` → **353** (one Windows-only path test can only
 pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (unchanged).
 
 - [ ] **Wake word keeps the first words.** Run `python start.py` and say "Hey Jarvis,

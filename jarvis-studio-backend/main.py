@@ -1920,7 +1920,8 @@ async def _handle_image_gen(result: dict) -> None:
         await _tts.speak(msg)
 
 
-async def _run_autopilot_task(result: dict, *, speak: bool = True) -> str:
+async def _run_autopilot_task(result: dict, *, speak: bool = True,
+                              repeat_guard: bool = True) -> str:
     """Run one deferred autopilot goal (browser_task / computer_task) and report
     ONCE at the end — this is the cure for "JARVIS reads out the button numbers":
     every internal step (observe → decide → click/type) is silent; the HUD shows a
@@ -1928,12 +1929,14 @@ async def _run_autopilot_task(result: dict, *, speak: bool = True) -> str:
 
     Returns the final outcome line (the voice path hands it to the Live model as
     the tool response instead of speaking it itself — pass ``speak=False`` there).
+    ``repeat_guard`` refuses a task of a kind that already acted and failed during
+    this chat request (_acted_and_failed).
     """
     kind = result.get("kind") or \
         ("computer" if str(result.get("type", "")).startswith(("computer", "desktop"))
          else "browser")
     goal = str(result.get("goal") or "").strip()
-    if kind in _acted_and_failed:
+    if repeat_guard and kind in _acted_and_failed:
         # A task that already acted and then failed this request must not run again
         # under a reworded goal: it could repeat what it did (the phone took 4 + 4
         # photos this way, 2026-10-19). The user decides whether to try again.
@@ -2377,7 +2380,9 @@ async def _execute_voice_tool(call: dict) -> dict:
     # model gets ONLY the outcome line back — never step logs or element lists —
     # and speaks its own confirmation, so we pass speak=False.
     if res.get("needs_autopilot"):
-        final = await _run_autopilot_task(res, speak=False)
+        # Live voice is a conversation: "try again" from the user can't be told apart
+        # from a model retry there, so the one-retry guard is the chat pipeline's only.
+        final = await _run_autopilot_task(res, speak=False, repeat_guard=False)
         return respond({"result": final})
 
     # set_location → pin/clear the user's location, then let the voice model relay.
