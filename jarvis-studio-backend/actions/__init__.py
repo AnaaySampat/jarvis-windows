@@ -621,6 +621,10 @@ def _run_one(spec: dict) -> dict:
                 **({"image": data_url} if data_url else {})}
     elif atype in ("screenshot", "screen_capture"):
         ok, msg = skills.screenshot()
+        saved = re.search(r"saved to (.+?)\.?$", msg or "") if ok else None
+        if saved:       # the file itself, so a WhatsApp turn can send the picture
+            return {"type": "screenshot", "target": target, "ok": ok, "message": msg,
+                    "file": saved.group(1)}
     elif atype in ("see_screen", "look_at_screen", "analyze_screen", "screen_vision", "what_is_on_screen"):
         # Deferred: main.py captures the screen and asks the vision model (async).
         return {"type": "see_screen", "needs_vision": True, "ok": None,
@@ -706,12 +710,25 @@ def _run_one(spec: dict) -> dict:
             ok, msg = _routines.add_routine(
                 spec.get("time"),
                 spec.get("prompt") or spec.get("task") or spec.get("text"),
-                spec.get("days") or spec.get("day") or "daily")
+                spec.get("days") or spec.get("day") or "daily",
+                spec.get("name") or "")
+        elif do in ("run", "start", "do"):
+            # The steps go back to the model, which does them with its tools in this
+            # same turn: a routine is text, never a second way to execute anything.
+            r, why = _routines.find(spec.get("name") or spec.get("match") or spec.get("prompt"))
+            if r is None:
+                return {"type": "routine", "do": do, "ok": False, "message": why}
+            from llm import live_tools
+            live_tools.activate(live_tools.groups_for(r.get("prompt") or ""))
+            return {"type": "routine", "do": do, "ok": True,
+                    "message": f"Running “{_routines._name(r)}”.", "speak": "",
+                    "feed_to_model": {"name": "routine", "content": _routines.run_turn(r)}}
         elif do in ("list", "get", "show", ""):
             ok, msg = True, _routines.list_text()
         elif do in ("remove", "delete", "cancel"):
             ok, msg = _routines.remove_routine(
-                spec.get("match") or spec.get("query") or spec.get("time") or spec.get("prompt"))
+                spec.get("name") or spec.get("match") or spec.get("query") or spec.get("time")
+                or spec.get("prompt"))
         elif do in ("clear", "clear_all", "remove_all"):
             ok, msg = _routines.clear_routines()
         else:
@@ -919,6 +936,30 @@ def _run_one(spec: dict) -> dict:
         # `do` is returned so main.py can forward it to the frontend as a ui_action.
         return {"type": "ui", "do": do, "target": do, "ok": True,
                 "message": labels.get(do, "Done.")}
+
+    # ── The model's own plumbing (never shown as a card or spoken) ────────────
+    elif atype == "load_tools":
+        from llm import live_tools
+        asked = [g for g in spec.get("groups") or [] if g in live_tools.GROUPS]
+        if not asked:
+            return {"type": atype, "ok": False, "internal": True, "speak": "",
+                    "message": "No such tool group.",
+                    "feed_to_model": {"name": "load_tools", "content":
+                                      "No such group. Groups: "
+                                      + ", ".join(live_tools.GROUPS) + "."}}
+        live_tools.activate(asked)
+        names = [t for g in asked for t in live_tools.GROUPS[g][1]]
+        return {"type": atype, "ok": True, "internal": True, "speak": "",
+                "message": "Loaded tools: " + ", ".join(asked),
+                "feed_to_model": {"name": "tools loaded", "content":
+                                  "Now available: " + ", ".join(names)
+                                  + ". Call the one the request needs."}}
+    elif atype == "read_skill":
+        import skill_files
+        ok, text = skill_files.read(spec.get("name") or target)
+        return {"type": atype, "ok": ok, "internal": True, "speak": "",
+                "message": text.splitlines()[0][:120],
+                "feed_to_model": {"name": "skill", "content": text}}
 
     else:
         ok, msg = False, f"Unknown action type '{atype}'."

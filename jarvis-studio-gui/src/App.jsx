@@ -55,11 +55,11 @@ export default function App() {
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     overlay, agentTasks, conversations, setupProgress,
-    devicePairing, devices, tvState,
+    devicePairing, devices, tvState, waState,
     createPairing, listDevices, revokeDevice,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand,
     resetConversation, newConversation, openConversation, deleteConversation, listConversations, clearConversations,
-    memory, listMemory, rememberFact, forgetMemory,
+    memory, listMemory, rememberFact, forgetMemory, saveRoutine, runRoutine, routineResult,
     sendOcr, sendLocation, sendManualLocation, triggerListen, stopSpeech,
     stopControl, finishListen, pttStart,
     respondPermission, respondClarify, setMute, runAction, setBrowserOpen, sendUpload,
@@ -274,6 +274,7 @@ export default function App() {
           powerOpen={powerOpen} setPowerOpen={setPowerOpen}
           memoryOpen={memoryOpen} setMemoryOpen={setMemoryOpen}
           memory={memory} onRemember={rememberFact} onForget={forgetMemory}
+          onSaveRoutine={saveRoutine} onRunRoutine={runRoutine} routineResult={routineResult}
           onSend={sendMessage}
           onStop={stopSpeech}
           onCommand={sendCommand}
@@ -392,7 +393,12 @@ export default function App() {
         <div className="hud-warns">
           {warnings.map((w) => (
             <div key={w.id} className="hud-warn">
-              <span>⚠ {w.text}</span>
+              <span>{w.link ? "⬆" : "⚠"} {w.text}</span>
+              {w.link && (
+                <button onClick={() => { runAction({ type: "open_url", url: w.link }); dismissWarning(w.id); }}>
+                  Get it
+                </button>
+              )}
               <button onClick={() => dismissWarning(w.id)}>✕</button>
             </div>
           ))}
@@ -415,6 +421,7 @@ export default function App() {
           onListDevices={listDevices}
           onRevokeDevice={revokeDevice}
           tvState={tvState}
+          waState={waState}
           onTv={(type, data) => wsSend({ type, data })}
         />
       )}

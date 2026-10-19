@@ -8,6 +8,8 @@ import os
 import numpy as np
 import pyaudio
 
+from wake_word.capture import CommandCapture, NoiseFloor, PreRoll
+
 # --- CONFIGURATION ---
 # Optional custom-trained "Hey Jarvis" model. If this file is present we use it;
 # otherwise we transparently fall back to openWakeWord's bundled "hey_jarvis"
@@ -69,6 +71,9 @@ class CustomInference:
         prob = 1 / (1 + np.exp(-logit))  # Sigmoid
         return float(prob[0][0])
 
+    def reset(self) -> None:
+        self.audio_buffer.clear()
+
 
 # --- BUILT-IN openWakeWord WRAPPER (pretrained "hey_jarvis") ---
 class BuiltinInference:
@@ -91,6 +96,11 @@ class BuiltinInference:
         # openWakeWord handles featurization internally; feed raw int16 frames.
         scores = self._model.predict(audio_data)
         return float(scores.get(self.key, 0.0))
+
+    def reset(self) -> None:
+        reset = getattr(self._model, "reset", None)
+        if reset:
+            reset()
 
 
 def _build_recognizer():
@@ -118,11 +128,21 @@ from wake_word.base import WakeWordDetector
 class OpenWakeWordDetector(WakeWordDetector):  # Keeps name for compatibility
     def __init__(self) -> None:
         self._callback: Optional[Callable[[], None]] = None
+        self._on_command: "Optional[Callable[[np.ndarray, bool], None]]" = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        # Record the command from this stream after a wake (wake_word/capture.py).
+        # main turns it off while the Gemini Live voice mode owns the mic.
+        self.capture_commands = os.environ.get("JARVIS_WAKE_CAPTURE", "1") != "0"
 
     def on_detected(self, callback: Callable[[], None]) -> None:
         self._callback = callback
+
+    def on_command(self, callback: "Callable[[np.ndarray, bool], None]") -> None:
+        """`callback(clip, speech)` once the command after a wake has been recorded:
+        the 3 s before the wake + the command, and whether anything after the wake
+        sounded like speech. Called on the detector thread."""
+        self._on_command = callback
 
     def start(self) -> None:
         if self._running:
@@ -174,17 +194,40 @@ class OpenWakeWordDetector(WakeWordDetector):  # Keeps name for compatibility
         print(f"[Jarvis] Listening with wake word: {model.key}...", flush=True)
 
         last_trigger = 0.0
+        pre, room, capture = PreRoll(), NoiseFloor(), None
         try:
             while self._running:
                 raw = stream.read(_CHUNK, exception_on_overflow=False)
                 audio = np.frombuffer(raw, dtype=np.int16)
 
+                if capture is not None:
+                    if capture.add(audio, room.loud(audio)):
+                        clip, speech = capture.audio(), capture.speech
+                        capture = None
+                        room.release()
+                        # The model missed the command's audio: start it clean, and
+                        # count the cooldown from the end of the command.
+                        reset = getattr(model, "reset", None)
+                        if reset:
+                            reset()
+                        last_trigger = time.time()
+                        print(f"[Jarvis] Command recorded ({len(clip) / _SAMPLE_RATE:.1f}s, "
+                              f"speech={speech}, room={room.floor:.4f})", flush=True)
+                        if self._on_command:
+                            self._on_command(clip, speech)
+                    continue
+
+                pre.write(audio)
+                room.loud(audio)            # keeps the room level current
                 score = model.predict(audio)
 
                 now = time.time()
                 if score >= _THRESHOLD and now - last_trigger > _COOLDOWN and self._callback:
                     last_trigger = now
                     print(f"[Jarvis] Detected! (Score: {score:.2f})")
+                    if self.capture_commands and self._on_command:
+                        room.hold()
+                        capture = CommandCapture(pre.snapshot())
                     self._callback()
         finally:
             self._running = False

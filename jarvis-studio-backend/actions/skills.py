@@ -82,18 +82,26 @@ def _http_get(url: str, timeout: float = 8.0) -> str:
 
 _muted_until: float = 0.0          # epoch seconds; TTS stays muted until then
 _mute_toggle: bool = False         # persistent mute switch (UI toggle); text still shows
+_quiet: bool = False               # a turn answered elsewhere (WhatsApp): no voice on the PC
 _sleeping: bool = False            # True → pipeline ignores everything but "wake up"
 
 
 def is_muted() -> bool:
     """True when speech should be suppressed — either the persistent mute toggle
     is on, or a timed 'be quiet for N seconds' window is still active."""
-    return _mute_toggle or time.monotonic() < _muted_until
+    return _mute_toggle or _quiet or time.monotonic() < _muted_until
 
 
 def is_mute_toggled() -> bool:
     """The persistent mute switch alone (for syncing the UI toggle state)."""
     return _mute_toggle
+
+
+def set_quiet(on: bool) -> None:
+    """Silence the PC's voice for a turn whose reply goes somewhere else (WhatsApp).
+    Not the mute switch: the HUD's toggle doesn't change."""
+    global _quiet
+    _quiet = bool(on)
 
 
 def set_mute(on: bool) -> bool:

@@ -265,13 +265,14 @@ def _to_wav_bytes(audio_i16: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
-def _do_transcribe(audio_i16: np.ndarray) -> str:
+def _do_transcribe(audio_i16: np.ndarray, prompt: str = "") -> str:
     """Local (offline) transcription with faster-whisper."""
     if audio_i16.size == 0:
         return ""
     model = _get_model()
     audio = audio_i16.astype(np.float32) / 32768.0
-    segments, _ = model.transcribe(audio, language="en", beam_size=1)
+    segments, _ = model.transcribe(audio, language="en", beam_size=1,
+                                   initial_prompt=prompt or None)
     return " ".join(s.text.strip() for s in segments).strip()
 
 
@@ -312,3 +313,39 @@ async def transcribe() -> str:
             print("[Whisper] Groq transcription returned empty; falling back to local model.", flush=True)
 
     return await loop.run_in_executor(None, _do_transcribe, audio)
+
+
+async def transcribe_voice_note(data: bytes) -> str:
+    """A WhatsApp voice note (Ogg/Opus) → text: Groq first, else the local model,
+    which decodes the file itself (PyAV)."""
+    if not data:
+        return ""
+    from llm.groq_bridge import get_stt, transcribe_audio
+    if _stt_mode == "groq" and get_stt() == "groq":
+        text = await transcribe_audio(data, prompt="Jarvis", filename="voice.ogg")
+        if text is not None:
+            return text
+
+    def _local() -> str:
+        segments, _ = _get_model().transcribe(io.BytesIO(data), language="en", beam_size=1,
+                                              initial_prompt="Jarvis")
+        return " ".join(s.text.strip() for s in segments).strip()
+
+    return await asyncio.get_running_loop().run_in_executor(None, _local)
+
+
+async def transcribe_clip(audio: np.ndarray) -> str:
+    """Transcribe a clip the wake detector recorded (the 3 s before "Hey Jarvis" plus
+    the command). The hint is the name alone, never "Hey Jarvis": Whisper can echo
+    its prompt, and an echoed greeting would pass the wake check by itself."""
+    if audio.size == 0:
+        return ""
+    print(f"[Whisper] Wake clip of {audio.size / SAMPLE_RATE:.1f}s; transcribing…", flush=True)
+    from llm.groq_bridge import get_stt, transcribe_audio
+    if _stt_mode == "groq" and get_stt() == "groq":
+        text = await transcribe_audio(_to_wav_bytes(audio), prompt="Jarvis")
+        if text is not None:
+            return text
+        print("[Whisper] Groq transcription failed; falling back to local model.", flush=True)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _do_transcribe, audio, "Jarvis")

@@ -75,9 +75,11 @@ export function useWebSocket() {
   const [agentTasks, setAgentTasks] = useState([]); // autopilot activity feed: steps + screenshots per task
   const [conversations, setConversations] = useState([]); // saved-chat "Recents" metadata [{id,title,ts,count}]
   const [memory, setMemory] = useState(null);             // Memory view snapshot {facts, playbooks, learned, conversations, current, location}
+  const [routineResult, setRoutineResult] = useState(null);  // last Memory ▸ Routines save {ok, message}
   const [devicePairing, setDevicePairing] = useState(null); // active QR pairing payload {ok,payload,pin,host,...}
   const [devices, setDevices] = useState([]);              // paired-phone roster
-  const [tvState, setTvState] = useState(null);            // {config:{host,model}|null, result:{ok,summary}|null}
+  const [tvState, setTvState] = useState(null);
+  const [waState, setWaState] = useState(null);            // WhatsApp channel {status, qr, number, error, enabled, allow}            // {config:{host,model}|null, result:{ok,summary}|null}
 
   const wsRef      = useRef(null);
   const wsUrlRef   = useRef(null);
@@ -94,6 +96,15 @@ export function useWebSocket() {
         if (wsRef.current !== ws) return;
         setIsConnected(true);
         clearTimeout(retryTimer.current);
+        // The backend checks GitHub for a newer release (once a day) against this.
+        import("@tauri-apps/api/app")
+          .then(({ getVersion }) => getVersion())
+          .then((version) => {
+            if (wsRef.current === ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "app_version", data: { version } }));
+            }
+          })
+          .catch(() => {});        // not inside Tauri (Vite preview): no version, no check
       };
 
       ws.onmessage = (ev) => {
@@ -140,6 +151,9 @@ export function useWebSocket() {
             break;
           case "memory":
             setMemory(msg.data || null);
+            break;
+          case "routine_saved":
+            setRoutineResult({ ...(msg.data || {}) });    // a new object each time
             break;
           case "conversation_loaded":
             // Reopened an archived chat — replace the visible log unconditionally
@@ -199,6 +213,12 @@ export function useWebSocket() {
             break;
           case "warning":
             setWarnings(prev => [...prev, { text: msg.data, id: Date.now() + Math.random() }]);
+            break;
+          case "update_available":
+            setWarnings(prev => [...prev, {
+              text: `JARVIS ${msg.data?.version} is available.`,
+              link: msg.data?.url, id: Date.now() + Math.random(),
+            }]);
             break;
           case "sysinfo":
           case "config":
@@ -272,6 +292,9 @@ export function useWebSocket() {
             break;
           case "tv.state":
             setTvState(msg.data || null);
+            break;
+          case "whatsapp.state":
+            setWaState(msg.data || null);
             break;
           // ── Agent Activity feed (autopilot steps + page screenshots) ──────
           case "agent_task": {
@@ -506,6 +529,8 @@ export function useWebSocket() {
   const listMemory = useCallback(() => wsSend({ type: "memory_list" }), [wsSend]);
   const rememberFact = useCallback((text) => wsSend({ type: "memory_remember", data: { text } }), [wsSend]);
   const forgetMemory = useCallback((kind, id) => wsSend({ type: "memory_forget", data: { kind, id } }), [wsSend]);
+  const saveRoutine = useCallback((r) => wsSend({ type: "routine_save", data: r }), [wsSend]);
+  const runRoutine = useCallback((id) => wsSend({ type: "routine_run", data: { id } }), [wsSend]);
 
   // Approve/Deny a gated dangerous action.
   const respondPermission = useCallback((id, approved) => {
@@ -624,12 +649,12 @@ export function useWebSocket() {
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     activeApp, overlay, agentTasks, conversations, setupProgress,
-    devicePairing, devices, tvState,
+    devicePairing, devices, tvState, waState,
     createPairing, listDevices, revokeDevice,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand, triggerListen, stopSpeech,
     stopControl, pauseControl, sendCorrection, finishListen, pttStart,
     resetConversation, newConversation, openConversation, deleteConversation, listConversations, clearConversations,
-    memory, listMemory, rememberFact, forgetMemory,
+    memory, listMemory, rememberFact, forgetMemory, saveRoutine, runRoutine, routineResult,
     sendOcr, sendLocation, sendManualLocation, respondPermission, respondClarify, setMute, runAction,
     setBrowserOpen, sendUpload, sendScreen, setAlwaysOnMode, setConversationModeOn,
     setOverlay, wsSend,

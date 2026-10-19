@@ -7,6 +7,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
 } from "recharts";
+import { inlineMarkdownSegments, splitMarkdownTables } from "../utils/markdown";
 
 const COLORS = ["#8b5cf6", "#3b82f6", "#06b6d4", "#10b981", "#f59e0b", "#ef4444", "#ec4899"];
 const TOOLTIP_STYLE = { background: "#171723", border: "1px solid #2d2d3d", borderRadius: 10, fontSize: 12 };
@@ -328,6 +329,34 @@ function ActionCard({ results, runAction }) {
   );
 }
 
+/* ── Plain text: **bold** and pipe tables ─────────────────────────────────── */
+function InlineText({ text }) {
+  return inlineMarkdownSegments(text).map((s, i) =>
+    s.kind === "text" ? s.content
+      : s.kind === "bold" ? <strong key={i}>{s.content}</strong>
+      : <strong key={i}><em>{s.content}</em></strong>);
+}
+
+function TextBlock({ content }) {
+  return splitMarkdownTables(content).map((b, i) =>
+    b.kind === "text" ? (
+      <p key={i} className="chat-text"><InlineText text={b.content} /></p>
+    ) : (
+      <div key={i} className="card table-block">
+        <div className="table-scroll">
+          <table className="jarvis-table">
+            <thead><tr>{b.header.map((c, j) => <th key={j}><InlineText text={c} /></th>)}</tr></thead>
+            <tbody>
+              {b.rows.map((row, r) => (
+                <tr key={r}>{row.map((c, j) => <td key={j}><InlineText text={c} /></td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    ));
+}
+
 /* ── Segment parser ───────────────────────────────────────────────────────── */
 function parseSegments(text) {
   const segments = [];
@@ -366,7 +395,7 @@ export default function ResponseRenderer({ text, actions, runAction }) {
       {segments.map((seg, i) => {
         const Block = BLOCKS[seg.kind];
         if (Block) return <Block key={i} tagHead={seg.tagHead} body={seg.content} />;
-        return <p key={i} className="chat-text">{seg.content}</p>;
+        return <TextBlock key={i} content={seg.content} />;
       })}
       {actions?.length > 0 && <ActionCard results={actions} runAction={runAction} />}
     </div>

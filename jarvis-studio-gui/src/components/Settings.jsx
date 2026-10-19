@@ -162,6 +162,90 @@ function RemotePairingSection({ devicePairing, devices, onCreatePairing,
   );
 }
 
+// WhatsApp channel (backend whatsapp_channel.py): JARVIS as a linked device of the user's
+// WhatsApp, by QR. Commands come from the account's own "Message yourself" chat (starting
+// with "Jarvis") or from numbers listed here; replies and approvals go back there.
+const WA_STATUS = {
+  off: "Off",
+  connecting: "Connecting…",
+  linking: "Scan the code to link",
+  connected: "Linked",
+  logged_out: "Unlinked from the phone",
+  error: "Not connected",
+};
+
+function WhatsAppSection({ waState, onWhatsApp }) {
+  const st = waState || { status: "off", enabled: false, allow: [] };
+  const [allow, setAllow] = useState(null);            // null = show the saved list
+  const allowText = allow ?? (st.allow || []).map((n) => `+${n}`).join(", ");
+  // The drawn code, kept with the text it encodes: a stale image never shows.
+  const [drawn, setDrawn] = useState({ code: "", url: "" });
+  const qr = st.qr && drawn.code === st.qr ? drawn.url : "";
+  useEffect(() => { onWhatsApp && onWhatsApp("whatsapp.state"); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    let dead = false;
+    if (st.qr) {
+      QRCode.toDataURL(st.qr, { margin: 2, width: 640, errorCorrectionLevel: "L" })
+        .then((url) => { if (!dead) setDrawn({ code: st.qr, url }); })
+        .catch(() => {});
+    }
+    return () => { dead = true; };
+  }, [st.qr]);
+  const set = (patch) => onWhatsApp && onWhatsApp("whatsapp.set", patch);
+
+  return (
+    <div className="settings-sec">
+      <label>WhatsApp</label>
+      <div className="settings-hint">
+        Message JARVIS from anywhere. Link it like WhatsApp Web, then write to yourself in
+        WhatsApp&apos;s <b>Message yourself</b> chat, starting with its name: “Jarvis, what&apos;s on my
+        agenda?”, “Jarvis, send me a screenshot”. Voice notes work too. Replies come back in that
+        chat and the PC stays quiet; anything that needs your approval asks you there (reply
+        yes or no). Notes to yourself that don&apos;t start with “Jarvis” are left alone.
+      </div>
+      <div className="settings-warn" style={{ marginTop: 6 }}>
+        This uses an unofficial WhatsApp client (the WhatsApp Web protocol). It isn&apos;t covered
+        by WhatsApp&apos;s terms, and WhatsApp can restrict accounts that use one. Linking a second
+        number for JARVIS is the cautious option.
+      </div>
+      <label className="settings-check" style={{ marginTop: 8 }}>
+        <input type="checkbox" className="sw" checked={!!st.enabled}
+               onChange={(e) => set({ enabled: e.target.checked })} />
+        <span>Use WhatsApp · <b>{WA_STATUS[st.status] || st.status}</b>
+          {st.status === "connected" && st.number ? ` as +${st.number}` : ""}</span>
+      </label>
+      {st.error && <div className="settings-warn" style={{ marginTop: 6 }}>{st.error}</div>}
+      {qr && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10, alignItems: "center" }}>
+          <img src={qr} alt="WhatsApp link QR code"
+               style={{ width: "100%", maxWidth: 300, aspectRatio: "1 / 1", borderRadius: 8,
+                        background: "#fff", padding: 10 }} />
+          <div className="settings-hint" style={{ margin: 0, textAlign: "center" }}>
+            On your phone: WhatsApp → Settings → Linked devices → Link a device, then scan this.
+            The code refreshes every few seconds.
+          </div>
+        </div>
+      )}
+      <div className="settings-hint" style={{ marginTop: 10 }}>
+        Other numbers that may command JARVIS (optional, e.g. your own number if JARVIS is
+        linked to a second one). Everyone else, and every group, is ignored.
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        <input type="text" placeholder="+91 98765 43210, …" value={allowText}
+               onChange={(e) => setAllow(e.target.value)} />
+        <button className="dirlist-addbtn" disabled={allow === null}
+                onClick={() => { set({ allow: allowText }); setAllow(null); }}>Save</button>
+      </div>
+      {(st.status === "connected" || st.number) && (
+        <button className="dir-rm" style={{ marginTop: 8 }}
+                onClick={() => onWhatsApp && onWhatsApp("whatsapp.unlink")}>
+          Unlink and forget this WhatsApp
+        </button>
+      )}
+    </div>
+  );
+}
+
 // The user's Android TV — network ADB from this PC (backend actions/tv.py); nothing is
 // installed on the TV. Saved only once the TV answers, i.e. after the user accepts
 // "Allow USB debugging?" on it.
@@ -184,8 +268,14 @@ function TvSection({ tvState, onTv }) {
         Developer options → <b>USB debugging</b>. Enter the TV&apos;s IP (Settings → Network)
         and Connect.
       </div>
+      <div className="settings-hint">
+        More than one router at home? A second router in router mode gives its Wi-Fi its own
+        network, and the TV can&apos;t be reached across it. Set that router to <b>Access
+        Point</b> mode, or install Tailscale on the TV and add its 100.x address after a comma
+        (192.168.1.50, 100.64.1.2): JARVIS uses whichever answers.
+      </div>
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <input type="text" placeholder="192.168.1.50" value={host}
+        <input type="text" placeholder="192.168.1.50 (, Tailscale address)" value={host}
           onChange={(e) => setHost(e.target.value.trim())} />
         <button className="dirlist-addbtn" disabled={busy || !host}
           onClick={() => { setSentWith(tvState); onTv && onTv("tv.pair", { host }); }}>
@@ -341,6 +431,9 @@ const SERVICE_KEYS = [
     ph: "for premium TTS", where: "elevenlabs.io" },
   { id: "maps", name: "Google Maps", key: "google_maps_key", has: "has_google_maps_key",
     ph: "AIza… — accurate places & distances", where: "console.cloud.google.com" },
+  { id: "tavily", name: "Tavily (web search backup)", key: "tavily_api_key", has: "has_tavily_key",
+    multi: true, ph: "tvly-…", where: "app.tavily.com",
+    note: "Answers web searches only when Gemini can't: no Gemini key, or its search quota is spent." },
 ];
 const ALL_KEYS = [...LLM_PROVIDERS, ...SERVICE_KEYS];
 
@@ -390,19 +483,19 @@ function KeyCard({ p, sysInfo, value, onChange, onSave }) {
 // finds pairing, etc.
 const SECTIONS = [
   { id: "ai", label: "Intelligence", icon: "◈", words: "provider model llm vertex gemini offline ollama auto image" },
-  { id: "keys", label: "API Keys", icon: "⚿", words: "api keys groq gemini nvidia openrouter mistral claude anthropic openai gpt grok xai meta llama elevenlabs maps credentials" },
+  { id: "keys", label: "API Keys", icon: "⚿", words: "api keys groq gemini nvidia openrouter mistral claude anthropic openai gpt grok xai meta llama elevenlabs maps tavily web search credentials" },
   { id: "routing", label: "Routing & Quota", icon: "⇄", words: "smart routing rank tiers quota rate limit benched free" },
   { id: "voice", label: "Voice", icon: "◉", words: "voice speech tts piper elevenlabs chirp wake word alerts" },
   { id: "autopilot", label: "Autopilot", icon: "⌖", words: "autopilot browser desktop operator reasoning vision screenshot" },
   { id: "interface", label: "Interface", icon: "▣", words: "overlay pill floating interface apps hide" },
   { id: "files", label: "Files & Location", icon: "⌂", words: "storage folder directories files read location weather pin" },
-  { id: "devices", label: "Devices", icon: "⌁", words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix" },
+  { id: "devices", label: "Devices", icon: "⌁", words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix whatsapp message chat" },
   { id: "system", label: "System", icon: "⚙", words: "system ram resources repair components" },
 ];
 let lastSection = "ai";   // reopen where the user left off (per app session)
 
 export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocation, onRefreshModels, onRerankModels, onRepairSetup,
-  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv }) {
+  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState }) {
   // Re-discover models when the panel opens so the dropdown is current (e.g. a
   // local Ollama model pulled since launch, or a key just added in another client).
   // Cheap — the backend skips the network when credentials are unchanged.
@@ -433,6 +526,12 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   const [storageDir, setStorageDir] = useState(sysInfo.storage_dir ?? "");
   const [keys, setKeys] = useState({});   // key name -> text typed this session
   const [sysAlerts, setSysAlerts] = useState(!!sysInfo.system_alerts);
+  const [hb, setHb] = useState({
+    enabled: !!sysInfo.heartbeat?.enabled,
+    every_min: sysInfo.heartbeat?.every_min ?? 30,
+    start: sysInfo.heartbeat?.start ?? "08:00",
+    end: sysInfo.heartbeat?.end ?? "22:00",
+  });
   const [autopilotModel, setAutopilotModel] = useState(sysInfo.autopilot_model ?? "");
   const [autopilotThinking, setAutopilotThinking] = useState(
     (sysInfo.autopilot_thinking ?? -1) === 0 ? "off" : "dynamic");
@@ -463,7 +562,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   const removeDir = (d) => setDirs(dirs.filter((x) => x !== d));
 
   const cfg = {
-    model_override: model, tts, allowed_dirs: dirs, system_alerts: sysAlerts,
+    model_override: model, tts, allowed_dirs: dirs, system_alerts: sysAlerts, heartbeat: hb,
     overlay: { enabled: ovlEnabled, mode: ovlMode, apps: ovlApps },
     autopilot_model: autopilotModel.trim(),
     autopilot_thinking: autopilotThinking === "off" ? 0 : -1,
@@ -720,6 +819,39 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                   is maxed out or the battery is low. Agenda reminders and timers are unaffected.
                 </div>
               </div>
+
+              <div className="settings-sec">
+                <label>Heartbeat</label>
+                <label className="settings-check">
+                  <input type="checkbox" className="sw" checked={hb.enabled}
+                         onChange={(e) => setHb({ ...hb, enabled: e.target.checked })} />
+                  <span>Check in on my own, from a checklist you write</span>
+                </label>
+                <div className="settings-hint">
+                  Every so often JARVIS reads your checklist (HEARTBEAT.md) against what the HUD
+                  knows — the time, agenda, battery, CPU, weather — and speaks only when something
+                  on it needs you: “tell me 10 minutes before a meeting”, “say if the battery is low
+                  and unplugged”. It can only speak, never act. Each check is one call from your
+                  model quota; an empty checklist costs nothing.
+                  {sysInfo.heartbeat?.enabled && !sysInfo.heartbeat?.has_items &&
+                    " Your checklist is empty, so nothing runs yet."}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <select value={hb.every_min} disabled={!hb.enabled}
+                          onChange={(e) => setHb({ ...hb, every_min: Number(e.target.value) })}>
+                    {[15, 30, 60, 120].map((m) => <option key={m} value={m}>Every {m} minutes</option>)}
+                  </select>
+                  <span className="settings-hint">between</span>
+                  <input type="time" value={hb.start} disabled={!hb.enabled}
+                         onChange={(e) => setHb({ ...hb, start: e.target.value })} />
+                  <span className="settings-hint">and</span>
+                  <input type="time" value={hb.end} disabled={!hb.enabled}
+                         onChange={(e) => setHb({ ...hb, end: e.target.value })} />
+                  <button className="dirlist-addbtn" onClick={() => onSave({ heartbeat_open: true })}>
+                    Edit checklist
+                  </button>
+                </div>
+              </div>
             </>)}
 
             {current.id === "autopilot" && (
@@ -807,6 +939,22 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
               </div>
 
               <div className="settings-sec">
+                <label>Skill files</label>
+                <div className="settings-hint">
+                  Teach JARVIS a procedure by writing it down: a Markdown file in the{" "}
+                  <code>skills/</code> folder (OpenClaw-style <code>SKILL.md</code> folders work too),
+                  with a <code>name:</code> and <code>description:</code> at the top. JARVIS sees only
+                  the names and descriptions, and reads a skill in full when a request needs it, so
+                  long notes cost nothing until they&apos;re used.
+                  {sysInfo.skills_count ? ` ${sysInfo.skills_count} skill${sysInfo.skills_count === 1 ? "" : "s"} found.` : ""}
+                </div>
+                <button className="dirlist-addbtn" style={{ marginTop: 8 }}
+                        onClick={() => onSave({ skills_open: true })}>
+                  Open skills folder
+                </button>
+              </div>
+
+              <div className="settings-sec">
                 <label>Read-only Terminal — Allowed Directories</label>
                 <div className="settings-hint">
                   JARVIS may <strong>list</strong> these folders and <strong>read</strong> files inside them
@@ -867,6 +1015,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
               />
             )}
             {current.id === "devices" && <TvSection tvState={tvState} onTv={onTv} />}
+            {current.id === "devices" && <WhatsAppSection waState={waState} onWhatsApp={onTv} />}
 
             {current.id === "system" && (<>
               <div className="settings-sec">

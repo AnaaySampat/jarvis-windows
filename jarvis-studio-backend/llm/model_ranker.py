@@ -58,7 +58,24 @@ def load() -> "dict | None":
             _state = data if isinstance(data, dict) and data.get("models") else None
         except Exception:  # noqa: BLE001 — no/corrupt file = not ranked yet
             _state = None
+        if _state and _state.get("no_tools_v") != _NO_TOOLS_V:
+            _forget_no_tools(_state)
     return _state
+
+
+# Until 2026-10-19 any 400 that merely MENTIONED tools marked its model tool-less for
+# good (groq_bridge._rejects_tools). Marks from before then are dropped once; the
+# next ranking recomputes each model's tool support from its provider's listing.
+_NO_TOOLS_V = 2
+
+
+def _forget_no_tools(state: dict) -> None:
+    for m in state.get("models") or []:
+        if m.get("id") in (state.get("no_tools") or []):
+            m["tools"] = True
+    state["no_tools"] = []
+    state["no_tools_v"] = _NO_TOOLS_V
+    _save()
 
 
 def _save() -> None:
@@ -142,7 +159,8 @@ def store(rows: "list[dict]", estimated: dict, estimated_by: str = "",
     _state = {"ranked_at": time.time(), "models": rows, "estimates": estimated,
               "estimated_by": estimated_by or prev.get("estimated_by", ""),
               "estimate_failed_at": estimate_failed_at,
-              "no_tools": sorted(no_tools()), "catalog": catalog.SNAPSHOT}
+              "no_tools": sorted(no_tools()), "no_tools_v": _NO_TOOLS_V,
+              "catalog": catalog.SNAPSHOT}
     _save()
 
 

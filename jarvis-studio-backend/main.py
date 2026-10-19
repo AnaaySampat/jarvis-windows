@@ -20,6 +20,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 from server.websocket_server import (
+    add_tap, remove_tap,
     emit, send_to, start as start_websocket, register_handler, on_connect,
     on_disconnect, send_to_current, current_client_id,
     configure_device_identity, set_remote_allowed,
@@ -53,6 +54,7 @@ import routines
 import reminders
 import playbooks
 import places
+import whatsapp_channel
 # First-run asset provisioning is OPTIONAL. If the module is missing from a frozen
 # build, or fails to import for any reason, the backend MUST still start — the
 # assets then fall back to lazy download-on-first-use. Never let it brick startup.
@@ -119,7 +121,10 @@ def _setup_snapshot_for_replay():
         return None
     return {"stage": "snapshot", **snap}
 from wake_word.base import WakeWordDetector
-from transcription.whisper_transcriber import transcribe, preload as preload_whisper
+from transcription.whisper_transcriber import (
+    transcribe, transcribe_clip, transcribe_voice_note, preload as preload_whisper,
+)
+from wake_word.capture import command_after_wake, is_noise as is_noise_transcript
 from tts.tts_engine import TTSEngine
 import telemetry
 import weather as weather_mod
@@ -130,6 +135,10 @@ _WAKE_PHRASES = ("wake up", "wake", "jarvis wake", "are you there", "you awake")
 _tts: "TTSEngine | None" = None
 _trigger_listen: "asyncio.Event | None" = None
 _pipeline_lock: "asyncio.Lock | None" = None
+# The WhatsApp channel (whatsapp_channel.py), once enabled, and the chat a running
+# WhatsApp turn answers (None during any other turn).
+_wa: "whatsapp_channel.Channel | None" = None
+_wa_chat = None
 # Set while always-on continuous voice mode is enabled (no wake word needed).
 _always_on_event: "asyncio.Event | None" = None
 # Set by the Stop button: aborts the in-flight reply (stops generation, drops any
@@ -224,16 +233,38 @@ async def request_permission(kind: str, description: str, timeout: float = 120.0
     _pending_perms[req_id] = fut
     await emit("permission_request", {"id": req_id, "kind": kind, "description": description})
     print(f"[Permission] Awaiting approval: {description}", flush=True)
+    # A WhatsApp turn: nobody may be at the PC, so ask in the chat too. Either answer
+    # counts; the chat is the owner's own (whatsapp_channel.admit).
+    remote = _ask_whatsapp(
+        fut, f"Approve? I'd like to {_clean_desc(description)}. Reply *yes* or *no*.",
+        timeout, whatsapp_channel.is_yes)
     try:
         return bool(await asyncio.wait_for(fut, timeout))
     except asyncio.TimeoutError:
         print(f"[Permission] Timed out (denied): {description}", flush=True)
         return False
     finally:
+        if remote is not None:
+            remote.cancel()
         _pending_perms.pop(req_id, None)
         # The request is broadcast to every window (HUD + floating overlay);
         # answering in one must dismiss it everywhere, including on timeout.
         await emit("permission_request", None)
+
+
+def _ask_whatsapp(fut: "asyncio.Future", question: str, timeout: float, read,
+                  on_timeout: str = "No answer, so I've taken that as a no.") -> "asyncio.Task | None":
+    """During a WhatsApp turn, also put `question` to that chat; its answer, through
+    `read`, resolves `fut` unless the HUD answered first. None outside such a turn."""
+    chat = _wa_chat
+    if chat is None or _wa is None:
+        return None
+
+    async def ask() -> None:
+        answer = await _wa.ask(chat, question, timeout, on_timeout)
+        if answer is not None and not fut.done():
+            fut.set_result(read(answer))
+    return asyncio.create_task(ask())
 
 
 async def handle_permission_response(data) -> None:
@@ -262,12 +293,16 @@ async def request_clarification(question: str, timeout: float = 90.0) -> str:
     _pending_clarify[req_id] = fut
     await emit("clarify_request", {"id": req_id, "question": question})
     print(f"[Clarify] Awaiting answer: {question}", flush=True)
+    remote = _ask_whatsapp(fut, question, timeout, lambda answer: answer,
+                           "No answer, so I'll carry on without it.")
     try:
         return str(await asyncio.wait_for(fut, timeout) or "").strip()
     except asyncio.TimeoutError:
         print(f"[Clarify] Timed out (skipped): {question}", flush=True)
         return ""
     finally:
+        if remote is not None:
+            remote.cancel()
         _pending_clarify.pop(req_id, None)
         await emit("clarify_request", None)        # dismiss in every window
 
@@ -1423,6 +1458,11 @@ async def _drain_tts(queue: "asyncio.Queue") -> None:
 # NEXT action (e.g. browser list → click → list → …). Bounded so it always ends.
 _MAX_AGENTIC_STEPS = 6
 
+# Autopilot kinds ("browser", "computer", "tv") whose task acted and then failed during
+# the current request; _run_autopilot_task won't start another of that kind until the
+# next request.
+_acted_and_failed: "set[str]" = set()
+
 def _did_browser_mutation(results: "list[dict]") -> bool:
     """True if a step successfully performed a page-CHANGING browser action (i.e.
     any browser verb that isn't read-only), so we should re-observe the page before
@@ -1474,6 +1514,12 @@ _INFO_RESULT_TYPES = frozenset((
     "weather", "forecast", "temperature", "places", "nearby",
     "directions", "route", "distance_to", "news", "headlines",
 ))
+
+
+def _shown(results: "list[dict]") -> "list[dict]":
+    """Results the user sees and hears: not the model's own plumbing (load_tools,
+    read_skill), whose only reader is the model."""
+    return [r for r in results or [] if not r.get("internal")]
 
 
 def _strip_politeness(msg: str) -> str:
@@ -1556,7 +1602,7 @@ def _suspected_missed_tasks(user_text: str, results: "list[dict]") -> bool:
     if len(clauses) < 2:
         return False
     asked = sum(1 for c in clauses if _ACTIONY_RE.search(c))
-    return asked >= 2 and len(results or []) < asked
+    return asked >= 2 and len(_shown(results)) < asked
 
 
 # A reply that asserts the deed is already done — the tell-tale phrasing of the
@@ -1572,7 +1618,15 @@ _COMPLETION_CLAIM_RE = re.compile(
     r"launched|launching|played|playing|paused|pausing|resumed|resuming|muted|muting|unmuted|"
     r"unmuting|created|creating|made|making|generated|generating|enabled|enabling|"
     r"disabled|disabling|adjusted|adjusting|updated|updating|applied|applying|"
-    r"recolou?red|recolou?ring|moved|moving|hidden|hiding|shown|showing)\b)",
+    r"recolou?red|recolou?ring|moved|moving|hidden|hiding|shown|showing|"
+    r"unpaused|skipped|skipping|rewound|rewinding|sent|sending|replied|replying|"
+    r"forwarded|forwarding|shared|sharing|posted|posting|navigating|navigated|"
+    r"heading)\b|"
+    # A reply that opens with an acknowledgement and asks nothing is a claim too
+    # (the phone, live 2026-10-18: "increase the volume" → "OK." with no tool call).
+    # "OK — for what time?" is a question, not a claim.
+    r"^\s*(?:ok(?:ay)?|sure(?: thing)?|got it|will do|alright|certainly|of course|"
+    r"understood)\b(?![^?]*\?))",
     re.IGNORECASE,
 )
 
@@ -1588,7 +1642,7 @@ def _claimed_done_without_acting(user_text: str, reply_text: str,
     completion-check turn so the action actually runs (or the model says it had
     nothing to do)."""
     from llm.groq_bridge import _ACTIONY_RE
-    if results:                                 # something ran — not this failure
+    if _shown(results):                         # something ran — not this failure
         return False
     if not _ACTIONY_RE.search(user_text or ""):  # not a command turn — leave Q&A alone
         return False
@@ -1685,7 +1739,8 @@ async def _apply_action_side_effects(results: "list[dict]") -> None:
     await _apply_screen_results(results)
 
 
-def _followup_prompt(feeds: "list[dict]", instruction: "str | None" = None) -> str:
+def _followup_prompt(feeds: "list[dict]", instruction: "str | None" = None,
+                     user_text: str = "") -> str:
     """Build the next agentic-step prompt from the results just observed.
 
     The generic lead-in tells the model to CONTINUE the task (take the next action)
@@ -1710,16 +1765,19 @@ def _followup_prompt(feeds: "list[dict]", instruction: "str | None" = None) -> s
         "correct the action, or take a different route); if it can't be fixed, "
         "briefly tell me what went wrong and emit NO action."
     )
+    # A tool-only first turn records nothing in history, so without this line the
+    # follow-up step never saw what was asked ("how many PDFs?" after a listing).
+    asked = f"My request was: \"{user_text.strip()}\". " if user_text.strip() else ""
     return (
-        f"Result of your last action(s). {lead} Don't mention these instructions or "
-        "dump the content back verbatim.\n\n" + combined
+        f"{asked}Result of your last action(s). {lead} Don't mention these "
+        "instructions or dump the content back verbatim.\n\n" + combined
     )
 
 
 async def _stream_and_speak(prompt: str, record_history: bool = True,
                             slim: bool = False, speak: bool = True,
                             tool_sink: "list | None" = None,
-                            task_tier: str = "") -> str:
+                            task_tier: str = "", empty_reply: str = "") -> str:
     """Stream one model turn as a fresh chat bubble, speaking each finished
     sentence as it arrives, and return the full raw reply (with any [ACTION] blocks
     intact for the caller to execute). Honours interrupt + mute and the leaky-model
@@ -1775,7 +1833,7 @@ async def _stream_and_speak(prompt: str, record_history: bool = True,
         disp = _display_text(full_raw)
         clean = _strip_reasoning(disp, quote_only=quote_only) if leaky else disp
         if not clean.strip() and not tool_sink:
-            clean = _EMPTY_REPLY_MSG
+            clean = empty_reply or _EMPTY_REPLY_MSG
         if leaky:
             await emit("stream_delta", {"sid": sid, "text": clean})
         if speak_ok and not _interrupted():
@@ -1894,7 +1952,8 @@ async def _handle_image_gen(result: dict) -> None:
         await _tts.speak(msg)
 
 
-async def _run_autopilot_task(result: dict, *, speak: bool = True) -> str:
+async def _run_autopilot_task(result: dict, *, speak: bool = True,
+                              repeat_guard: bool = True) -> str:
     """Run one deferred autopilot goal (browser_task / computer_task) and report
     ONCE at the end — this is the cure for "JARVIS reads out the button numbers":
     every internal step (observe → decide → click/type) is silent; the HUD shows a
@@ -1902,11 +1961,26 @@ async def _run_autopilot_task(result: dict, *, speak: bool = True) -> str:
 
     Returns the final outcome line (the voice path hands it to the Live model as
     the tool response instead of speaking it itself — pass ``speak=False`` there).
+    ``repeat_guard`` refuses a task of a kind that already acted and failed during
+    this chat request (_acted_and_failed).
     """
     kind = result.get("kind") or \
         ("computer" if str(result.get("type", "")).startswith(("computer", "desktop"))
          else "browser")
     goal = str(result.get("goal") or "").strip()
+    if repeat_guard and kind in _acted_and_failed:
+        # A task that already acted and then failed this request must not run again
+        # under a reworded goal: it could repeat what it did (the phone took 4 + 4
+        # photos this way, 2026-10-19). The user decides whether to try again.
+        msg = ("That task already did some of the work this time and then failed, so "
+               "I won't run it again on my own, sir — check what it left and ask me to "
+               "try again if you'd like.")
+        print(f"[Autopilot:{kind}] not re-run this request: {goal!r}", flush=True)
+        await emit("response", msg)
+        if speak and _tts and not skills.is_muted():
+            await emit("status", "speaking")
+            await _tts.speak(msg)
+        return msg
     global _autopilot_owner
     # One autopilot at a time (see _autopilot_owner). Checked and claimed with no
     # await in between, so two starts can't both pass.
@@ -2026,6 +2100,8 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
         await emit("action", [card])
         await _log_commands([card])
         steps = res.get("steps") or []
+        if steps and not res.get("ok") and not res.get("stopped"):
+            _acted_and_failed.add(kind)
         print(f"[Autopilot:{kind}] {'✓' if res.get('ok') else '✗'} {goal!r} "
               f"({len(steps)} steps) → {final}", flush=True)
         if steps and not res.get("ok"):
@@ -2082,7 +2158,8 @@ async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]
         for r in immediate:
             tag = "✓" if r.get("ok") else "✗"
             print(f"[Action] {tag} (step) {r.get('type')} → {r.get('message')}", flush=True)
-        await emit("action", immediate)
+        if _shown(immediate):
+            await emit("action", _shown(immediate))
         await _apply_action_side_effects(immediate)
         # Failures are fed back to the model below so it can self-correct; the
         # corrective follow-up turn does the talking then (no double-speak).
@@ -2175,10 +2252,11 @@ async def _agentic_loop(feeds: "list[dict]", user_text: str = "",
     extracted file/dir/page text (optionally with a custom `instruction`, e.g. a
     file-summary lead), the model answers, emits no action, and the loop ends."""
     loop = asyncio.get_running_loop()
+    said: "list[str]" = []          # what the steps' own results reported
     for step in range(max_steps):
         if _interrupted() or not feeds:
             return
-        prompt = _followup_prompt(feeds, instruction if step == 0 else None)
+        prompt = _followup_prompt(feeds, instruction if step == 0 else None, user_text)
         if not prompt:
             return
         # Internal scaffolding turn — keep it out of the persisted conversation,
@@ -2209,7 +2287,29 @@ async def _agentic_loop(feeds: "list[dict]", user_text: str = "",
                 await emit("status", "speaking")
                 await _tts.speak(disp)
             return
+        said += [r["message"] for r in _shown(results) if r.get("message")]
         feeds = await _surface_results(results, user_text)
+    if feeds and not _interrupted():
+        await _answer_at_step_cap(feeds, user_text, said, task_tier)
+
+
+_STEP_CAP_LEAD = (
+    "That's as many steps as I take for one request. Answer me now from these results: "
+    "what got done, what didn't, and anything I asked to know. Take NO further action."
+)
+
+
+async def _answer_at_step_cap(feeds: "list[dict]", user_text: str, said: "list[str]",
+                              task_tier: str = "") -> None:
+    """The step cap used to end a turn in silence, throwing away what the tools had
+    found (the phone hit this 2026-09-26). One last call answers from the results with
+    no tools offered; if it still produces nothing, the results' own lines are said."""
+    prompt = _followup_prompt(feeds, _STEP_CAP_LEAD, user_text)
+    fallback = ("Here's where I got to, sir: " + "; ".join(m.rstrip(".") for m in said[-4:])
+                + ".") if said else "I couldn't finish that within my step limit, sir."
+    print("[Agentic] step cap reached — answering from the results", flush=True)
+    await _stream_and_speak(prompt, record_history=False, slim=True, speak=True,
+                            tool_sink=None, task_tier=task_tier, empty_reply=fallback)
 
 
 def _voice_system_instruction() -> str:
@@ -2312,7 +2412,9 @@ async def _execute_voice_tool(call: dict) -> dict:
     # model gets ONLY the outcome line back — never step logs or element lists —
     # and speaks its own confirmation, so we pass speak=False.
     if res.get("needs_autopilot"):
-        final = await _run_autopilot_task(res, speak=False)
+        # Live voice is a conversation: "try again" from the user can't be told apart
+        # from a model retry there, so the one-retry guard is the chat pipeline's only.
+        final = await _run_autopilot_task(res, speak=False, repeat_guard=False)
         return respond({"result": final})
 
     # set_location → pin/clear the user's location, then let the voice model relay.
@@ -2324,7 +2426,8 @@ async def _execute_voice_tool(call: dict) -> dict:
     # _apply_action_side_effects is the SHARED path (outcome recall, command log,
     # recordings/schedule refresh, ui_action forward + clear-chat reset, screen
     # restyle); reusing it keeps the voice and text pipelines from drifting apart.
-    await emit("action", [res])
+    if not res.get("internal"):
+        await emit("action", [res])
     await _apply_action_side_effects([res])
 
     # If the action produced file/dir text (read_file / list_dir / read_pdf),
@@ -2461,257 +2564,362 @@ async def _run_native_audio_turn() -> None:
 
 
 async def _run_pipeline(text: str, emit_transcription: bool = True,
-                        task_tier: str = "") -> None:
-    """Run the full LLM + TTS pipeline. Serialised by _pipeline_lock."""
+                        task_tier: str = "", wa_chat=None, tap=None,
+                        shown: str = "") -> None:
+    """Run the full LLM + TTS pipeline. Serialised by _pipeline_lock.
+
+    A WhatsApp turn passes the chat it came from (``wa_chat``): it runs with the PC's
+    voice quiet, approvals are also asked in that chat, and every HUD event of the
+    turn goes to ``tap`` so the reply can be sent back. ``shown`` is the user bubble's
+    text when it differs from what the model gets."""
+    global _wa_chat
     async with _pipeline_lock:
-        if _interrupt is not None:
-            _interrupt.clear()          # fresh turn — forget any earlier Stop
-        # ── Standby mode: ignore everything until the user says "wake up" ──────
-        if skills.is_sleeping():
-            if _is_wake_phrase(text):
-                skills.wake()
-                if emit_transcription:
-                    await emit("transcription", text)
-                await emit("response", "I'm awake, sir. How can I help?")
-                if _tts and not skills.is_muted():
-                    await emit("status", "speaking")
-                    await _tts.speak("I'm awake, sir. How can I help?")
-                await emit("status", "idle")
-            else:
-                await emit("status", "idle")
+        if wa_chat is None:
+            await _pipeline_turn(text, emit_transcription, task_tier, shown)
             return
-
-        if emit_transcription:
-            await emit("transcription", text)
-
-        sid = f"{time.time()}"          # stream id so the UI can finalize idempotently
-        full_raw = ""
-        cursor = 0
-        started = False
-        speaking = False
-        tts_queue: "asyncio.Queue" = asyncio.Queue()
-        consumer: "asyncio.Task | None" = None
-
-        async def _enqueue(sentence: str) -> None:
-            nonlocal consumer, speaking
-            if not speaking:
-                speaking = True
-                await emit("status", "speaking")
-                consumer = asyncio.create_task(_drain_tts(tts_queue))
-            tts_queue.put_nowait(sentence)
-
+        _wa_chat = wa_chat
+        add_tap(tap)
+        skills.set_quiet(True)
         try:
-            await emit("status", "thinking")
-            print(f"[Jarvis] Thinking… [Route] {routing_note(text, task_tier)}", flush=True)
+            await _pipeline_turn(text, emit_transcription, task_tier, shown)
+        finally:
+            remove_tap(tap)
+            skills.set_quiet(False)
+            _wa_chat = None
 
-            # Inject any playbook(s) relevant to THIS request so JARVIS follows the
-            # learned recipe (cleared when nothing matches, so it never lingers).
-            set_skill_context(playbooks.context_block(text))
 
-            speak_ok = _tts is not None and not skills.is_muted()
-            leaky = model_leaks_reasoning(text, task_tier)
-            quote_only = reply_is_quote_wrapped(text, task_tier)
-            # Native function/tool calls land here (empty unless the model called
-            # tools); the bridge keeps yielding (delta, full) text exactly as before.
-            tool_sink: "list" = []
-            async for _delta, full_raw in stream_prompt(text, tool_sink=tool_sink,
-                                                        task_tier=task_tier):
-                if _interrupted():          # user hit Stop — abort generation now
-                    break
-                if not started:
-                    await emit("stream_start", {"sid": sid})
-                    started = True
-                if leaky:
-                    continue                # accumulate only; clean + reveal at the end
-                disp = _display_text(full_raw)
-                await emit("stream_delta", {"sid": sid, "text": disp})
-                if speak_ok:
-                    sentences, cursor = _complete_sentences(disp, cursor)
-                    for s in sentences:
-                        await _enqueue(s)
+async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
+                         shown: str = "") -> None:
+    """The body of one pipeline turn; the caller holds _pipeline_lock."""
+    if _interrupt is not None:
+        _interrupt.clear()          # fresh turn — forget any earlier Stop
+    _acted_and_failed.clear()       # a new request may try any task again
+    # ── Standby mode: ignore everything until the user says "wake up" ──────
+    if skills.is_sleeping():
+        if _is_wake_phrase(text):
+            skills.wake()
+            if emit_transcription:
+                await emit("transcription", shown or text)
+            await emit("response", "I'm awake, sir. How can I help?")
+            if _tts and not skills.is_muted():
+                await emit("status", "speaking")
+                await _tts.speak("I'm awake, sir. How can I help?")
+            await emit("status", "idle")
+        else:
+            await emit("status", "idle")
+        return
 
-            # If the user interrupted, finalize the partial text and bail out — no
-            # actions, no further speech (finally restores idle + drains TTS).
-            if _interrupted():
-                disp = _display_text(full_raw)
-                if leaky:
-                    disp = _strip_reasoning(disp, quote_only=quote_only)
-                if not started:
-                    await emit("stream_start", {"sid": sid})
-                await emit("response_end", {"sid": sid, "text": disp, "actions": []})
-                return
+    if emit_transcription:
+        await emit("transcription", shown or text)
 
-            # A tool-only turn (the model called a function with no spoken preamble)
-            # is NOT an empty reply — its confirmation comes from the action result.
-            if not (full_raw or "").strip() and not tool_sink:
-                full_raw = _EMPTY_REPLY_MSG
-                if not started:
-                    await emit("stream_start", {"sid": sid})
-                    started = True
-                await emit("stream_delta", {"sid": sid, "text": full_raw})
-                if speak_ok:
-                    await _enqueue(full_raw)
+    sid = f"{time.time()}"          # stream id so the UI can finalize idempotently
+    full_raw = ""
+    cursor = 0
+    started = False
+    speaking = False
+    tts_queue: "asyncio.Queue" = asyncio.Queue()
+    consumer: "asyncio.Task | None" = None
 
-            # Stream done — run the turn's actions. Gated (dangerous) ones are
-            # deferred until the user approves; everything else runs immediately.
-            # NATIVE path: the model's function calls (tool_sink) become specs and
-            # run through the SAME dispatcher (run_specs) as the legacy [ACTION]
-            # tags, so all downstream handling below is identical. Run off the event
-            # loop: actions can block on the network or the browser worker, which
-            # would otherwise freeze telemetry, the websocket and the Stop button.
-            loop = asyncio.get_running_loop()
-            if tool_sink:
-                for _c in tool_sink:
-                    print(f"[Tool] {_c.get('name')}({_c.get('args')})", flush=True)
-                specs = [live_tools.to_spec(_c.get("name", ""), _c.get("args"))
-                         for _c in tool_sink]
-                clean = _display_text(full_raw)
-                if leaky:
-                    clean = _strip_reasoning(clean, quote_only=quote_only)
-                    await emit("stream_delta", {"sid": sid, "text": clean})
-                results = await loop.run_in_executor(None, run_specs, specs)
-            else:
-                clean, results = await loop.run_in_executor(None, execute_actions, full_raw)
-                if leaky:
-                    clean = _strip_reasoning(clean, quote_only=quote_only)   # recover reply
-                    await emit("stream_delta", {"sid": sid, "text": clean})
-            results = _autopilot_fallbacks(results, text)
-            immediate = [r for r in results if not r.get("needs_permission")
-                         and not r.get("needs_vision") and not r.get("needs_image_gen")
-                         and not r.get("needs_autopilot") and not r.get("needs_web_search")
-                         and not r.get("needs_location_set")]
-            pending = [r for r in results if r.get("needs_permission")]
-            vision = [r for r in results if r.get("needs_vision")]
-            images = [r for r in results if r.get("needs_image_gen")]
-            websearch = [r for r in results if r.get("needs_web_search")]
-            locsets = [r for r in results if r.get("needs_location_set")]
-            autop = [r for r in results if r.get("needs_autopilot")]
-            feeds = [r["feed_to_model"] for r in immediate if r.get("feed_to_model")]
-            observed_results = list(immediate)
-            for r in immediate:
-                tag = "✓" if r.get("ok") else "✗"
-                print(f"[Action] {tag} {r.get('type')} → {r.get('message')}", flush=True)
-            print(f"\n[Jarvis] {clean}\n")
+    async def _enqueue(sentence: str) -> None:
+        nonlocal consumer, speaking
+        if not speaking:
+            speaking = True
+            await emit("status", "speaking")
+            consumer = asyncio.create_task(_drain_tts(tts_queue))
+        tts_queue.put_nowait(sentence)
 
-            if speak_ok:
-                tail = (clean if leaky else _display_text(full_raw)[cursor:]).strip()
-                if tail:
-                    await _enqueue(tail)
-                err_brief = "" if _failure_feeds(immediate) \
-                    else await _brief_errors(immediate, text)
-                if not speaking:
-                    ok_speech = _spoken_summary(immediate)
-                    if ok_speech:
-                        await _enqueue(ok_speech)
-                    if err_brief:
-                        await _enqueue(err_brief)
-                elif err_brief:
-                    await _enqueue(err_brief)
+    try:
+        await emit("status", "thinking")
+        print(f"[Jarvis] Thinking… [Route] {routing_note(text, task_tier)}", flush=True)
 
+        # Inject any playbook(s) relevant to THIS request so JARVIS follows the
+        # learned recipe (cleared when nothing matches, so it never lingers).
+        set_skill_context(playbooks.context_block(text))
+
+        speak_ok = _tts is not None and not skills.is_muted()
+        leaky = model_leaks_reasoning(text, task_tier)
+        quote_only = reply_is_quote_wrapped(text, task_tier)
+        # Native function/tool calls land here (empty unless the model called
+        # tools); the bridge keeps yielding (delta, full) text exactly as before.
+        tool_sink: "list" = []
+        async for _delta, full_raw in stream_prompt(text, tool_sink=tool_sink,
+                                                    task_tier=task_tier):
+            if _interrupted():          # user hit Stop — abort generation now
+                break
             if not started:
                 await emit("stream_start", {"sid": sid})
+                started = True
+            if leaky:
+                continue                # accumulate only; clean + reveal at the end
+            disp = _display_text(full_raw)
+            await emit("stream_delta", {"sid": sid, "text": disp})
+            if speak_ok:
+                sentences, cursor = _complete_sentences(disp, cursor)
+                for s in sentences:
+                    await _enqueue(s)
 
-            await emit("response_end", {"sid": sid, "text": clean, "actions": immediate})
-            await _apply_action_side_effects(immediate)
+        # If the user interrupted, finalize the partial text and bail out — no
+        # actions, no further speech (finally restores idle + drains TTS).
+        if _interrupted():
+            disp = _display_text(full_raw)
+            if leaky:
+                disp = _strip_reasoning(disp, quote_only=quote_only)
+            if not started:
+                await emit("stream_start", {"sid": sid})
+            await emit("response_end", {"sid": sid, "text": disp, "actions": []})
+            return
 
-            for _v in vision:
-                await _handle_vision(_v)
+        # A tool-only turn (the model called a function with no spoken preamble)
+        # is NOT an empty reply — its confirmation comes from the action result.
+        if not (full_raw or "").strip() and not tool_sink:
+            full_raw = _EMPTY_REPLY_MSG
+            if not started:
+                await emit("stream_start", {"sid": sid})
+                started = True
+            await emit("stream_delta", {"sid": sid, "text": full_raw})
+            if speak_ok:
+                await _enqueue(full_raw)
 
-            for im in images:
-                await _handle_image_gen(im)
+        # Stream done — run the turn's actions. Gated (dangerous) ones are
+        # deferred until the user approves; everything else runs immediately.
+        # NATIVE path: the model's function calls (tool_sink) become specs and
+        # run through the SAME dispatcher (run_specs) as the legacy [ACTION]
+        # tags, so all downstream handling below is identical. Run off the event
+        # loop: actions can block on the network or the browser worker, which
+        # would otherwise freeze telemetry, the websocket and the Stop button.
+        loop = asyncio.get_running_loop()
+        if tool_sink:
+            for _c in tool_sink:
+                print(f"[Tool] {_c.get('name')}({_c.get('args')})", flush=True)
+            specs = [live_tools.to_spec(_c.get("name", ""), _c.get("args"))
+                     for _c in tool_sink]
+            clean = _display_text(full_raw)
+            if leaky:
+                clean = _strip_reasoning(clean, quote_only=quote_only)
+                await emit("stream_delta", {"sid": sid, "text": clean})
+            results = await loop.run_in_executor(None, run_specs, specs)
+        else:
+            clean, results = await loop.run_in_executor(None, execute_actions, full_raw)
+            if leaky:
+                clean = _strip_reasoning(clean, quote_only=quote_only)   # recover reply
+                await emit("stream_delta", {"sid": sid, "text": clean})
+        results = _autopilot_fallbacks(results, text)
+        immediate = [r for r in results if not r.get("needs_permission")
+                     and not r.get("needs_vision") and not r.get("needs_image_gen")
+                     and not r.get("needs_autopilot") and not r.get("needs_web_search")
+                     and not r.get("needs_location_set")]
+        pending = [r for r in results if r.get("needs_permission")]
+        vision = [r for r in results if r.get("needs_vision")]
+        images = [r for r in results if r.get("needs_image_gen")]
+        websearch = [r for r in results if r.get("needs_web_search")]
+        locsets = [r for r in results if r.get("needs_location_set")]
+        autop = [r for r in results if r.get("needs_autopilot")]
+        feeds = [r["feed_to_model"] for r in immediate if r.get("feed_to_model")]
+        observed_results = list(immediate)
+        for r in immediate:
+            tag = "✓" if r.get("ok") else "✗"
+            print(f"[Action] {tag} {r.get('type')} → {r.get('message')}", flush=True)
+        print(f"\n[Jarvis] {clean}\n")
 
-            web_answers = []
-            for ws in websearch:
-                _ans = await _handle_web_search(ws)
-                if _ans:
-                    web_answers.append(_ans)
+        if speak_ok:
+            tail = (clean if leaky else _display_text(full_raw)[cursor:]).strip()
+            if tail:
+                await _enqueue(tail)
+            err_brief = "" if _failure_feeds(immediate) \
+                else await _brief_errors(immediate, text)
+            if not speaking:
+                ok_speech = _spoken_summary(immediate)
+                if ok_speech:
+                    await _enqueue(ok_speech)
+                if err_brief:
+                    await _enqueue(err_brief)
+            elif err_brief:
+                await _enqueue(err_brief)
 
-            for ls in locsets:
-                await _handle_location_set(ls)
+        if not started:
+            await emit("stream_start", {"sid": sid})
 
-            for a in autop:
-                observed_results.append(_autopilot_record(a, await _run_autopilot_task(a)))
+        await emit("response_end", {"sid": sid, "text": clean,
+                                     "actions": _shown(immediate)})
+        await _apply_action_side_effects(immediate)
 
-            for p in pending:
-                spoken_msg = ""
-                kind = p.get("kind", "action")
-                if kind == "browser" and browser.is_approved():
-                    approved = True
-                elif kind == "computer" and computer.is_armed():
-                    approved = True
-                else:
-                    await emit("status", "idle")
-                    approved = await request_permission(kind, p.get("description", "that action"))
-                if approved:
-                    if kind == "browser":
-                        browser.approve()
-                    elif kind == "computer":
-                        computer.arm()
-                    res = await loop.run_in_executor(None, run_action, p["spec"])
-                    if res.get("needs_vision"):
-                        await _handle_vision(res)
-                        continue
-                    if res.get("needs_image_gen"):
-                        await _handle_image_gen(res)
-                        continue
-                    if res.get("needs_web_search"):
-                        await _handle_web_search(res)
-                        continue
-                    if res.get("needs_autopilot"):
-                        observed_results.append(
-                            _autopilot_record(res, await _run_autopilot_task(res)))
-                        continue
-                    tag = "✓" if res.get("ok") else "✗"
-                    print(f"[Action] {tag} (approved) {res.get('type')} → {res.get('message')}", flush=True)
-                    await emit("action", [res])
-                    _remember_outcomes([res])
-                    await _log_commands([res])
-                    observed_results.append(res)
-                    spoken_msg = res.get("speak", res.get("message", ""))
-                    if res.get("feed_to_model"):
-                        feeds.append(res["feed_to_model"])
-                else:
-                    spoken_msg = _spoken_refusal(p.get("description"))
-                    await emit("action", [{"type": p.get("type"), "ok": False, "message": spoken_msg}])
-                if spoken_msg and _tts and not skills.is_muted():
-                    await emit("status", "speaking")
-                    await _tts.speak(spoken_msg)
+        for _v in vision:
+            await _handle_vision(_v)
 
-            # Persist transient lookup ANSWERS (web search, nearby places, weather,
-            # directions, news…) into history so follow-up turns keep context — a
-            # native tool-only turn otherwise logs NOTHING (which is why "find one
-            # close to me" forgot the topic was croissants). Durable HUD state lives
-            # in LIVE STATE and is intentionally NOT recorded here.
-            if not _interrupted():
-                _info_msgs = [r.get("message", "") for r in immediate
-                              if r.get("ok") and r.get("message")
-                              and str(r.get("type") or "").lower() in _INFO_RESULT_TYPES]
-                _outcome = " ".join(x for x in (web_answers + _info_msgs) if x).strip()
-                if _outcome:
-                    remember_turn_outcome(text, _outcome)
+        for im in images:
+            await _handle_image_gen(im)
 
-            if not _interrupted():
-                if _suspected_missed_tasks(text, results):
-                    feeds += await _completion_check(text, observed_results, task_tier)
-                elif _claimed_done_without_acting(text, clean, results):
-                    # The model claimed it acted but emitted no action — recover the
-                    # dropped [ACTION] so JARVIS does what it said (or admits it can't).
-                    print("[Check] reply claimed success with no action — recovering",
-                          flush=True)
-                    feeds += await _completion_check(text, observed_results, task_tier)
+        web_answers = []
+        for ws in websearch:
+            _ans = await _handle_web_search(ws)
+            if _ans:
+                web_answers.append(_ans)
 
-            feeds += _failure_feeds(observed_results)
-            await _observe_browser_if_needed(feeds, observed_results)
-            if feeds:
-                await _agentic_loop(feeds, text, task_tier=task_tier)
+        for ls in locsets:
+            await _handle_location_set(ls)
 
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            await _report_pipeline_error(exc, text)
-        finally:
-            await _finish_tts(consumer, tts_queue)
-            await emit("status", "idle")
+        for a in autop:
+            observed_results.append(_autopilot_record(a, await _run_autopilot_task(a)))
+
+        for p in pending:
+            spoken_msg = ""
+            kind = p.get("kind", "action")
+            if kind == "browser" and browser.is_approved():
+                approved = True
+            elif kind == "computer" and computer.is_armed():
+                approved = True
+            else:
+                await emit("status", "idle")
+                approved = await request_permission(kind, p.get("description", "that action"))
+            if approved:
+                if kind == "browser":
+                    browser.approve()
+                elif kind == "computer":
+                    computer.arm()
+                res = await loop.run_in_executor(None, run_action, p["spec"])
+                if res.get("needs_vision"):
+                    await _handle_vision(res)
+                    continue
+                if res.get("needs_image_gen"):
+                    await _handle_image_gen(res)
+                    continue
+                if res.get("needs_web_search"):
+                    await _handle_web_search(res)
+                    continue
+                if res.get("needs_autopilot"):
+                    observed_results.append(
+                        _autopilot_record(res, await _run_autopilot_task(res)))
+                    continue
+                tag = "✓" if res.get("ok") else "✗"
+                print(f"[Action] {tag} (approved) {res.get('type')} → {res.get('message')}", flush=True)
+                await emit("action", [res])
+                _remember_outcomes([res])
+                await _log_commands([res])
+                observed_results.append(res)
+                spoken_msg = res.get("speak", res.get("message", ""))
+                if res.get("feed_to_model"):
+                    feeds.append(res["feed_to_model"])
+            else:
+                spoken_msg = _spoken_refusal(p.get("description"))
+                await emit("action", [{"type": p.get("type"), "ok": False, "message": spoken_msg}])
+            if spoken_msg and _tts and not skills.is_muted():
+                await emit("status", "speaking")
+                await _tts.speak(spoken_msg)
+
+        # Persist transient lookup ANSWERS (web search, nearby places, weather,
+        # directions, news…) into history so follow-up turns keep context — a
+        # native tool-only turn otherwise logs NOTHING (which is why "find one
+        # close to me" forgot the topic was croissants). Durable HUD state lives
+        # in LIVE STATE and is intentionally NOT recorded here.
+        if not _interrupted():
+            _info_msgs = [r.get("message", "") for r in immediate
+                          if r.get("ok") and r.get("message")
+                          and str(r.get("type") or "").lower() in _INFO_RESULT_TYPES]
+            _outcome = " ".join(x for x in (web_answers + _info_msgs) if x).strip()
+            if _outcome:
+                remember_turn_outcome(text, _outcome)
+
+        if not _interrupted():
+            if _suspected_missed_tasks(text, results):
+                feeds += await _completion_check(text, observed_results, task_tier)
+            elif _claimed_done_without_acting(text, clean, results):
+                # The model claimed it acted but emitted no action — recover the
+                # dropped [ACTION] so JARVIS does what it said (or admits it can't).
+                print("[Check] reply claimed success with no action — recovering",
+                      flush=True)
+                feeds += await _completion_check(text, observed_results, task_tier)
+
+        feeds += _failure_feeds(observed_results)
+        await _observe_browser_if_needed(feeds, observed_results)
+        if feeds:
+            await _agentic_loop(feeds, text, task_tier=task_tier)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        await _report_pipeline_error(exc, text)
+    finally:
+        await _finish_tts(consumer, tts_queue)
+        await emit("status", "idle")
+
+
+# ── WhatsApp channel (whatsapp_channel.py) ─────────────────────────────────────
+
+async def _run_whatsapp_turn(text: str, chat, heard: bool = False) -> None:
+    """One WhatsApp command: an ordinary turn with the PC's voice quiet, its reply
+    (and any picture it made) sent back to the chat it came from. The HUD shows the
+    turn too, marked 📱, so the PC keeps a record of what was asked remotely."""
+    events: list = []
+
+    def tap(event: str, data) -> None:
+        if event in ("response_end", "response", "action"):
+            events.append((event, data))
+        elif event == "agent_task" and isinstance(data, dict) and _wa is not None:
+            # A browser/desktop task takes a while: say it has started.
+            _track_task(_wa.send(chat, f"On it: {data.get('goal', '')}"), "whatsapp ack")
+
+    if _wa is None:
+        return
+    await _wa.typing(chat, True)
+    try:
+        await _run_pipeline(text, emit_transcription=True, wa_chat=chat, tap=tap,
+                            shown=f"📱 {text}")
+    finally:
+        await _wa.typing(chat, False)
+    reply, images = whatsapp_channel.compose(events)
+    if not reply and not images:
+        reply = ("I'm on standby, sir. Send “Jarvis, wake up” to wake me."
+                 if skills.is_sleeping() else "I didn't come up with a reply to that.")
+    if heard:
+        reply = f"🎙 “{text}”\n\n{reply}".strip()
+    await _wa.send(chat, reply)
+    for blob, caption in images[:4]:
+        await _wa.send_image(chat, blob, caption)
+
+
+async def _on_whatsapp_command(text: str, chat, heard: bool) -> None:
+    print(f"[WhatsApp] command: {text[:80]!r}", flush=True)
+    _track_task(_run_whatsapp_turn(text, chat, heard), "whatsapp turn")
+
+
+async def _emit_whatsapp(state: "dict | None" = None) -> None:
+    st = state or (_wa.state if _wa is not None else
+                   {"status": "off", "qr": "", "number": "", "error": ""})
+    await emit("whatsapp.state", {**st, **whatsapp_channel.settings()})
+
+
+async def _start_whatsapp() -> None:
+    global _wa
+    if _wa is None:
+        _wa = whatsapp_channel.Channel(_on_whatsapp_command, _emit_whatsapp,
+                                       transcribe_voice_note)
+    await _wa.start()
+
+
+async def handle_whatsapp_state(_data) -> None:
+    await _emit_whatsapp()
+
+
+async def handle_whatsapp_set(data) -> None:
+    """Settings ▸ Devices ▸ WhatsApp: turn the channel on/off, edit the allowed numbers."""
+    cur = whatsapp_channel.save_settings(data if isinstance(data, dict) else {})
+    if cur["enabled"]:
+        await _start_whatsapp()
+    elif _wa is not None:
+        await _wa.stop()
+    await _emit_whatsapp()
+
+
+async def handle_whatsapp_unlink(_data) -> None:
+    """Log JARVIS out of WhatsApp and forget the session; linking again needs the QR."""
+    whatsapp_channel.save_settings({"enabled": False})
+    if _wa is not None:
+        await _wa.unlink()
+    else:
+        for suffix in ("", "-wal", "-shm"):
+            p = whatsapp_channel.db_path()
+            p.with_name(p.name + suffix).unlink(missing_ok=True)
+    await _emit_whatsapp()
 
 
 def _autopilot_record(task: dict, outcome: str) -> dict:
@@ -2739,7 +2947,7 @@ async def _brief_errors(results: "list[dict]", user_text: str = "") -> str:
     optional AI rewrite is bounded and falls back to the (already user-facing)
     action message if it's slow or unavailable. Returns '' only when nothing
     failed."""
-    errors = [r["message"] for r in (results or [])
+    errors = [r["message"] for r in _shown(results)
               if r.get("ok") is False and r.get("message")]
     if not errors:
         return ""
@@ -2779,7 +2987,7 @@ def _remember_outcomes(results: "list[dict]") -> None:
 async def _log_commands(results: "list[dict]") -> None:
     """Push executed actions to the GUI's mini-terminal (command log)."""
     entries = []
-    for r in results or []:
+    for r in _shown(results):
         if not r or r.get("type") in ("ui",):
             continue
         entries.append({
@@ -2796,6 +3004,20 @@ async def _log_commands(results: "list[dict]") -> None:
 async def emit_recordings() -> None:
     """Tell the Skills panel which recorders are running."""
     await emit("recordings", recorder.active_recordings())
+
+
+async def handle_app_version(data) -> None:
+    """The HUD's version, sent on connect: check once a day for a newer release."""
+    import updates
+    version = str((data or {}).get("version") or "") if isinstance(data, dict) else ""
+
+    async def _check() -> None:
+        found = await updates.check(version)
+        if found:
+            print(f"[Update] JARVIS {found['version']} is available: {found['url']}",
+                  flush=True)
+            await emit("update_available", found)
+    _track_task(_check(), "update check")
 
 
 async def handle_run_action(data) -> None:
@@ -3100,12 +3322,13 @@ async def handle_set_config(data) -> None:
     key_updates = {k: data[k] for k in (*llm_keys,
                                         "picovoice_key", "spotify_client_id",
                                         "spotify_client_secret", "spotify_redirect_uri",
-                                        "elevenlabs_api_key", "google_maps_key")
+                                        "elevenlabs_api_key", "google_maps_key",
+                                        "tavily_api_key")
                    if k in data}
     if key_updates:
         set_api_keys(key_updates)
     # Settings ▸ API Keys ▸ Remove. Only the key names above can be removed.
-    removable = llm_keys | {"elevenlabs_api_key", "google_maps_key"}
+    removable = llm_keys | {"elevenlabs_api_key", "google_maps_key", "tavily_api_key"}
     remove = [k for k in (data.get("remove_keys") or []) if k in removable]
     if remove:
         from llm.groq_bridge import remove_api_keys
@@ -3131,6 +3354,24 @@ async def handle_set_config(data) -> None:
         await emit("conversation_mode", bool(data["conversation_mode"]))
     if "system_alerts" in data:
         set_system_alerts(bool(data["system_alerts"]))
+    if isinstance(data.get("heartbeat"), dict):
+        import heartbeat
+        hb = heartbeat.save_settings(data["heartbeat"])
+        if hb["enabled"]:
+            heartbeat.ensure_file()      # so "Edit checklist" has something to open
+    if data.get("skills_open"):
+        import skill_files
+        try:
+            skills._open_file(skill_files.ensure_dir())
+        except Exception as exc:  # noqa: BLE001
+            await emit("warning", f"Couldn't open the skills folder: {exc}")
+    if data.get("heartbeat_open"):
+        # Settings ▸ Voice ▸ Heartbeat ▸ Edit checklist: the file, in the user's editor.
+        import heartbeat
+        try:
+            skills._open_file(heartbeat.ensure_file())
+        except Exception as exc:  # noqa: BLE001
+            await emit("warning", f"Couldn't open HEARTBEAT.md: {exc}")
     if "autopilot_model" in data:
         from llm.groq_bridge import set_autopilot_model
         set_autopilot_model(data["autopilot_model"])
@@ -3255,6 +3496,7 @@ async def _emit_memory() -> None:
         "facts": memory_store.all_facts(),
         "playbooks": [pb(p) for p in playbooks.all_playbooks()],
         "learned": [pb(p) for p in playbooks.learned()],
+        "routines": [{**r, "ts": _id_ts(r["id"])} for r in routines.items()],
         "conversations": memory_store.list_conversations(),
         "current": len(get_history()),
         "now": time.time(),            # timeline right edge (render stays pure)
@@ -3303,7 +3545,27 @@ async def handle_memory_forget(data) -> None:
     elif kind == "conversation" and iid:
         memory_store.delete_conversation(iid)
         await _emit_conversations()
+    elif kind == "routine" and iid:
+        routines.remove_routine(iid)        # exact id
     await _emit_memory()
+
+
+async def handle_routine_save(data) -> None:
+    """Memory ▸ Routines ▸ Add / Edit. The result line goes back to the form."""
+    d = data or {}
+    ok, msg = routines.save_routine(d.get("name"), d.get("prompt"), d.get("time") or "",
+                                    d.get("days") or "daily", str(d.get("id") or ""))
+    await emit("routine_saved", {"ok": ok, "message": msg})
+    await _emit_memory()
+
+
+async def handle_routine_run(data) -> None:
+    """Memory ▸ Routines ▸ Run: the routine's turn, as if the user had asked for it."""
+    r, why = routines.find((data or {}).get("id") or "")
+    if r is None:
+        await emit("warning", why)
+        return
+    _track_task(_run_routine({**r, "prompt": routines.run_turn(r)}), "routine run")
 
 
 
@@ -3784,6 +4046,36 @@ async def ping_loop() -> None:
         await asyncio.sleep(4)
 
 
+async def heartbeat_loop() -> None:
+    """OpenClaw-style heartbeat (heartbeat.py): when it's due, one small model call
+    reads HEARTBEAT.md against the live HUD state and speaks only if something there
+    needs the user. Waits while the user is mid-turn, an autopilot runs, or JARVIS is
+    asleep; never acts, only speaks."""
+    import heartbeat
+    while True:
+        await asyncio.sleep(60)
+        try:
+            if not heartbeat.due():
+                continue
+            if (_user_busy or _autopilot_owner or skills.is_sleeping()
+                    or (_pipeline_lock is not None and _pipeline_lock.locked())):
+                continue                         # try again next minute
+
+            async def complete(system: str, user: str) -> str:
+                return await quick_completion(system, user, task_tier="dumb",
+                                              max_tokens=160, temperature=0.2)
+
+            msg = await heartbeat.check(build_live_context(),
+                                        memory_store.facts_block(), complete)
+            if msg:
+                print(f"[Heartbeat] {msg}", flush=True)
+                await _speak_proactive(msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — a heartbeat never takes the app down
+            print(f"[Heartbeat] check failed: {exc}", flush=True)
+
+
 async def slow_info_loop() -> None:
     """Emit connectivity + weather + schedule on start, then every ~10 min."""
     global _last_netinfo, _last_weather
@@ -3841,6 +4133,37 @@ async def text_loop() -> None:
             await emit("status", "idle")
 
 
+async def _wake_clip(clips: "asyncio.Queue"):
+    """The detector's recording of the command after this wake, or None if it never
+    came (the detector stopped mid-command): then the caller listens the old way."""
+    while not clips.empty():              # a clip left over from an abandoned wake
+        clips.get_nowait()
+    try:
+        return await asyncio.wait_for(clips.get(), timeout=25.0)
+    except asyncio.TimeoutError:
+        print("[Jarvis] No command recording arrived; listening instead.", flush=True)
+        return None
+
+
+async def _command_from_clip(clip, speech: bool) -> "str | None":
+    """The command in a wake clip. "" = nothing to do (a false wake, or nothing said);
+    None = "Hey Jarvis" with no command after it yet, so listen for one the old way —
+    people often pause after the name."""
+    if not speech:
+        print("[Jarvis] Wake with nothing said after it.", flush=True)
+        return ""
+    text = await transcribe_clip(clip)
+    command = command_after_wake(text)
+    if command is None:
+        # The wake model also fires on conversation that only mentions Jarvis; a
+        # command counts only when "Hey Jarvis" itself is in the words.
+        print(f"[Jarvis] Wake ignored — no \"Hey Jarvis\" in: {text[:60]!r}", flush=True)
+        return ""
+    if not command or is_noise_transcript(command):
+        return None
+    return command
+
+
 async def wake_word_loop(detector: WakeWordDetector) -> None:
     global _user_busy
     loop = asyncio.get_running_loop()
@@ -3849,7 +4172,15 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
     def on_wake() -> None:
         loop.call_soon_threadsafe(detection_event.set)
 
+    # The command after a wake, recorded by the detector from its own mic stream.
+    clips: "asyncio.Queue" = asyncio.Queue()
+
+    def on_clip(clip, speech: bool) -> None:
+        loop.call_soon_threadsafe(clips.put_nowait, (clip, speech))
+
     detector.on_detected(on_wake)
+    if hasattr(detector, "on_command"):
+        detector.on_command(on_clip)
     # Track whether the loop believes the detector is running so we never
     # double-open the microphone or stop one that isn't running.
     running = False
@@ -3874,6 +4205,14 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
     try:
         while True:
             always_on = _always_on_event is not None and _always_on_event.is_set()
+            native_audio = gemini_bridge.is_native_audio_model(get_model())
+            # Gemini Live opens its own mic after a wake, so nothing to record for it.
+            capture = (hasattr(detector, "capture_commands")
+                       and os.environ.get("JARVIS_WAKE_CAPTURE", "1") != "0"
+                       and not native_audio)
+            if hasattr(detector, "capture_commands"):
+                detector.capture_commands = capture
+            woke, clip = False, None
 
             # ── 1. In always-on mode, skip the wake word and listen continuously.
             #    Otherwise wait for the wake word OR a manual mic trigger. ──────
@@ -3894,6 +4233,7 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
                     t.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await t
+                woke = wake_task in done
                 detection_event.clear()
                 _trigger_listen.clear()
                 # ── Pop the overlay up the INSTANT we detect — BEFORE the mic
@@ -3902,6 +4242,13 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
                 #    popup feel laggy. Emit now, then release the mic off-loop. ────
                 await emit("wake_triggered", True)
                 await emit("status", "listening")
+                if woke and capture:
+                    if _interrupt is not None:
+                        _interrupt.clear()          # Stop from here on cancels this one
+                    clip = await _wake_clip(clips)
+                    if clip is not None and _interrupted():
+                        print("[Jarvis] Stopped while the command was recorded.", flush=True)
+                        clip = (clip[0], False)
                 await loop.run_in_executor(None, detector_stop)   # release mic off-loop
 
             # From here until the reply is done we're mid-interaction — hold off
@@ -3913,14 +4260,21 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
                     await _run_native_audio_turn()
                     continue
 
-                print("[Jarvis] Listening…", flush=True)
+                text = None
+                if clip is not None:
+                    text = await _command_from_clip(*clip)
+                    if text == "":                  # a false wake, or nothing said
+                        await emit("status", "idle")
+                        continue
+                if text is None:
+                    print("[Jarvis] Listening…", flush=True)
 
-                # Let the wake-word mic release fully before opening the recorder
-                # (PortAudio on Windows often needs >200 ms).
-                if not always_on:
-                    await asyncio.sleep(0.45)
+                    # Let the wake-word mic release fully before opening the recorder
+                    # (PortAudio on Windows often needs >200 ms).
+                    if not always_on:
+                        await asyncio.sleep(0.45)
 
-                text = await transcribe()
+                    text = await transcribe()
 
                 if not text:
                     print("[Jarvis] No speech detected.", flush=True)
@@ -3987,6 +4341,13 @@ async def main(use_text: bool) -> None:
     register_handler("agent_correction", handle_agent_correction)
     register_handler("set_mute", handle_set_mute)
     register_handler("run_action", handle_run_action)
+    register_handler("app_version", handle_app_version)
+    register_handler("routine_save", handle_routine_save)
+    # WhatsApp: local HUD only — never on the remote (phone) allowlist below.
+    register_handler("whatsapp.state", handle_whatsapp_state)
+    register_handler("whatsapp.set", handle_whatsapp_set)
+    register_handler("whatsapp.unlink", handle_whatsapp_unlink)
+    register_handler("routine_run", handle_routine_run)
     register_handler("set_config", handle_set_config)
     register_handler("reset", handle_reset)
     register_handler("set_location", handle_set_location)
@@ -4108,7 +4469,11 @@ async def main(use_text: bool) -> None:
         asyncio.create_task(ping_loop()),
         asyncio.create_task(slow_info_loop()),
         asyncio.create_task(active_app_loop()),
+        asyncio.create_task(heartbeat_loop()),
     ]
+    # The WhatsApp channel, when the user turned it on (Settings ▸ Devices).
+    if whatsapp_channel.settings()["enabled"]:
+        _track_task(_start_whatsapp(), "whatsapp")
 
     # ── First-run asset provisioning ────────────────────────────────────────────
     # The installer ships lean, so the heavy runtime assets (Chromium, the Whisper

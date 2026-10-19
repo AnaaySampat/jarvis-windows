@@ -16,8 +16,10 @@ Needs `pip install adb-shell` (lazy-imported; without it only TV control is off)
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import re
+import socket
 import struct
 import threading
 import time
@@ -34,14 +36,15 @@ _KEY_PATH = jarvis_paths.app_data_dir() / "tv_adbkey"
 
 
 def config() -> "dict | None":
-    """{"host", "model"} once a TV has answered, else None."""
+    """{"host", "model"} once a TV has answered, else None. `host` may list several
+    addresses for the same TV, comma-separated (see _targets)."""
     try:
         cfg = json.loads(_CFG_PATH.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — missing or corrupt = no TV
         return None
     host = str(cfg.get("host") or "")
     return {"host": host, "model": str(cfg.get("model") or "")[:80]} \
-        if _parse_target(host) else None
+        if _targets(host) else None
 
 
 def configured() -> bool:
@@ -51,8 +54,8 @@ def configured() -> bool:
 def pair(host: str) -> "tuple[bool, str]":
     """Saved only once the TV actually answers, which on the first connection means
     the user accepted "Allow USB debugging?" on the TV."""
-    host = (host or "").strip()
-    if not _parse_target(host):
+    host = ", ".join(f"{h}:{p}" if p != _DEFAULT_PORT else h for h, p in _targets(host))
+    if not host:
         return False, "That isn't a TV address — use the IP in the TV's network settings."
     ok, out, summary = shell(host, "getprop ro.product.model")
     if not ok:
@@ -90,6 +93,53 @@ def _parse_target(raw: str) -> "tuple[str, int] | None":
     return (m.group(1), port) if 1 <= port <= 65535 else None
 
 
+# The TV's addresses, tried in turn: its address on the home Wi-Fi, and optionally a
+# second one — the TV's Tailscale address — for when this PC is on another router's
+# network (a second router in router mode gives its Wi-Fi its own subnet, and nothing
+# on the first router can open a connection into it). The one that answered last goes
+# first, so a network change costs one connect timeout, once.
+_last_good = ""
+
+
+def _key(target: "tuple[str, int]") -> str:
+    return f"{target[0]}:{target[1]}"
+
+
+def _targets(host: str) -> "list[tuple[str, int]]":
+    """Every valid address in `host` ("192.168.1.20, 100.101.1.2"), last good first."""
+    out: "list[tuple[str, int]]" = []
+    for part in re.split(r"[,;\s]+", host or ""):
+        t = _parse_target(part)
+        if t and t not in out:
+            out.append(t)
+    return sorted(out, key=lambda t: _key(t) != _last_good)
+
+
+def _same_subnet_hint(target: "tuple[str, int]") -> str:
+    """When the TV's LAN address isn't on this PC's network, say why it can't be
+    reached and what fixes it. '' when that isn't the explanation."""
+    try:
+        tv = ipaddress.ip_address(target[0])
+    except ValueError:
+        return ""                          # a name: nothing to compare
+    if not tv.is_private or tv in ipaddress.ip_network("100.64.0.0/10"):
+        return ""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((target[0], target[1]))      # picks the route; sends nothing
+            mine = ipaddress.ip_address(s.getsockname()[0])
+    except OSError:
+        return ""
+    if ipaddress.ip_network(f"{mine}/24", strict=False) == \
+            ipaddress.ip_network(f"{tv}/24", strict=False):
+        return ""
+    return (f" This PC is on {mine} and the TV is at {tv}: different networks, which is "
+            "what happens when a second router (a TP-Link connected by cable, say) runs its "
+            "own Wi-Fi in router mode. Set that router to Access Point mode so every Wi-Fi "
+            "is one network, or install Tailscale on the TV and add its 100.x address "
+            "after a comma in Settings → Devices.")
+
+
 def _connection(target: "tuple[str, int]"):
     global _dev, _dev_target
     key = f"{target[0]}:{target[1]}"
@@ -125,6 +175,11 @@ def _describe(exc: "Exception | None", target: "tuple[str, int]") -> str:
     if "unauthorized" in msg.lower() or "auth" in name.lower():
         return ("The TV didn't allow this PC. Accept \"Allow USB debugging?\" on the TV "
                 "(tick Always allow), then try again.")
+    if isinstance(exc, OSError) or "timeout" in name.lower():
+        # Another router's subnet usually shows up as a timeout: the packets are dropped.
+        hint = _same_subnet_hint(target)
+        if hint:
+            return f"I can't reach the TV at {where}." + hint
     if isinstance(exc, (TimeoutError,)) or "timeout" in name.lower():
         return (f"The TV at {where} didn't answer in time. If it's showing \"Allow USB "
                 "debugging?\", accept it (tick Always allow) and try again.")
@@ -134,10 +189,16 @@ def _describe(exc: "Exception | None", target: "tuple[str, int]") -> str:
     return f"The TV connection failed: {msg or name or 'unknown error'}"
 
 
+def _refused_us(exc: "Exception | None") -> bool:
+    """The TV answered and said no: another address for it won't change that."""
+    return "unauthorized" in str(exc or "").lower() or "auth" in type(exc).__name__.lower()
+
+
 def _on_tv(host: str, command: str, run) -> "tuple[bool, bytes, str]":
     """Run `run(device)` → bytes on the TV's ADB connection: (ran, output, why-not)."""
-    target = _parse_target(host)
-    if not target:
+    global _last_good
+    targets = _targets(host)
+    if not targets:
         return False, b"", "That isn't a valid TV address."
     if not command.strip() or len(command) > _MAX_COMMAND:
         return False, b"", "Refused an empty or oversized TV command."
@@ -146,18 +207,32 @@ def _on_tv(host: str, command: str, run) -> "tuple[bool, bytes, str]":
     except ImportError:
         return False, b"", "TV control needs the adb-shell package — pip install adb-shell."
     with _lock:
-        # Twice when reusing a socket: a TV that went to standby drops it without
-        # closing it, so the first command afterwards fails on the dead connection.
-        # A fresh connect isn't retried — that would double the first-pairing wait.
-        last = None
-        reusing = _dev is not None and _dev_target == f"{target[0]}:{target[1]}"
-        for _ in range(2 if reusing else 1):
-            try:
-                return True, run(_connection(target)) or b"", ""
-            except Exception as exc:  # noqa: BLE001
-                last = exc
-                _drop()
-        return False, b"", _describe(last, target)
+        last, at = None, targets[0]
+        for target in targets:
+            for _ in range(2):
+                reusing = _dev is not None and _dev_target == _key(target)
+                try:
+                    dev = _connection(target)
+                except Exception as exc:  # noqa: BLE001 — not reachable this way
+                    last, at = exc, target
+                    _drop()
+                    break
+                try:
+                    out = run(dev) or b""
+                except Exception as exc:  # noqa: BLE001
+                    last, at = exc, target
+                    _drop()
+                    # A TV that went to standby drops the socket without closing it, so
+                    # the first command on a reused one fails: reconnect once. A command
+                    # that failed on a fresh connection isn't sent down another path.
+                    if reusing:
+                        continue
+                    return False, b"", _describe(exc, target)
+                _last_good = _key(target)
+                return True, out, ""
+            if _refused_us(last):
+                break
+        return False, b"", _describe(last, at)
 
 
 def shell(host: str, command: str) -> "tuple[bool, str, str]":
