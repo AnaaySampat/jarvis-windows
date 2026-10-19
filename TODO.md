@@ -23,6 +23,11 @@ pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (uncha
 - [ ] **TV with two addresses** (home IP + Tailscale IP), and the "different network"
   message from a PC on the other router's Wi-Fi.
 - [ ] **Update notice**: needs a GitHub release newer than the installed version.
+- [ ] **Send this to the TV** (built and unit-tested, never run): YouTube in Chrome,
+  then Edge, at ~10 minutes in → "send this to the TV" (TV starts there? PC paused?);
+  Netflix in Chrome (TV resumes the same episode?); with the video tab not in front
+  (should say so, not send another video); Spotify playing (should refuse). Check the
+  address bar is readable through UI Automation on the user's browser language.
 - [ ] **Wake-on-LAN** (built and unit-tested, never on real hardware): with Remote
   start on, let the TV go fully off (deep standby), then "turn on the TV"
   (`[TV]` log: packet sent, then answered). Check Settings → Devices → TV shows the

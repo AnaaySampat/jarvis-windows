@@ -173,11 +173,13 @@ def _tv_tools(paired: bool) -> list:
         "the TV's screen and answers about it ('what's on my TV?'). 'task' does a "
         "multi-step job by sight — navigating menus, picking a specific search result, "
         "changing a TV setting — that no other action covers. Neither can see inside "
-        "Netflix: it blocks screenshots.",
+        "Netflix: it blocks screenshots. 'cast' moves what's playing on this PC (YouTube "
+        "or Netflix in the browser) to the TV at the same point — 'send this to the TV', "
+        "'put this on the TV' — or plays a YouTube/Netflix link there.",
         {"action": _str("What to do on the TV.",
                         ["play", "open_app", "pause", "resume", "volume_up", "volume_down",
                          "set_volume", "mute", "power_on", "power_off", "key", "status",
-                         "look", "task"]),
+                         "look", "task", "cast"]),
          "target": _str("play: the show, film or video to put on (omit to resume). "
                         "open_app: the app name. key: a remote button the user named — up, "
                         "down, left, right, ok, back, home, next, previous, fast forward, "
@@ -186,7 +188,9 @@ def _tv_tools(paired: bool) -> list:
                         "to navigate — that's a task. set_volume: the level 0-100. "
                         "volume_up/volume_down: how many steps (default 5). look: the "
                         "question about the screen. task: the whole goal in plain "
-                        "English, e.g. 'on YouTube, play the second result for lofi'."),
+                        "English, e.g. 'on YouTube, play the second result for lofi'. "
+                        "cast: a YouTube or Netflix link, or omit for what's playing on "
+                        "this PC."),
          "app": _str("For play: 'netflix' for shows and films (default), 'youtube' for "
                      "videos, music or anything the user says is on YouTube.",
                      ["netflix", "youtube"]),

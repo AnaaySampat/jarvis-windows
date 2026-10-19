@@ -345,7 +345,10 @@ _TV_PROMPT = (
     "itself, so add no other TV calls for it, and never navigate with a series of 'key' "
     "presses — you can't see where they land ('key' is for a button the user names). "
     "Use the direct actions (play, pause, volume…) when one fits. Nothing inside Netflix "
-    "can be seen (it blocks screenshots); there, only play/pause/resume and 'key' work."
+    "can be seen (it blocks screenshots); there, only play/pause/resume and 'key' work. "
+    "'Send this to the TV' / 'put this on the TV' about something playing on the PC is "
+    "'cast' with no target: it finds it, plays it on the TV at the same point and pauses "
+    "it here."
 )
 # Every other turn while a TV is paired: the routing rule alone. The full brief
 # above is ~330 tokens, paid only on a turn about the TV or right after one.
@@ -366,8 +369,8 @@ def _tv_turn(text: str) -> bool:
 
 _TV_ACTION_SHAPE = (
     '{"type":"tv","do":"play|open_app|pause|resume|volume_up|volume_down|set_volume|mute|'
-    'power_on|power_off|key|status|look|task","target":"show / app / button / level / '
-    'question / goal","app":"netflix|youtube","season":1,"episode":1}'
+    'power_on|power_off|key|status|look|task|cast","target":"show / app / button / level / '
+    'question / goal / link","app":"netflix|youtube","season":1,"episode":1}'
 )
 
 # Full prompt (core + catalog) — kept for any caller that still expects one blob.

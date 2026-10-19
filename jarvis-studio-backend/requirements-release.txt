@@ -46,5 +46,9 @@ pyautogui>=0.9.54       # computer control
 aiortc>=1.9.0           # live remote-desktop WebRTC stream to the phone (optional)
 adb-shell>=0.4.4       # Android TV control over network ADB (optional)
 neonize==0.5.2         # WhatsApp channel (optional; Go core + libmagic DLLs)
+winrt-runtime>=2.0.0                        # "send this to the TV": Windows media controls
+winrt-Windows.Foundation>=2.0.0
+winrt-Windows.Foundation.Collections>=2.0.0
+winrt-Windows.Media.Control>=2.0.0
 opencv-python>=4.8.0    # video recording
 nvidia-ml-py            # GPU telemetry for HUD

@@ -18,6 +18,7 @@ WebSocket also serves a cryptographically paired phone over Tailscale. See
 | WhatsApp channel (neonize linked device; who may command; reply/approval routing) | `jarvis-studio-backend/whatsapp_channel.py`, `main._run_whatsapp_turn` |
 | Raw actions (apps, fs, computer, browser) | `jarvis-studio-backend/actions/` |
 | Android TV (network ADB, screen capture) / TV operator by sight | `jarvis-studio-backend/actions/tv.py` / `tv_operator.py` — Netflix blocks every screenshot (DRM, by design) |
+| "Send this to the TV" (what's playing: Windows media controls + the browser's address bar) | `jarvis-studio-backend/actions/now_playing.py`, `tv.cast` |
 | Wake-on-LAN (TV from off; the PC's adapters sent to the phone in `auth.ready`) | `jarvis-studio-backend/actions/wol.py`, `tv.wake`, `websocket_server.set_ready_info` |
 | Transport, auth, remote allowlist | `jarvis-studio-backend/server/websocket_server.py` |
 | Phone pairing crypto + registry | `jarvis-studio-backend/autonomy/device_identity.py` |
@@ -40,7 +41,7 @@ cd jarvis-studio-backend; python -m unittest discover -s . -p "test_*.py" -t .
 cd jarvis-studio-gui; npm run build
 ```
 
-383 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
+400 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
 installs a hand-picked minimum — add to that list if a new test needs a module).
 For anything touching the live voice/WS wiring, run the app (`python start.py`),
 don't stop at compiling.

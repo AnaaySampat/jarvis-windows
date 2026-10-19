@@ -189,6 +189,16 @@ Two fixes, either one works:
 
 If the TV can't be reached because it's on another router's network, JARVIS says so.
 
+## Send this to the TV
+
+Watching YouTube or Netflix in the browser? "Send this to the TV" plays it on the TV at
+the same point and pauses it on the PC once the TV is playing (Netflix: paused here
+first, so your profile resumes on the TV where it stopped). JARVIS reads what's playing
+and where from Windows' media controls (the `winrt-Windows.Media.Control` package) and
+which video it is from the browser's address bar, so the tab has to be the one in
+front. A YouTube or Netflix link works too: "play this on the TV: <link>". The phone
+app does the same for what's playing on the phone.
+
 ## Switching things on from off (Wake-on-LAN)
 
 "Turn on the TV" works even when the TV is fully off (deep standby with its network

@@ -110,6 +110,10 @@ hiddenimports = [
     "google.auth.transport.requests",
     "uiautomation",
     "pyautogui",
+    # "send this to the TV": Windows' media controls (actions/now_playing.py)
+    "winrt.windows.media.control",
+    "winrt.windows.foundation",
+    "winrt.windows.foundation.collections",
     "cv2",
     "pynvml",
 ]
