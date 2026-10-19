@@ -47,6 +47,8 @@ _KEYS: "dict[str, tuple[str, ...]]" = {
     "spotify_redirect_uri": ("SPOTIFY_REDIRECT_URI",),
     "elevenlabs_api_key": ("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
     "google_maps_key": ("GOOGLE_MAPS_API_KEY", "GOOGLE_MAPS_KEY", "MAPS_API_KEY"),
+    # Web search backup, used only when Gemini grounding can't answer.
+    "tavily_api_key": ("TAVILY_API_KEY",),
 }
 
 # Keys we treat as genuinely sensitive when deciding whether onboarding is needed.

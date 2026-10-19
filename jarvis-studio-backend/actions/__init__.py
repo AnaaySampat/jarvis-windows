@@ -920,6 +920,30 @@ def _run_one(spec: dict) -> dict:
         return {"type": "ui", "do": do, "target": do, "ok": True,
                 "message": labels.get(do, "Done.")}
 
+    # ── The model's own plumbing (never shown as a card or spoken) ────────────
+    elif atype == "load_tools":
+        from llm import live_tools
+        asked = [g for g in spec.get("groups") or [] if g in live_tools.GROUPS]
+        if not asked:
+            return {"type": atype, "ok": False, "internal": True, "speak": "",
+                    "message": "No such tool group.",
+                    "feed_to_model": {"name": "load_tools", "content":
+                                      "No such group. Groups: "
+                                      + ", ".join(live_tools.GROUPS) + "."}}
+        live_tools.activate(asked)
+        names = [t for g in asked for t in live_tools.GROUPS[g][1]]
+        return {"type": atype, "ok": True, "internal": True, "speak": "",
+                "message": "Loaded tools: " + ", ".join(asked),
+                "feed_to_model": {"name": "tools loaded", "content":
+                                  "Now available: " + ", ".join(names)
+                                  + ". Call the one the request needs."}}
+    elif atype == "read_skill":
+        import skill_files
+        ok, text = skill_files.read(spec.get("name") or target)
+        return {"type": atype, "ok": ok, "internal": True, "speak": "",
+                "message": text.splitlines()[0][:120],
+                "feed_to_model": {"name": "skill", "content": text}}
+
     else:
         ok, msg = False, f"Unknown action type '{atype}'."
 

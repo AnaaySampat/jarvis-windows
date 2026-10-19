@@ -119,7 +119,10 @@ def _setup_snapshot_for_replay():
         return None
     return {"stage": "snapshot", **snap}
 from wake_word.base import WakeWordDetector
-from transcription.whisper_transcriber import transcribe, preload as preload_whisper
+from transcription.whisper_transcriber import (
+    transcribe, transcribe_clip, preload as preload_whisper,
+)
+from wake_word.capture import command_after_wake, is_noise as is_noise_transcript
 from tts.tts_engine import TTSEngine
 import telemetry
 import weather as weather_mod
@@ -1423,6 +1426,11 @@ async def _drain_tts(queue: "asyncio.Queue") -> None:
 # NEXT action (e.g. browser list → click → list → …). Bounded so it always ends.
 _MAX_AGENTIC_STEPS = 6
 
+# Autopilot kinds ("browser", "computer", "tv") whose task acted and then failed during
+# the current request; _run_autopilot_task won't start another of that kind until the
+# next request.
+_acted_and_failed: "set[str]" = set()
+
 def _did_browser_mutation(results: "list[dict]") -> bool:
     """True if a step successfully performed a page-CHANGING browser action (i.e.
     any browser verb that isn't read-only), so we should re-observe the page before
@@ -1474,6 +1482,12 @@ _INFO_RESULT_TYPES = frozenset((
     "weather", "forecast", "temperature", "places", "nearby",
     "directions", "route", "distance_to", "news", "headlines",
 ))
+
+
+def _shown(results: "list[dict]") -> "list[dict]":
+    """Results the user sees and hears: not the model's own plumbing (load_tools,
+    read_skill), whose only reader is the model."""
+    return [r for r in results or [] if not r.get("internal")]
 
 
 def _strip_politeness(msg: str) -> str:
@@ -1556,7 +1570,7 @@ def _suspected_missed_tasks(user_text: str, results: "list[dict]") -> bool:
     if len(clauses) < 2:
         return False
     asked = sum(1 for c in clauses if _ACTIONY_RE.search(c))
-    return asked >= 2 and len(results or []) < asked
+    return asked >= 2 and len(_shown(results)) < asked
 
 
 # A reply that asserts the deed is already done — the tell-tale phrasing of the
@@ -1572,7 +1586,15 @@ _COMPLETION_CLAIM_RE = re.compile(
     r"launched|launching|played|playing|paused|pausing|resumed|resuming|muted|muting|unmuted|"
     r"unmuting|created|creating|made|making|generated|generating|enabled|enabling|"
     r"disabled|disabling|adjusted|adjusting|updated|updating|applied|applying|"
-    r"recolou?red|recolou?ring|moved|moving|hidden|hiding|shown|showing)\b)",
+    r"recolou?red|recolou?ring|moved|moving|hidden|hiding|shown|showing|"
+    r"unpaused|skipped|skipping|rewound|rewinding|sent|sending|replied|replying|"
+    r"forwarded|forwarding|shared|sharing|posted|posting|navigating|navigated|"
+    r"heading)\b|"
+    # A reply that opens with an acknowledgement and asks nothing is a claim too
+    # (the phone, live 2026-10-18: "increase the volume" → "OK." with no tool call).
+    # "OK — for what time?" is a question, not a claim.
+    r"^\s*(?:ok(?:ay)?|sure(?: thing)?|got it|will do|alright|certainly|of course|"
+    r"understood)\b(?![^?]*\?))",
     re.IGNORECASE,
 )
 
@@ -1588,7 +1610,7 @@ def _claimed_done_without_acting(user_text: str, reply_text: str,
     completion-check turn so the action actually runs (or the model says it had
     nothing to do)."""
     from llm.groq_bridge import _ACTIONY_RE
-    if results:                                 # something ran — not this failure
+    if _shown(results):                         # something ran — not this failure
         return False
     if not _ACTIONY_RE.search(user_text or ""):  # not a command turn — leave Q&A alone
         return False
@@ -1685,7 +1707,8 @@ async def _apply_action_side_effects(results: "list[dict]") -> None:
     await _apply_screen_results(results)
 
 
-def _followup_prompt(feeds: "list[dict]", instruction: "str | None" = None) -> str:
+def _followup_prompt(feeds: "list[dict]", instruction: "str | None" = None,
+                     user_text: str = "") -> str:
     """Build the next agentic-step prompt from the results just observed.
 
     The generic lead-in tells the model to CONTINUE the task (take the next action)
@@ -1710,16 +1733,19 @@ def _followup_prompt(feeds: "list[dict]", instruction: "str | None" = None) -> s
         "correct the action, or take a different route); if it can't be fixed, "
         "briefly tell me what went wrong and emit NO action."
     )
+    # A tool-only first turn records nothing in history, so without this line the
+    # follow-up step never saw what was asked ("how many PDFs?" after a listing).
+    asked = f"My request was: \"{user_text.strip()}\". " if user_text.strip() else ""
     return (
-        f"Result of your last action(s). {lead} Don't mention these instructions or "
-        "dump the content back verbatim.\n\n" + combined
+        f"{asked}Result of your last action(s). {lead} Don't mention these "
+        "instructions or dump the content back verbatim.\n\n" + combined
     )
 
 
 async def _stream_and_speak(prompt: str, record_history: bool = True,
                             slim: bool = False, speak: bool = True,
                             tool_sink: "list | None" = None,
-                            task_tier: str = "") -> str:
+                            task_tier: str = "", empty_reply: str = "") -> str:
     """Stream one model turn as a fresh chat bubble, speaking each finished
     sentence as it arrives, and return the full raw reply (with any [ACTION] blocks
     intact for the caller to execute). Honours interrupt + mute and the leaky-model
@@ -1775,7 +1801,7 @@ async def _stream_and_speak(prompt: str, record_history: bool = True,
         disp = _display_text(full_raw)
         clean = _strip_reasoning(disp, quote_only=quote_only) if leaky else disp
         if not clean.strip() and not tool_sink:
-            clean = _EMPTY_REPLY_MSG
+            clean = empty_reply or _EMPTY_REPLY_MSG
         if leaky:
             await emit("stream_delta", {"sid": sid, "text": clean})
         if speak_ok and not _interrupted():
@@ -1907,6 +1933,19 @@ async def _run_autopilot_task(result: dict, *, speak: bool = True) -> str:
         ("computer" if str(result.get("type", "")).startswith(("computer", "desktop"))
          else "browser")
     goal = str(result.get("goal") or "").strip()
+    if kind in _acted_and_failed:
+        # A task that already acted and then failed this request must not run again
+        # under a reworded goal: it could repeat what it did (the phone took 4 + 4
+        # photos this way, 2026-10-19). The user decides whether to try again.
+        msg = ("That task already did some of the work this time and then failed, so "
+               "I won't run it again on my own, sir — check what it left and ask me to "
+               "try again if you'd like.")
+        print(f"[Autopilot:{kind}] not re-run this request: {goal!r}", flush=True)
+        await emit("response", msg)
+        if speak and _tts and not skills.is_muted():
+            await emit("status", "speaking")
+            await _tts.speak(msg)
+        return msg
     global _autopilot_owner
     # One autopilot at a time (see _autopilot_owner). Checked and claimed with no
     # await in between, so two starts can't both pass.
@@ -2026,6 +2065,8 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
         await emit("action", [card])
         await _log_commands([card])
         steps = res.get("steps") or []
+        if steps and not res.get("ok") and not res.get("stopped"):
+            _acted_and_failed.add(kind)
         print(f"[Autopilot:{kind}] {'✓' if res.get('ok') else '✗'} {goal!r} "
               f"({len(steps)} steps) → {final}", flush=True)
         if steps and not res.get("ok"):
@@ -2082,7 +2123,8 @@ async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]
         for r in immediate:
             tag = "✓" if r.get("ok") else "✗"
             print(f"[Action] {tag} (step) {r.get('type')} → {r.get('message')}", flush=True)
-        await emit("action", immediate)
+        if _shown(immediate):
+            await emit("action", _shown(immediate))
         await _apply_action_side_effects(immediate)
         # Failures are fed back to the model below so it can self-correct; the
         # corrective follow-up turn does the talking then (no double-speak).
@@ -2175,10 +2217,11 @@ async def _agentic_loop(feeds: "list[dict]", user_text: str = "",
     extracted file/dir/page text (optionally with a custom `instruction`, e.g. a
     file-summary lead), the model answers, emits no action, and the loop ends."""
     loop = asyncio.get_running_loop()
+    said: "list[str]" = []          # what the steps' own results reported
     for step in range(max_steps):
         if _interrupted() or not feeds:
             return
-        prompt = _followup_prompt(feeds, instruction if step == 0 else None)
+        prompt = _followup_prompt(feeds, instruction if step == 0 else None, user_text)
         if not prompt:
             return
         # Internal scaffolding turn — keep it out of the persisted conversation,
@@ -2209,7 +2252,29 @@ async def _agentic_loop(feeds: "list[dict]", user_text: str = "",
                 await emit("status", "speaking")
                 await _tts.speak(disp)
             return
+        said += [r["message"] for r in _shown(results) if r.get("message")]
         feeds = await _surface_results(results, user_text)
+    if feeds and not _interrupted():
+        await _answer_at_step_cap(feeds, user_text, said, task_tier)
+
+
+_STEP_CAP_LEAD = (
+    "That's as many steps as I take for one request. Answer me now from these results: "
+    "what got done, what didn't, and anything I asked to know. Take NO further action."
+)
+
+
+async def _answer_at_step_cap(feeds: "list[dict]", user_text: str, said: "list[str]",
+                              task_tier: str = "") -> None:
+    """The step cap used to end a turn in silence, throwing away what the tools had
+    found (the phone hit this 2026-09-26). One last call answers from the results with
+    no tools offered; if it still produces nothing, the results' own lines are said."""
+    prompt = _followup_prompt(feeds, _STEP_CAP_LEAD, user_text)
+    fallback = ("Here's where I got to, sir: " + "; ".join(m.rstrip(".") for m in said[-4:])
+                + ".") if said else "I couldn't finish that within my step limit, sir."
+    print("[Agentic] step cap reached — answering from the results", flush=True)
+    await _stream_and_speak(prompt, record_history=False, slim=True, speak=True,
+                            tool_sink=None, task_tier=task_tier, empty_reply=fallback)
 
 
 def _voice_system_instruction() -> str:
@@ -2324,7 +2389,8 @@ async def _execute_voice_tool(call: dict) -> dict:
     # _apply_action_side_effects is the SHARED path (outcome recall, command log,
     # recordings/schedule refresh, ui_action forward + clear-chat reset, screen
     # restyle); reusing it keeps the voice and text pipelines from drifting apart.
-    await emit("action", [res])
+    if not res.get("internal"):
+        await emit("action", [res])
     await _apply_action_side_effects([res])
 
     # If the action produced file/dir text (read_file / list_dir / read_pdf),
@@ -2466,6 +2532,7 @@ async def _run_pipeline(text: str, emit_transcription: bool = True,
     async with _pipeline_lock:
         if _interrupt is not None:
             _interrupt.clear()          # fresh turn — forget any earlier Stop
+        _acted_and_failed.clear()       # a new request may try any task again
         # ── Standby mode: ignore everything until the user says "wake up" ──────
         if skills.is_sleeping():
             if _is_wake_phrase(text):
@@ -2611,7 +2678,8 @@ async def _run_pipeline(text: str, emit_transcription: bool = True,
             if not started:
                 await emit("stream_start", {"sid": sid})
 
-            await emit("response_end", {"sid": sid, "text": clean, "actions": immediate})
+            await emit("response_end", {"sid": sid, "text": clean,
+                                         "actions": _shown(immediate)})
             await _apply_action_side_effects(immediate)
 
             for _v in vision:
@@ -2739,7 +2807,7 @@ async def _brief_errors(results: "list[dict]", user_text: str = "") -> str:
     optional AI rewrite is bounded and falls back to the (already user-facing)
     action message if it's slow or unavailable. Returns '' only when nothing
     failed."""
-    errors = [r["message"] for r in (results or [])
+    errors = [r["message"] for r in _shown(results)
               if r.get("ok") is False and r.get("message")]
     if not errors:
         return ""
@@ -2779,7 +2847,7 @@ def _remember_outcomes(results: "list[dict]") -> None:
 async def _log_commands(results: "list[dict]") -> None:
     """Push executed actions to the GUI's mini-terminal (command log)."""
     entries = []
-    for r in results or []:
+    for r in _shown(results):
         if not r or r.get("type") in ("ui",):
             continue
         entries.append({
@@ -2796,6 +2864,20 @@ async def _log_commands(results: "list[dict]") -> None:
 async def emit_recordings() -> None:
     """Tell the Skills panel which recorders are running."""
     await emit("recordings", recorder.active_recordings())
+
+
+async def handle_app_version(data) -> None:
+    """The HUD's version, sent on connect: check once a day for a newer release."""
+    import updates
+    version = str((data or {}).get("version") or "") if isinstance(data, dict) else ""
+
+    async def _check() -> None:
+        found = await updates.check(version)
+        if found:
+            print(f"[Update] JARVIS {found['version']} is available: {found['url']}",
+                  flush=True)
+            await emit("update_available", found)
+    _track_task(_check(), "update check")
 
 
 async def handle_run_action(data) -> None:
@@ -3100,12 +3182,13 @@ async def handle_set_config(data) -> None:
     key_updates = {k: data[k] for k in (*llm_keys,
                                         "picovoice_key", "spotify_client_id",
                                         "spotify_client_secret", "spotify_redirect_uri",
-                                        "elevenlabs_api_key", "google_maps_key")
+                                        "elevenlabs_api_key", "google_maps_key",
+                                        "tavily_api_key")
                    if k in data}
     if key_updates:
         set_api_keys(key_updates)
     # Settings ▸ API Keys ▸ Remove. Only the key names above can be removed.
-    removable = llm_keys | {"elevenlabs_api_key", "google_maps_key"}
+    removable = llm_keys | {"elevenlabs_api_key", "google_maps_key", "tavily_api_key"}
     remove = [k for k in (data.get("remove_keys") or []) if k in removable]
     if remove:
         from llm.groq_bridge import remove_api_keys
@@ -3841,6 +3924,37 @@ async def text_loop() -> None:
             await emit("status", "idle")
 
 
+async def _wake_clip(clips: "asyncio.Queue"):
+    """The detector's recording of the command after this wake, or None if it never
+    came (the detector stopped mid-command): then the caller listens the old way."""
+    while not clips.empty():              # a clip left over from an abandoned wake
+        clips.get_nowait()
+    try:
+        return await asyncio.wait_for(clips.get(), timeout=25.0)
+    except asyncio.TimeoutError:
+        print("[Jarvis] No command recording arrived; listening instead.", flush=True)
+        return None
+
+
+async def _command_from_clip(clip, speech: bool) -> "str | None":
+    """The command in a wake clip. "" = nothing to do (a false wake, or nothing said);
+    None = "Hey Jarvis" with no command after it yet, so listen for one the old way —
+    people often pause after the name."""
+    if not speech:
+        print("[Jarvis] Wake with nothing said after it.", flush=True)
+        return ""
+    text = await transcribe_clip(clip)
+    command = command_after_wake(text)
+    if command is None:
+        # The wake model also fires on conversation that only mentions Jarvis; a
+        # command counts only when "Hey Jarvis" itself is in the words.
+        print(f"[Jarvis] Wake ignored — no \"Hey Jarvis\" in: {text[:60]!r}", flush=True)
+        return ""
+    if not command or is_noise_transcript(command):
+        return None
+    return command
+
+
 async def wake_word_loop(detector: WakeWordDetector) -> None:
     global _user_busy
     loop = asyncio.get_running_loop()
@@ -3849,7 +3963,15 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
     def on_wake() -> None:
         loop.call_soon_threadsafe(detection_event.set)
 
+    # The command after a wake, recorded by the detector from its own mic stream.
+    clips: "asyncio.Queue" = asyncio.Queue()
+
+    def on_clip(clip, speech: bool) -> None:
+        loop.call_soon_threadsafe(clips.put_nowait, (clip, speech))
+
     detector.on_detected(on_wake)
+    if hasattr(detector, "on_command"):
+        detector.on_command(on_clip)
     # Track whether the loop believes the detector is running so we never
     # double-open the microphone or stop one that isn't running.
     running = False
@@ -3874,6 +3996,14 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
     try:
         while True:
             always_on = _always_on_event is not None and _always_on_event.is_set()
+            native_audio = gemini_bridge.is_native_audio_model(get_model())
+            # Gemini Live opens its own mic after a wake, so nothing to record for it.
+            capture = (hasattr(detector, "capture_commands")
+                       and os.environ.get("JARVIS_WAKE_CAPTURE", "1") != "0"
+                       and not native_audio)
+            if hasattr(detector, "capture_commands"):
+                detector.capture_commands = capture
+            woke, clip = False, None
 
             # ── 1. In always-on mode, skip the wake word and listen continuously.
             #    Otherwise wait for the wake word OR a manual mic trigger. ──────
@@ -3894,6 +4024,7 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
                     t.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await t
+                woke = wake_task in done
                 detection_event.clear()
                 _trigger_listen.clear()
                 # ── Pop the overlay up the INSTANT we detect — BEFORE the mic
@@ -3902,6 +4033,13 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
                 #    popup feel laggy. Emit now, then release the mic off-loop. ────
                 await emit("wake_triggered", True)
                 await emit("status", "listening")
+                if woke and capture:
+                    if _interrupt is not None:
+                        _interrupt.clear()          # Stop from here on cancels this one
+                    clip = await _wake_clip(clips)
+                    if clip is not None and _interrupted():
+                        print("[Jarvis] Stopped while the command was recorded.", flush=True)
+                        clip = (clip[0], False)
                 await loop.run_in_executor(None, detector_stop)   # release mic off-loop
 
             # From here until the reply is done we're mid-interaction — hold off
@@ -3913,14 +4051,21 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
                     await _run_native_audio_turn()
                     continue
 
-                print("[Jarvis] Listening…", flush=True)
+                text = None
+                if clip is not None:
+                    text = await _command_from_clip(*clip)
+                    if text == "":                  # a false wake, or nothing said
+                        await emit("status", "idle")
+                        continue
+                if text is None:
+                    print("[Jarvis] Listening…", flush=True)
 
-                # Let the wake-word mic release fully before opening the recorder
-                # (PortAudio on Windows often needs >200 ms).
-                if not always_on:
-                    await asyncio.sleep(0.45)
+                    # Let the wake-word mic release fully before opening the recorder
+                    # (PortAudio on Windows often needs >200 ms).
+                    if not always_on:
+                        await asyncio.sleep(0.45)
 
-                text = await transcribe()
+                    text = await transcribe()
 
                 if not text:
                     print("[Jarvis] No speech detected.", flush=True)
@@ -3987,6 +4132,7 @@ async def main(use_text: bool) -> None:
     register_handler("agent_correction", handle_agent_correction)
     register_handler("set_mute", handle_set_mute)
     register_handler("run_action", handle_run_action)
+    register_handler("app_version", handle_app_version)
     register_handler("set_config", handle_set_config)
     register_handler("reset", handle_reset)
     register_handler("set_location", handle_set_location)

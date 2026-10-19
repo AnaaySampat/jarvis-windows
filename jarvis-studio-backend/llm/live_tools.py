@@ -20,6 +20,8 @@ so both paths share one execution + permission-gating code path.
 
 from __future__ import annotations
 
+import re
+
 
 def _fn(name: str, description: str, properties: "dict | None" = None,
         required: "list | None" = None) -> dict:
@@ -425,7 +427,130 @@ def function_declarations(places_ok: "bool | None" = None,
              "new_task": _str("New task text when editing an item.")},
             ["action"]),
         *_tv_tools(_tv_paired()),
+        *_skill_tools(),
     ]
+
+
+def _skill_tools() -> list:
+    """`read_skill` — only when the user has a skill file to read (skill_files.py)."""
+    try:
+        import skill_files
+        has = bool(skill_files.catalog())
+    except Exception:  # noqa: BLE001 — a broken skills folder never costs the palette
+        has = False
+    if not has:
+        return []
+    return [_fn("read_skill",
+        "Read one of the user's SKILLS (their own how-to notes) before doing what it "
+        "covers, then follow it with your other tools.",
+        {"name": _str("The skill's name, exactly as SKILLS lists it.")}, ["name"])]
+
+
+# ── Tool groups: what one chat turn advertises ────────────────────────────────
+# Every declaration is input tokens on every call: the whole palette is ~4.4k tokens,
+# most of a minute's budget on Groq's free tier, paid again on each follow-up step.
+# A turn now carries CORE, plus any group its request (or the last two turns) points
+# at; load_tools pulls in the rest for one extra round trip. The Gemini Live voice
+# session still gets function_declarations() whole — it is sent once per session.
+
+GROUPS = {
+    "files": ("Files and folders: read a file, PDF or the clipboard, list or open a "
+              "folder, open a file JARVIS saved, save text as a PDF, delete a file",
+              ("read_file", "list_directory", "read_pdf", "text_to_pdf", "open_folder",
+               "open_saved_file", "delete_file", "read_clipboard")),
+    "places": ("Nearby places, directions and distances, pinning the user's location",
+               ("find_places", "get_directions", "set_my_location")),
+    "media": ("Recording audio/video/screen, QR codes, generating images, Spotify",
+              ("record", "make_qr_code", "generate_image", "control_spotify")),
+    "planner": ("The agenda/schedule, recurring routines, playbooks (taught recipes)",
+                ("manage_schedule", "manage_routine", "manage_playbook")),
+    "hud": ("JARVIS's own HUD: theme, background, panels, opening its views, "
+            "clearing the chat",
+            ("customize_screen", "control_interface", "clear_conversation")),
+    "manual": ("Single manual moves in the browser or the window in front (scroll, "
+               "press a key, click one thing)",
+               ("browser_control", "computer_control")),
+    "system": ("Shutdown/restart/sleep, IP address, location, speed test, news, the "
+               "time or date, forgetting a remembered fact",
+               ("power_control", "get_ip", "get_location", "internet_speed", "get_news",
+                "get_time", "get_day", "forget_fact")),
+}
+
+# Cheap word cues that pre-load a group, so the common turn never pays load_tools.
+# Over-matching only costs tokens; under-matching costs a round trip, so be generous.
+_CUES = {
+    "files": r"\b(files?|folders?|director(?:y|ies)|pdfs?|documents?|downloads|desktop|"
+             r"clipboard|copied|paste|txt|csv|delete|recycle|saved|the recording|"
+             r"the screenshot|read (?:the|my|this|that))\b",
+    "places": r"\b(near(?:by|est)?|closest|around here|directions?|how far|distance|"
+              r"route|drive|commute|restaurants?|caf[eé]s?|coffee|bakery|pharmacy|atm|"
+              r"hotels?|petrol|fuel|mall|airport|station|where am i|my location|"
+              r"i'?m (?:in|at|near)|i am (?:in|at|near)|pin)\b",
+    "media": r"\b(record(?:ing)?|qr|image|picture|photo|draw(?:ing)?|logo|wallpaper|"
+             r"illustration|generate|spotify|song|music|playlist|album|artist)\b",
+    "planner": r"\b(schedule|agenda|calendar|meeting|appointment|routines?|playbooks?|"
+               r"every (?:day|morning|evening|night|week|weekday)|each (?:day|morning)|"
+               r"daily|weekdays?|weekends?|teach|recipe)\b",
+    "hud": r"\b(theme|colou?r|background|panels?|hud|layout|density|compact|interface|"
+           r"camera|clear|reset|minimi[sz]e|maximi[sz]e|expand|collapse|terminal|"
+           r"activity|memory view|skills panel|settings)\b",
+    "manual": r"\b(scroll|press|click|type|go back|ctrl|alt|shift|hotkey|shortcut|"
+              r"disarm|this page|current page|close (?:the )?browser|tab)\b",
+    "system": r"\b(shut ?down|restart|reboot|hibernate|log ?off|sign out|ip|speed ?test|"
+              r"internet speed|bandwidth|news|headlines|time|date|what day|where am i|"
+              r"forget)\b",
+}
+_CUE_RE = {g: re.compile(p, re.IGNORECASE) for g, p in _CUES.items()}
+_TOOL_GROUP = {t: g for g, (_d, tools) in GROUPS.items() for t in tools}
+
+_active: "set[str]" = set(GROUPS)   # until the first turn: everything
+_used: "set[str]" = set()           # groups this turn called or loaded
+_recent: "list[set[str]]" = []      # what the last two turns used (newest last)
+
+
+def groups_for(text: str) -> "set[str]":
+    """The groups a request's own words point at."""
+    return {g for g, rx in _CUE_RE.items() if rx.search(text or "")}
+
+
+def begin_turn(text: str) -> "set[str]":
+    """Pick this chat turn's groups: its cues plus what the last two turns used, so a
+    follow-up ("and the other one") keeps the tools it just had."""
+    global _active, _used
+    _recent.append(_used)               # even an empty one, so old use ages out
+    del _recent[:-2]
+    _used = set()
+    _active = groups_for(text).union(*_recent)
+    return set(_active)
+
+
+def activate(groups) -> "list[str]":
+    """Add groups to this turn (load_tools). Returns the ones that are new."""
+    new = [g for g in groups if g in GROUPS and g not in _active]
+    _active.update(new)
+    _used.update(g for g in groups if g in GROUPS)
+    return new
+
+
+def _load_tools_decl(missing: "list[str]") -> dict:
+    lines = "; ".join(f"{g} = {GROUPS[g][0]}" for g in missing)
+    return _fn("load_tools",
+        "Some of your tools aren't loaded this turn. If the request needs one, call this "
+        "FIRST with the group, then use the tool. Groups: " + lines + ".",
+        {"groups": {"type": "ARRAY", "items": _str("A group name.", missing),
+                    "description": "The group(s) to load."}},
+        ["groups"])
+
+
+def turn_declarations() -> list:
+    """The palette for the current chat turn: CORE, the active groups, and load_tools
+    for whatever was left out."""
+    out = [d for d in function_declarations()
+           if _TOOL_GROUP.get(d["name"]) in (None, *_active)]
+    missing = [g for g in GROUPS if g not in _active]
+    if missing:
+        out.append(_load_tools_decl(missing))
+    return out
 
 
 # function name → builder that returns the actions.run_action() spec dict.
@@ -494,6 +619,8 @@ _SPEC = {
                                     "task": a.get("task", ""), "match": a.get("task", ""),
                                     "new_time": a.get("new_time", ""),
                                     "new_task": a.get("new_task", "")},
+    "load_tools":        lambda a: {"type": "load_tools", "groups": _group_list(a.get("groups"))},
+    "read_skill":        lambda a: {"type": "read_skill", "name": a.get("name", "")},
     "tv_control":        lambda a: {"type": "tv", "do": a.get("action", ""),
                                     "target": a.get("target", ""),
                                     "app": a.get("app", ""),
@@ -502,9 +629,25 @@ _SPEC = {
 }
 
 
+def _group_list(raw) -> "list[str]":
+    """load_tools' groups: a list, or a model that sent one name or a comma list."""
+    items = raw if isinstance(raw, list) else str(raw or "").split(",")
+    return [str(g).strip().lower() for g in items if str(g).strip()]
+
+
+def recently_used(group: str) -> bool:
+    """Whether this turn or one of the last two called a tool in `group` ("tv" counts
+    tv_control, which is core)."""
+    return group in _used or any(group in r for r in _recent)
+
+
 def to_spec(name: str, args: "dict | None") -> dict:
     """Convert a Live-API function call into an action spec for run_action()."""
     args = args or {}
+    if name in _TOOL_GROUP:
+        _used.add(_TOOL_GROUP[name])
+    elif name == "tv_control":
+        _used.add("tv")
     builder = _SPEC.get(name)
     if builder is None:
         return {"type": name, **args}          # best-effort passthrough
@@ -555,7 +698,7 @@ def _decl_to_openai(decl: dict) -> dict:
                          "parameters": params}}
 
 
-def openai_tools() -> list:
+def openai_tools(decls: "list | None" = None) -> list:
     """The tool palette in OpenAI/Groq `tools` shape, derived from the same
     declarations advertised to Gemini (a fresh list each call)."""
-    return [_decl_to_openai(d) for d in function_declarations()]
+    return [_decl_to_openai(d) for d in (function_declarations() if decls is None else decls)]

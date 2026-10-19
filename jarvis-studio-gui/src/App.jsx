@@ -392,7 +392,12 @@ export default function App() {
         <div className="hud-warns">
           {warnings.map((w) => (
             <div key={w.id} className="hud-warn">
-              <span>⚠ {w.text}</span>
+              <span>{w.link ? "⬆" : "⚠"} {w.text}</span>
+              {w.link && (
+                <button onClick={() => { runAction({ type: "open_url", url: w.link }); dismissWarning(w.id); }}>
+                  Get it
+                </button>
+              )}
               <button onClick={() => dismissWarning(w.id)}>✕</button>
             </div>
           ))}

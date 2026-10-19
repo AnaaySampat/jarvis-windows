@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from tts.speech_text import speakable
+
 _TAG_RE = re.compile(
     r"\[(CHART|SCHEDULE|FLOWCHART|TABLE|ACTION)\].*?\[/\1\]",
     re.DOTALL | re.IGNORECASE,
@@ -77,7 +79,7 @@ def ensure_piper_voice(name: str = _PIPER_VOICE) -> "tuple[bool, str]":
 
 
 def _strip_tags(text: str) -> str:
-    text = re.sub(_TAG_RE, "", text)
+    text = speakable(re.sub(_TAG_RE, "", text))
     return re.sub(r"\s+", " ", text).strip()
 
 

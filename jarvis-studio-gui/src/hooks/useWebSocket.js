@@ -94,6 +94,15 @@ export function useWebSocket() {
         if (wsRef.current !== ws) return;
         setIsConnected(true);
         clearTimeout(retryTimer.current);
+        // The backend checks GitHub for a newer release (once a day) against this.
+        import("@tauri-apps/api/app")
+          .then(({ getVersion }) => getVersion())
+          .then((version) => {
+            if (wsRef.current === ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "app_version", data: { version } }));
+            }
+          })
+          .catch(() => {});        // not inside Tauri (Vite preview): no version, no check
       };
 
       ws.onmessage = (ev) => {
@@ -199,6 +208,12 @@ export function useWebSocket() {
             break;
           case "warning":
             setWarnings(prev => [...prev, { text: msg.data, id: Date.now() + Math.random() }]);
+            break;
+          case "update_available":
+            setWarnings(prev => [...prev, {
+              text: `JARVIS ${msg.data?.version} is available.`,
+              link: msg.data?.url, id: Date.now() + Math.random(),
+            }]);
             break;
           case "sysinfo":
           case "config":

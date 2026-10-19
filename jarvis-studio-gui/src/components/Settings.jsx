@@ -341,6 +341,9 @@ const SERVICE_KEYS = [
     ph: "for premium TTS", where: "elevenlabs.io" },
   { id: "maps", name: "Google Maps", key: "google_maps_key", has: "has_google_maps_key",
     ph: "AIza… — accurate places & distances", where: "console.cloud.google.com" },
+  { id: "tavily", name: "Tavily (web search backup)", key: "tavily_api_key", has: "has_tavily_key",
+    multi: true, ph: "tvly-…", where: "app.tavily.com",
+    note: "Answers web searches only when Gemini can't: no Gemini key, or its search quota is spent." },
 ];
 const ALL_KEYS = [...LLM_PROVIDERS, ...SERVICE_KEYS];
 
@@ -390,7 +393,7 @@ function KeyCard({ p, sysInfo, value, onChange, onSave }) {
 // finds pairing, etc.
 const SECTIONS = [
   { id: "ai", label: "Intelligence", icon: "◈", words: "provider model llm vertex gemini offline ollama auto image" },
-  { id: "keys", label: "API Keys", icon: "⚿", words: "api keys groq gemini nvidia openrouter mistral claude anthropic openai gpt grok xai meta llama elevenlabs maps credentials" },
+  { id: "keys", label: "API Keys", icon: "⚿", words: "api keys groq gemini nvidia openrouter mistral claude anthropic openai gpt grok xai meta llama elevenlabs maps tavily web search credentials" },
   { id: "routing", label: "Routing & Quota", icon: "⇄", words: "smart routing rank tiers quota rate limit benched free" },
   { id: "voice", label: "Voice", icon: "◉", words: "voice speech tts piper elevenlabs chirp wake word alerts" },
   { id: "autopilot", label: "Autopilot", icon: "⌖", words: "autopilot browser desktop operator reasoning vision screenshot" },

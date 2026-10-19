@@ -29,6 +29,7 @@ import app_secrets
 import jarvis_paths
 import storage
 import memory_store
+import skill_files
 from server.websocket_server import emit
 from . import gemini_bridge
 from . import live_tools
@@ -345,6 +346,23 @@ _TV_PROMPT = (
     "Use the direct actions (play, pause, volume…) when one fits. Nothing inside Netflix "
     "can be seen (it blocks screenshots); there, only play/pause/resume and 'key' work."
 )
+# Every other turn while a TV is paired: the routing rule alone. The full brief
+# above is ~330 tokens, paid only on a turn about the TV or right after one.
+_TV_BRIEF = ("PAIRED TV\nThe user's TV is set up: anything about the TV goes to "
+             "tv_control, never the PC tools.")
+_TV_CUE_RE = re.compile(
+    r"\b(tv|telly|television|netflix|youtube|prime video|hotstar|watch(?:ing)?|shows?|"
+    r"episodes?|seasons?|series|films?|movies?|put on|play|pause|resume|louder|quieter|"
+    r"volume|mute|channel|remote|turn (?:it )?(?:off|on)|next|previous|skip|rewind)\b",
+    re.IGNORECASE)
+
+
+def _tv_turn(text: str) -> bool:
+    """A turn that gets the full TV brief: its words are about the TV, or one of the
+    last turns used it (so "pause" right after "play X on the TV" stays a TV turn)."""
+    return bool(_TV_CUE_RE.search(text or "")) or live_tools.recently_used("tv")
+
+
 _TV_ACTION_SHAPE = (
     '{"type":"tv","do":"play|open_app|pause|resume|volume_up|volume_down|set_volume|mute|'
     'power_on|power_off|key|status|look|task","target":"show / app / button / level / '
@@ -703,21 +721,25 @@ def set_stt(mode: str) -> str:
     return _config["stt"]
 
 
-async def transcribe_audio(wav_bytes: bytes) -> "str | None":
+async def transcribe_audio(wav_bytes: bytes, prompt: str = "") -> "str | None":
     """Transcribe spoken audio via Groq Whisper (whisper-large-v3-turbo).
 
     Returns the recognised text, or None on any failure (no key, network, bad
-    response) so the caller can fall back to the local model. Never raises."""
+    response) so the caller can fall back to the local model. Never raises.
+    ``prompt`` is Whisper's vocabulary hint."""
     if not _api_key or not wav_bytes:
         return None
+    data = {"model": STT_MODEL, "language": "en", "response_format": "json",
+            "temperature": "0"}
+    if prompt:
+        data["prompt"] = prompt
     try:
         # Reuse the shared keep-alive client: a fresh TCP+TLS handshake on EVERY
         # voice turn added a noticeable fixed delay before transcription started.
         resp = await _client().post(
             f"{GROQ_BASE_URL}/audio/transcriptions",
             headers={"Authorization": f"Bearer {_api_key}"},
-            data={"model": STT_MODEL, "language": "en",
-                  "response_format": "json", "temperature": "0"},
+            data=data,
             files={"file": ("speech.wav", wav_bytes, "audio/wav")},
         )
         if resp.status_code != 200:
@@ -1240,7 +1262,7 @@ async def _walk_routes(text: str = "", pinned: str = "", task_tier: str = "",
     """
     skip = set() if skip is None else skip
     for attempt in range(2):
-        for route in usable_routes(text, pinned, task_tier):
+        for route in fast_first(usable_routes(text, pinned, task_tier)):
             if route.model not in skip:
                 yield route
         if attempt:
@@ -1251,6 +1273,36 @@ async def _walk_routes(text: str = "", pinned: str = "", task_tier: str = "",
             return
         print(f"[Route] every route briefly rate-limited; waiting {wait:.1f}s", flush=True)
         await asyncio.sleep(wait + 0.25)
+
+
+# How long each model took to start answering lately. Every voice command waits on a
+# chat turn, and one slow model (the phone measured gemma-4-31b at 16.6 s where the
+# next route answered in ~2 s) costs every turn its wait. A model slow lately is tried
+# after the others; quality order is kept among the rest and it still answers if they
+# all fail. Time to the FIRST output, so a long answer never counts as slow.
+_SLOW_ROUTE_S = 8.0
+_LATENCY_MEMORY_S = 3600.0
+_latency: "dict[str, tuple[float, float]]" = {}      # provider/model -> (secs, when)
+
+
+def note_latency(route: "quota.Route", secs: float, now: "float | None" = None) -> None:
+    now = time.time() if now is None else now
+    key = f"{route.provider}/{route.model}"
+    prev = _latency.get(key)
+    if prev and now - prev[1] < _LATENCY_MEMORY_S:
+        secs = (prev[0] + secs) / 2
+    _latency[key] = (secs, now)
+
+
+def _slow_lately(route: "quota.Route", now: float) -> bool:
+    e = _latency.get(f"{route.provider}/{route.model}")
+    return bool(e) and now - e[1] < _LATENCY_MEMORY_S and e[0] > _SLOW_ROUTE_S
+
+
+def fast_first(routes: "list[quota.Route]", now: "float | None" = None) -> "list[quota.Route]":
+    """The ladder with routes slow lately moved behind the rest (stable otherwise)."""
+    now = time.time() if now is None else now
+    return sorted(routes, key=lambda r: _slow_lately(r, now))
 
 
 def _bench_route(route: "quota.Route", status: int = 0, message: str = "",
@@ -1328,7 +1380,12 @@ _ACTIONY_RE = re.compile(
     # 'switch the theme', 'recolour', 'rename', 'enable', 'increase the volume'…
     r"change|switch|adjust|recolou?r|colou?r|rename|move|swap|increase|decrease|"
     r"raise|lower|enable|disable|toggle|customi[sz]e|dim|brighten|resize|"
-    r"rearrange|update|edit|apply)\b",
+    r"rearrange|update|edit|apply|"
+    # Media follow-ups and sending (from the phone, live 2026-09-30 / 2026-10-18:
+    # "Resume" got "Resumed — back to Arcane" and a reply request got "I've sent
+    # the reply", both with no tool call and neither verb listed).
+    r"unpause|skip|rewind|fast\s*forward|louder|quieter|send|reply|email|forward|"
+    r"share|post)\b",
     re.IGNORECASE,
 )
 _ACTION_TEMPERATURE = 0.0
@@ -1743,6 +1800,7 @@ def get_sysinfo() -> dict:
         "ollama_url": _ollama_url(),
         "has_elevenlabs_key": bool(app_secrets.get("elevenlabs_api_key")),
         "has_google_maps_key": bool(app_secrets.get("google_maps_key")),
+        "has_tavily_key": bool(app_secrets.get("tavily_api_key")),
         "places_source": _places_source(),
         "storage_dir": str(storage.get_root()),
         "storage_configured": storage.is_configured(),
@@ -1850,8 +1908,18 @@ def _system_messages(user_text: str = "") -> list:
     msgs.append({"role": "system", "content": "FILE STORAGE (where you save things):\n"
                 + storage.describe()})
     if live_tools._tv_paired():
-        msgs.append({"role": "system", "content": _TV_PROMPT if native else
-                     _TV_PROMPT + "\n" + _TV_ACTION_SHAPE})
+        if native and not _tv_turn(user_text):
+            msgs.append({"role": "system", "content": _TV_BRIEF})
+        else:
+            msgs.append({"role": "system", "content": _TV_PROMPT if native else
+                         _TV_PROMPT + "\n" + _TV_ACTION_SHAPE})
+    if native:
+        skills_index = skill_files.prompt_block()
+        if skills_index:
+            msgs.append({"role": "system", "content": skills_index})
+    named = skill_files.mentioned_block(user_text)
+    if named:
+        msgs.append({"role": "system", "content": named})
     facts = memory_store.facts_block()
     if facts:
         msgs.append({"role": "system",
@@ -2563,17 +2631,72 @@ _GROUNDING_SYSTEM = (
 
 
 def web_search_available() -> bool:
-    """Grounded web search needs a Gemini path (Vertex ADC or a Gemini key)."""
-    return bool(vertex_auth.enabled() or _gemini_key)
+    """Web search needs a Gemini path (Vertex ADC or a Gemini key) or a Tavily key."""
+    return bool(vertex_auth.enabled() or _gemini_key or app_secrets.get("tavily_api_key"))
 
 
-def _grounding_model() -> str:
-    """The Gemini model to ground with: the user's selected Gemini model if they're
-    on one, otherwise the fast auto-Gemini."""
-    sel = (_selected_model or "").strip()
-    if gemini_bridge.is_gemini_model(sel) and not gemini_bridge.is_native_audio_model(sel):
-        return sel
-    return _AUTO_FAST_GEMINI
+# Google Search grounding is "not available" on the free tier for every Gemini 3.x
+# model and free on the 2.5 pair (500 requests/day, shared) — the phone found this
+# 2026-09-27, when grounding on the user's selected 3.x model failed every search on
+# a free key. Grounding always uses these, whatever model chat runs on.
+GROUNDING_MODELS = ("gemini-2.5-flash", "gemini-2.5-flash-lite")
+
+
+async def _grounded(msgs: list) -> "tuple[str, list, list, str]":
+    """(answer, sources, queries, last error) from the first grounding model × Gemini
+    key that answers, skipping routes the chat ladder already knows are spent. A
+    grounding limit isn't the chat quota, so this never benches a route itself."""
+    last = ""
+    for raw in GROUNDING_MODELS:
+        model = quota.live_model(raw)
+        for index, key in enumerate(_keys_for("gemini")):
+            if not quota.usable(quota.Route("gemini", model, index)):
+                continue
+            try:
+                # Thinking off on 2.5 Flash: its thinking tokens count against the
+                # output cap, and a deep question once spent all of it before the
+                # first answer token (an empty reply).
+                text, sources, queries = await gemini_bridge.gemini_grounded(
+                    msgs, gemini_bridge.rest_model(model), key, max_tokens=1024,
+                    temperature=0.3, thinking_budget=None if "lite" in model else 0)
+            except gemini_bridge.GeminiError as exc:
+                last = f"HTTP {exc.status}" if exc.status else "no connection"
+                continue
+            if (text or "").strip():
+                return text.strip(), sources, queries, ""
+            last = "an empty reply"
+    return "", [], [], last
+
+
+async def _tavily(query: str) -> "tuple[bool, str, list]":
+    """The web search backup: Tavily's own answer plus its top snippets, tried with
+    each key in turn. (ok, text, sources)."""
+    last = "no key"
+    for key in app_secrets.get_list("tavily_api_key"):
+        try:
+            resp = await _client().post(
+                "https://api.tavily.com/search", timeout=15.0,
+                headers={"Authorization": f"Bearer {key}"},
+                json={"query": query, "search_depth": "basic", "max_results": 5,
+                      "include_answer": True})
+            if resp.status_code != 200:
+                last = f"HTTP {resp.status_code}"
+                continue
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001 — transport/parse: try the next key
+            last = type(exc).__name__
+            continue
+        results = [r for r in data.get("results") or [] if r.get("content") or r.get("title")]
+        # Spoken as it is (main._handle_web_search), so the short answer, not snippets.
+        text = (data.get("answer") or "").strip() or \
+            next((r["content"].strip() for r in results if r.get("content")), "")
+        if not text:
+            return False, "no results", []
+        if len(text) > 400:
+            text = text[:400].rsplit(" ", 1)[0] + "…"
+        return True, text, [{"title": r.get("title") or r["url"], "uri": r["url"]}
+                            for r in results if r.get("url")]
+    return False, last, []
 
 
 async def web_answer(query: str) -> "tuple[bool, str, list]":
@@ -2589,9 +2712,9 @@ async def web_answer(query: str) -> "tuple[bool, str, list]":
         return False, "What should I look up, sir?", []
     if not web_search_available():
         return (False, "Live web search needs Gemini, sir — sign in with Google Cloud "
-                "(Vertex) or add a Gemini key in Settings, and I'll pull it straight "
-                "from the web.", [])
-    model = _grounding_model()
+                "(Vertex) or add a Gemini key in Settings (or a Tavily key as a backup), "
+                "and I'll pull it straight from the web.", [])
+    model = GROUNDING_MODELS[0]
     # Tell the model TODAY so "best/top/latest/current" questions return the newest
     # result, not a stale cached page (the bug where "highest-rated restaurant" in
     # 2026 answered with the 2024 list). It must state which year/edition it reflects.
@@ -2627,18 +2750,25 @@ async def web_answer(query: str) -> "tuple[bool, str, list]":
                              model=model, text=query),
         {"role": "user", "content": query},
     ]
-    try:
-        text, sources, queries = await gemini_bridge.gemini_grounded(
-            msgs, gemini_bridge.rest_model(model), _gemini_key,
-            max_tokens=800, temperature=0.3,
-            thinking_budget=_gemini_thinking_budget(model, query))
-    except gemini_bridge.GeminiError as exc:
-        return False, str(exc), []
-    if not (text or "").strip():
+    text, sources, queries, err = ("", [], [], "no Gemini key")
+    if _keys_for("gemini"):
+        text, sources, queries, err = await _grounded(msgs)
+    if text:
+        if queries:
+            print(f"[WebSearch] grounded on: {queries}", flush=True)
+        return True, text, sources
+    # Grounding couldn't answer (no Gemini key, every route spent — it shares the
+    # quota chat uses — or an empty reply). Tavily answers only then.
+    if app_secrets.get("tavily_api_key"):
+        print(f"[WebSearch] grounding failed ({err}); trying Tavily", flush=True)
+        ok, backup, sources = await _tavily(query)
+        if ok:
+            return True, backup, sources
+        return (False, f"I couldn't search the web just now, sir: Google search failed "
+                f"({err}) and the Tavily backup failed too ({backup}).", [])
+    if err == "an empty reply":
         return False, "I couldn't find a clear answer to that just now, sir.", []
-    if queries:
-        print(f"[WebSearch] grounded on: {queries}", flush=True)
-    return True, text.strip(), sources
+    return False, f"I couldn't search the web just now, sir (Google search: {err}).", []
 
 
 # ── Smart-routing ranking ─────────────────────────────────────────────────────
@@ -2664,7 +2794,8 @@ async def _ask_ranker(prompt: str) -> "tuple[str, str]":
         return "", ""
     msgs = [{"role": "system", "content": model_ranker.ESTIMATE_SYSTEM},
             {"role": "user", "content": prompt}]
-    for model in (_AUTO_BIG_GEMINI, _AUTO_MID_GEMINI, _AUTO_FAST_GEMINI):
+    # The same models web search grounds on: 3.x has no free-tier Search grounding.
+    for model in GROUNDING_MODELS:
         for wait in (0.0, *_RANK_RETRY_WAITS):
             if wait:
                 await asyncio.sleep(wait)
@@ -2757,10 +2888,15 @@ async def rank_models(force: bool = False, on_update=None) -> bool:
         model_ranker.ranking_in_progress = False
 
 
-def _mentions_tools(detail: str) -> bool:
-    """A 400 that is about tool/function calling (not a malformed request)."""
+def _rejects_tools(detail: str) -> bool:
+    """A 400 saying this MODEL can't do tool calling. The mark is permanent, so it
+    needs "not supported" wording: a 400 that merely mentions tools (Groq's
+    tool_use_failed when one reply didn't parse, a schema complaint) is about one
+    request. The phone learned this 2026-09-25, after such 400s had benched its two
+    best tool models from every action turn."""
     d = (detail or "").lower()
-    return "tool" in d or "function call" in d or "function_call" in d
+    return bool(re.search(r"tool|function.?call", d)) and bool(re.search(
+        r"not (?:supported|enabled|available)|does ?n[o']t support|unsupported", d))
 
 
 def _flush_tool_acc(tool_acc: dict, tool_sink: "list | None") -> None:
@@ -2806,11 +2942,11 @@ async def _stream_route(route: "quota.Route", messages: list, max_tokens: int,
                     messages, gemini_bridge.rest_model(route.model), _credential(route),
                     max_tokens=max_tokens, temperature=temperature,
                     thinking_budget=_gemini_thinking_budget(route.model, text),
-                    tools=live_tools.function_declarations() if use_tools else None,
+                    tools=live_tools.turn_declarations() if use_tools else None,
                     tool_sink=tool_sink if use_tools else None):
                 yield delta, full
         except gemini_bridge.GeminiError as exc:
-            if use_tools and exc.status == 400 and _mentions_tools(exc.detail):
+            if use_tools and exc.status == 400 and _rejects_tools(exc.detail):
                 model_ranker.mark_no_tools(route.model)
             raise RouteError(str(exc), status=exc.status, retry_after=exc.retry_after,
                              detail=exc.detail or str(exc)) from exc
@@ -2820,7 +2956,7 @@ async def _stream_route(route: "quota.Route", messages: list, max_tokens: int,
     url, headers, payload = _openai_request(route, messages, max_tokens, temperature,
                                             stream=True)
     if use_tools:
-        payload["tools"] = live_tools.openai_tools()
+        payload["tools"] = live_tools.openai_tools(live_tools.turn_declarations())
         payload["tool_choice"] = "auto"
 
     full = ""
@@ -2832,7 +2968,7 @@ async def _stream_route(route: "quota.Route", messages: list, max_tokens: int,
                 await resp.aread()
                 # A model that turns out not to support tool calling: remember it,
                 # so later action turns route past it instead of re-paying this 400.
-                if use_tools and resp.status_code == 400 and _mentions_tools(resp.text):
+                if use_tools and resp.status_code == 400 and _rejects_tools(resp.text):
                     model_ranker.mark_no_tools(route.model)
                 raise RouteError(f"{route.provider} HTTP {resp.status_code}",
                                  status=resp.status_code,
@@ -2909,6 +3045,8 @@ async def stream_prompt(text: str, record_history: bool = True, slim: bool = Fal
         return
 
     # Slim agentic steps use provider-aware history depth (more on Gemini).
+    if not slim:
+        live_tools.begin_turn(text)     # this turn's tool groups (follow-ups keep them)
     system_msgs = ([{"role": "system", "content": _AGENTIC_SYSTEM_PROMPT}]
                    if slim else _system_messages(text))
     slim_turns = _slim_history_turns(model, text) if slim else None
@@ -2922,6 +3060,7 @@ async def stream_prompt(text: str, record_history: bool = True, slim: bool = Fal
     # _exhausted — the ONLY place the user hears about a rate limit, with a real time.
     full = ""
     skip_models: "set[str]" = set()
+    rejected = ""        # the last model-level 400, if that's why nothing answered
     async for route in _walk_routes(text, task_tier=task_tier, skip=skip_models):
         # Attach the tool palette on every turn that ISN'T a trivial greeting. We
         # do NOT gate this on the narrow action-keyword heuristic: the native
@@ -2936,15 +3075,25 @@ async def stream_prompt(text: str, record_history: bool = True, slim: bool = Fal
                      and (slim or not _is_trivial_turn(text)))
         # Local models are non-native (tools_enabled→False), so they get the
         # [ACTION]-tag system prompt and the existing tag path runs any actions.
+        started = time.monotonic()
+        first_out = None
         try:
             async for delta, full in _stream_route(route, messages, max_tokens,
                                                    temperature, text, use_tools,
                                                    tool_sink):
+                if first_out is None:
+                    first_out = time.monotonic() - started
                 yield delta, full
         except RouteError as exc:
             print(f"[LLM] {route.provider}/{route.model} stream failed: {exc}",
                   flush=True)
-            if _bench_route(route, exc.status, exc.detail, exc.retry_after):
+            if exc.status == 400:
+                # This model's reply failed (Groq's tool_use_failed: a tool call it
+                # couldn't parse), not a request no model could serve. Try the next
+                # MODEL this turn, without benching this one.
+                skip_models.add(route.model)
+                rejected = f"{route.provider} HTTP 400"
+            elif _bench_route(route, exc.status, exc.detail, exc.retry_after):
                 skip_models.add(route.model)
             # A call the failed route already emitted must not run alongside the
             # next route's own answer.
@@ -2955,11 +3104,19 @@ async def stream_prompt(text: str, record_history: bool = True, slim: bool = Fal
         # Treating it as empty re-asked the next route — running the action twice
         # — and then told the user their quota was spent.
         if full or tool_sink:
+            secs = first_out if first_out is not None else time.monotonic() - started
+            note_latency(route, secs)
+            print(f"[Route] {route.provider}/{route.model} answered in {secs:.1f}s",
+                  flush=True)
             break
         _bench_route(route, 0, "empty completion")
 
     if not full and not tool_sink:
-        msg = _exhausted(text)
+        # Quota isn't the story when the models answered and refused the request.
+        refused = rejected and all(r.model in skip_models
+                                   for r in usable_routes(text, task_tier=task_tier))
+        msg = (f"Every model I tried rejected that request ({rejected}), sir — try "
+               "rephrasing it." if refused else _exhausted(text))
         yield msg, msg
         return
 
