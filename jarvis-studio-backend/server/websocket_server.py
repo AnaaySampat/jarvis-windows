@@ -103,6 +103,27 @@ def set_remote_allowed(types) -> None:
     global _remote_allowed
     _remote_allowed = set(types)
 
+
+# Extra facts a paired phone gets in auth.ready (host-signed, like every message after
+# the challenge): today the PC's network adapters, so the phone can wake it with
+# Wake-on-LAN later. Only an authenticated device ever sees them.
+_ready_info: "Callable[[], dict] | None" = None
+
+
+def set_ready_info(fn: "Callable[[], dict] | None") -> None:
+    global _ready_info
+    _ready_info = fn
+
+
+def _ready_extras() -> dict:
+    try:
+        extra = _ready_info() if _ready_info else {}
+    except Exception as exc:  # noqa: BLE001 — never block a handshake on extras
+        print(f"[WebSocket] auth.ready extras failed: {exc}")
+        return {}
+    reserved = {"device_id", "scopes", "host_fingerprint"}
+    return {k: v for k, v in (extra or {}).items() if k not in reserved}
+
 # Which connection sent the message a handler is CURRENTLY processing — a
 # ContextVar rather than a plain global because each incoming message is
 # dispatched as its own asyncio Task (see _handler below); asyncio.create_task
@@ -723,6 +744,7 @@ async def _handler(websocket: WebSocketServerProtocol):
                 "host_fingerprint": (
                     _identity_registry.host_fingerprint if _identity_registry else ""
                 ),
+                **_ready_extras(),
             },
         })
     _clients.add(websocket)

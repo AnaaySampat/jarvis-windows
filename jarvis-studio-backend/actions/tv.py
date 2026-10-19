@@ -27,6 +27,7 @@ import unicodedata
 import urllib.parse
 
 import jarvis_paths
+from actions import wol
 
 # ── Setup (the TV's address) ──────────────────────────────────────────────────
 
@@ -36,15 +37,40 @@ _KEY_PATH = jarvis_paths.app_data_dir() / "tv_adbkey"
 
 
 def config() -> "dict | None":
-    """{"host", "model"} once a TV has answered, else None. `host` may list several
-    addresses for the same TV, comma-separated (see _targets)."""
+    """{"host", "model", "mac"} once a TV has answered, else None. `host` may list
+    several addresses for the same TV, comma-separated (see _targets); `mac` is for
+    waking it from off (actions/wol.py), "" until known."""
     try:
         cfg = json.loads(_CFG_PATH.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — missing or corrupt = no TV
         return None
     host = str(cfg.get("host") or "")
-    return {"host": host, "model": str(cfg.get("model") or "")[:80]} \
-        if _targets(host) else None
+    return {"host": host, "model": str(cfg.get("model") or "")[:80],
+            "mac": wol.norm_mac(cfg.get("mac"))} if _targets(host) else None
+
+
+def _save(cfg: dict) -> None:
+    _CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CFG_PATH.write_text(json.dumps(cfg), encoding="utf-8")
+
+
+def _read_mac(host: str) -> str:
+    """The TV's own MAC (for Wake-on-LAN), read over ADB while it's reachable."""
+    ok, out, _ = shell(host, "ip -o link")
+    return wol.mac_from_ip_link(out) if ok else ""
+
+
+def set_mac(mac: str) -> "tuple[bool, str]":
+    """Settings → Devices → TV: the MAC typed in by hand (the TV's network settings
+    show it as the MAC address)."""
+    cfg = config()
+    if not cfg:
+        return False, "Set up the TV first."
+    clean = wol.norm_mac(mac)
+    if mac and not clean:
+        return False, "That isn't a MAC address — it looks like 12:34:56:78:9A:BC."
+    _save({**cfg, "mac": clean})
+    return True, "Saved the TV's MAC address." if clean else "Forgot the TV's MAC address."
 
 
 def configured() -> bool:
@@ -61,8 +87,8 @@ def pair(host: str) -> "tuple[bool, str]":
     if not ok:
         return False, summary or "The TV didn't answer."
     model = out.strip()[:80]
-    _CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _CFG_PATH.write_text(json.dumps({"host": host, "model": model}), encoding="utf-8")
+    mac = _read_mac(host) or (config() or {}).get("mac", "")
+    _save({"host": host, "model": model, "mac": mac})
     return True, f"Connected to {model or 'the TV'}."
 
 
@@ -708,9 +734,50 @@ def run(spec: dict) -> dict:
     if do == "open_app" and not target.strip():
         target = app          # live: the model named the app in "app", not "target"
     tv = Tv(lambda cmd: shell(cfg["host"], cmd))
+    woke = None
+    if do == "power_on" or (do in ("play", "open_app") and cfg.get("mac")):
+        woke = wake(cfg)
+        if woke is not None and not woke[0]:
+            return {"type": "tv", "ok": False, "message": woke[1]}
     ok, msg = run_tv(tv, do, target, app or "netflix",
                      _int(spec.get("season"), 0), _int(spec.get("episode"), 0))
+    if ok and woke and do == "power_on":
+        msg = "Turned the TV on (woke it over the network)."
+    if ok and not cfg.get("mac"):
+        mac = _read_mac(cfg["host"])     # learn it while the TV answers, for next time
+        if mac:
+            _save({**cfg, "mac": mac})
     return {"type": "tv", "ok": ok, "message": msg}
+
+
+_WAKE_WAIT_S = 30.0
+
+
+def wake(cfg: dict, wait=time.sleep, now=time.monotonic) -> "tuple[bool, str] | None":
+    """If the TV doesn't answer ADB (fully off, or deep standby with its network down),
+    send its MAC a Wake-on-LAN packet and wait for ADB to come back. None: it was
+    already reachable (or there's no MAC to wake it with) — carry on as usual."""
+    ok, _, why = shell(cfg["host"], "echo ok")
+    # Only a TV that can't be reached at all might be off: one that refused this PC,
+    # or a missing package, is reported by the command itself.
+    if ok or not cfg.get("mac") or not why.startswith(("I can't reach", "The TV at")):
+        return None
+    if "different networks" in why:
+        return False, why          # a broadcast can't cross into another router's network
+    # The TV's home-network address (not its Tailscale one) gives the subnet broadcast.
+    near = next((h for h, _ in _targets(cfg["host"]) if len(wol.targets(h)) > 1), "")
+    sent, msg = wol.send(cfg["mac"], near)
+    if not sent:
+        return False, msg
+    deadline = now() + _WAKE_WAIT_S
+    while now() < deadline:
+        wait(2.0)
+        if shell(cfg["host"], "echo ok")[0]:
+            return True, "Woke the TV over the network."
+    return False, ("I sent the TV a wake-up packet, but it didn't come online within "
+                   f"{int(_WAKE_WAIT_S)} seconds. On the TV, turn on Settings → Network → "
+                   "Remote start (it may be called 'Turn on with Wi-Fi/LAN'), and make sure "
+                   "this PC is on the same network as the TV.")
 
 
 # ── Seeing the screen ─────────────────────────────────────────────────────────

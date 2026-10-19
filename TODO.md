@@ -23,6 +23,10 @@ pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (uncha
 - [ ] **TV with two addresses** (home IP + Tailscale IP), and the "different network"
   message from a PC on the other router's Wi-Fi.
 - [ ] **Update notice**: needs a GitHub release newer than the installed version.
+- [ ] **Wake-on-LAN** (built and unit-tested, never on real hardware): with Remote
+  start on, let the TV go fully off (deep standby), then "turn on the TV"
+  (`[TV]` log: packet sent, then answered). Check Settings → Devices → TV shows the
+  MAC it learned. From the phone: "turn on my PC" with the PC asleep, then shut down.
 - [ ] **WhatsApp channel** (never connected: the build sandbox's network blocks
   web.whatsapp.com, so only a failed dial was seen with the real library). On a PC:
   link by QR; "Jarvis, what time is it?" in Message yourself; a note without the name

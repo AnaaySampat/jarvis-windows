@@ -23,7 +23,7 @@ from server.websocket_server import (
     add_tap, remove_tap,
     emit, send_to, start as start_websocket, register_handler, on_connect,
     on_disconnect, send_to_current, current_client_id,
-    configure_device_identity, set_remote_allowed,
+    configure_device_identity, set_remote_allowed, set_ready_info,
     emit_task_event, subscribe_task, subscribe_local_clients,
     is_current_sender_remote, current_authenticated_device,
     connected_device_ids,
@@ -3527,6 +3527,14 @@ async def handle_tv_unpair(_data) -> None:
     await _emit_tv()
 
 
+async def handle_tv_set_mac(data) -> None:
+    """Settings → Devices → TV: its MAC, for switching it on from off (Wake-on-LAN).
+    Usually learned by itself the first time the TV answers."""
+    from actions import tv
+    ok, msg = tv.set_mac(str((data or {}).get("mac") or ""))
+    await _emit_tv({"ok": ok, "summary": msg})
+
+
 async def handle_memory_list(_data) -> None:
     await _emit_memory()
 
@@ -4376,6 +4384,7 @@ async def main(use_text: bool) -> None:
     register_handler("tv.state", handle_tv_state)
     register_handler("tv.pair", handle_tv_pair)
     register_handler("tv.unpair", handle_tv_unpair)
+    register_handler("tv.set_mac", handle_tv_set_mac)
     from actions import tv as _tv
     _tv.attach_loop(_main_loop)
     # ── Remote mobile control ────────────────────────────────────────────────
@@ -4387,6 +4396,9 @@ async def main(use_text: bool) -> None:
         from autonomy.device_identity import DeviceIdentityRegistry
         _device_registry = DeviceIdentityRegistry()
         configure_device_identity(_device_registry)
+        # The phone learns this PC's network adapters on connect, to wake it later.
+        from actions import wol
+        set_ready_info(lambda: {"wake": wol.local_macs()})
         # A cryptographically paired + PIN-verified phone is trusted to drive the
         # whole TASK/CONTROL protocol — task forwarding, its lifecycle (cancel/
         # reconnect/answer/approve), and STOP. Authentication proves it's the owner;

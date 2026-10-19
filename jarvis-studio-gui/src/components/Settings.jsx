@@ -254,6 +254,8 @@ function TvSection({ tvState, onTv }) {
   const result = tvState && tvState.result;
   const [typed, setHost] = useState(null);           // null = show the saved address
   const host = typed ?? (config ? config.host : "");
+  const [typedMac, setMac] = useState(null);
+  const mac = typedMac ?? (config ? config.mac || "" : "");
   // Busy until the backend answers with a fresh tv.state (a new object).
   const [sentWith, setSentWith] = useState(undefined);
   const busy = sentWith !== undefined && sentWith === tvState;
@@ -293,8 +295,26 @@ function TvSection({ tvState, onTv }) {
         </div>
       )}
       {config && (
-        <button className="dir-rm" style={{ marginTop: 8 }}
-          onClick={() => { setHost(null); onTv && onTv("tv.unpair"); }}>Forget this TV</button>
+        <>
+          <div className="settings-hint" style={{ marginTop: 10 }}>
+            <b>Switching it on from off</b> (Wake-on-LAN): {config.mac
+              ? <>JARVIS wakes it through its network card, <b>{config.mac}</b>.</>
+              : <>JARVIS learns the TV&apos;s network card the next time the TV answers, or type
+                its MAC address (TV: Settings → Network → About).</>}{" "}
+            On the TV, turn on Settings → Network → <b>Remote start</b>. Works only when this PC
+            is on the same network as the TV.
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            <input type="text" placeholder="MAC address, e.g. 12:34:56:78:9A:BC" value={mac}
+              onChange={(e) => setMac(e.target.value.trim())} />
+            <button className="dirlist-addbtn" disabled={busy || mac === (config.mac || "")}
+              onClick={() => { setSentWith(tvState); setMac(null); onTv && onTv("tv.set_mac", { mac }); }}>
+              Save
+            </button>
+          </div>
+          <button className="dir-rm" style={{ marginTop: 8 }}
+            onClick={() => { setHost(null); setMac(null); onTv && onTv("tv.unpair"); }}>Forget this TV</button>
+        </>
       )}
     </div>
   );

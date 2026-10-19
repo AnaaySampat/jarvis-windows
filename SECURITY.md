@@ -45,7 +45,9 @@ In scope, for example:
   token, or from an origin that should be rejected
 - getting past phone pairing, impersonating a paired device, or replaying signed
   envelopes
-- a remote (phone) client calling a handler outside the remote allowlist
+- a remote (phone) client calling a handler outside the remote allowlist (a paired
+  phone is told this PC's network adapters, MAC and LAN address, in the signed
+  `auth.ready`, to wake it with Wake-on-LAN; nothing else about the host)
 - the WhatsApp channel running a command from anyone but the linked account's own
   "Message yourself" chat or a number the user listed, or sending JARVIS's output to
   any chat other than the one the command came from

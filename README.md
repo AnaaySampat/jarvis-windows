@@ -189,6 +189,19 @@ Two fixes, either one works:
 
 If the TV can't be reached because it's on another router's network, JARVIS says so.
 
+## Switching things on from off (Wake-on-LAN)
+
+"Turn on the TV" works even when the TV is fully off (deep standby with its network
+down): JARVIS sends its network card a Wake-on-LAN packet and waits for it to answer
+before saying it's on. Turn on **Remote start** on the TV (Settings → Network; some
+models call it "Turn on with Wi-Fi/LAN"). JARVIS reads the TV's MAC address the first
+time the TV answers, or you can type it in Settings → Devices → TV. The phone app does
+the same for the TV, and can switch **this PC** on ("turn on my PC"): the PC tells the
+paired phone its network adapters when it connects. For that, enable Wake on LAN in the
+PC's BIOS and in Device Manager → network adapter → Power Management ("Allow this
+device to wake the computer"), and let JARVIS start with Windows. A wake-up packet
+can't cross into another router's network, so the sender has to be on the same one.
+
 ## Privacy
 
 - Wake word and transcription run **on your PC**. Mic audio stays local, except in
