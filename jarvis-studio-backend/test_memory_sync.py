@@ -81,6 +81,17 @@ class SyncTests(unittest.TestCase):
         ms.apply({"routines": [{"key": "wake up", "deleted": True, "ts": 10}]})
         self.assertEqual(routines.all_routines(), [])
 
+    def test_a_home_routine_belongs_to_the_phone_and_round_trips(self):
+        ok, msg = routines.save_routine("Welcome", "turn on the TV", "when I get home")
+        self.assertTrue(ok, msg)
+        r = routines.all_routines()[0]
+        self.assertEqual((r["time"], r["trigger"], r["origin"]), ("", "home", "phone"))
+        self.assertEqual(routines.when(r), "When you get home (on your phone)")
+        sent = ms.changes(0)["routines"][0]
+        self.assertEqual((sent["trigger"], sent["origin"]), ("home", "phone"))
+        ms.apply({"routines": [{**sent, "prompt": "TV and lights", "ts": sent["ts"] + 1}]})
+        self.assertEqual(routines.all_routines()[0].get("trigger"), "home")
+
     def test_bad_entries_are_ignored(self):
         self.assertFalse(ms.apply({"facts": ["x", {"text": "", "ts": 5}, {"key": "a", "ts": "zz"}],
                                    "routines": [{"name": "x"}]}))

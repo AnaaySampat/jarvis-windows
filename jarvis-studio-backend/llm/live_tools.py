@@ -290,7 +290,8 @@ def function_declarations(places_ok: "bool | None" = None,
              "name": _str("The routine's name (to run or remove it by; give one when "
                           "adding a routine the user will ask for by name)."),
              "time": _str("For 'add', only if it should run by itself: time of day, "
-                          "e.g. '08:00' or '7am'."),
+                          "e.g. '08:00' or '7am', or 'home' to run it when the user gets "
+                          "home (their phone notices)."),
              "days": _str("When a timed routine repeats: 'daily', 'weekdays', "
                           "'weekends', or 'mon,wed,fri'."),
              "prompt": _str("For 'add': the steps, in plain English.")},
@@ -505,6 +506,7 @@ _CUES = {
     "media": r"\b(record(?:ing)?|qr|image|picture|photo|draw(?:ing)?|logo|wallpaper|"
              r"illustration|generate|spotify|song|music|playlist|album|artist)\b",
     "planner": r"\b(schedule|agenda|calendar|meeting|appointment|routines?|playbooks?|"
+               r"(?:get|come|arrive|i'?m) home|"
                r"every (?:day|morning|evening|night|week|weekday)|each (?:day|morning)|"
                r"daily|weekdays?|weekends?|teach|recipe)\b",
     "hud": r"\b(theme|colou?r|background|panels?|hud|layout|density|compact|interface|"

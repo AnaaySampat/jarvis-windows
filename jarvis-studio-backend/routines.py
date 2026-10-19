@@ -85,6 +85,8 @@ def _name(r: dict) -> str:
 
 def when(r: dict) -> str:
     """'Every day at 08:00', 'Weekdays at 07:30', or 'When you ask'."""
+    if r.get("trigger") == "home":
+        return "When you get home (on your phone)"
     if not r.get("time"):
         return "When you ask"
     days = r.get("days")
@@ -100,15 +102,24 @@ def add_routine(time_str, prompt, days="daily", name="") -> "tuple[bool, str]":
 
 
 def save_routine(name, prompt, time_str="", days="daily", rid: str = "",
-                 origin: str = "", updated: int = 0) -> "tuple[bool, str]":
+                 origin: str = "", updated: int = 0, trigger: str = "") -> "tuple[bool, str]":
     """Add a routine, or replace the one with id `rid` (keeping its place and today's
     run). A routine needs a time, a name to be run by, or both. `origin` is the device
     whose clock fires it ("pc" or "phone", memory_sync); `updated` (ms) dates a change
-    synced from the phone."""
+    synced from the phone. `trigger` "home" (or a time like "when I get home") runs it
+    when the phone gets home: only the phone can tell, so it's the phone's routine."""
     name = re.sub(r"\s+", " ", str(name or "")).strip()[:60]
     prompt = (prompt or "").strip()
     if not prompt:
         return False, "What should the routine do, sir?"
+    home = trigger == "home" or bool(re.search(r"\b(home|arriv)", str(time_str or ""), re.I))
+    if rid and not str(time_str or "").strip() and not trigger:
+        # The HUD's form has no "when I get home": an edit there keeps it.
+        home = home or any(r.get("id") == rid and r.get("trigger") == "home" for r in all_routines())
+    if home:
+        time_str, origin = "", "phone"
+        if not name:
+            return False, "Give the routine a name, sir."
     t = _norm_time(time_str) if str(time_str or "").strip() else ""
     if str(time_str or "").strip() and not t:
         return False, "I need a valid time like 08:00, sir."
@@ -122,7 +133,8 @@ def save_routine(name, prompt, time_str="", days="daily", rid: str = "",
             return False, f"There's already a routine called “{name}”, sir."
         rec = {"id": rid or f"r{int(time.time() * 1000)}", "name": name, "time": t,
                "prompt": prompt, "days": nd, "enabled": True, "last": "",
-               "origin": origin or "pc", "updated": updated or int(time.time() * 1000)}
+               "origin": origin or "pc", "updated": updated or int(time.time() * 1000),
+               **({"trigger": "home"} if home else {})}
         idx = next((i for i, r in enumerate(routines) if rid and r.get("id") == rid), None)
         if rid and idx is None:
             return False, "That routine is gone, sir."
@@ -130,7 +142,7 @@ def save_routine(name, prompt, time_str="", days="daily", rid: str = "",
             routines.append(rec)
         else:
             rec["last"] = routines[idx].get("last", "")
-            rec["origin"] = origin or routines[idx].get("origin") or "pc"
+            rec["origin"] = origin or ("phone" if home else routines[idx].get("origin") or "pc")
             routines[idx] = rec
         if not _save(routines):
             return False, "I couldn't save that, sir — the write failed."
@@ -138,6 +150,9 @@ def save_routine(name, prompt, time_str="", days="daily", rid: str = "",
         import memory_sync
         memory_sync.revived("routines", memory_sync.routine_key(name))
     label = f"“{name}”" if name else f"“{prompt}”"
+    if home:
+        return True, (f"Routine {label} saved for when you get home: your phone notices "
+                      "and offers to run it. Say its name and I'll run it here too.")
     return True, (f"Routine {label} saved: {when(rec).lower()}." if t else
                   f"Routine {label} saved. Say its name and I'll run it.")
 

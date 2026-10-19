@@ -178,6 +178,10 @@ whenever it's connected (every minute, and right after a change). A timed routin
 goes off only on the device it was made on; the other lists it as "(on your phone)" /
 "(on your PC)" and runs it when you say its name. Playbooks stay on each device.
 
+A routine can also run **when you get home** ("when I get home, turn on the TV"): make
+it here or on the phone, and the phone, which knows when it joins your home Wi-Fi,
+offers to run it as you arrive.
+
 ## MCP servers: more tools
 
 JARVIS can use any **MCP server** (Model Context Protocol), the same ones Claude Desktop,

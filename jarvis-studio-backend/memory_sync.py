@@ -122,6 +122,7 @@ def changes(since: int) -> dict:
             continue
         rts.append({"key": routine_key(r["name"]), "name": r["name"], "prompt": r.get("prompt", ""),
                     "time": r.get("time", ""), "days": days_out(r.get("days")),
+                    **({"trigger": "home"} if r.get("trigger") == "home" else {}),
                     "origin": r.get("origin") or "pc", "ts": _routine_ts(r)})
     rts += [{"key": k, "deleted": True, "ts": t} for k, t in tombs["routines"].items() if t >= since]
     return {"facts": facts[:_MAX_ENTRIES], "routines": rts[:_MAX_ENTRIES]}
@@ -173,7 +174,8 @@ def _apply_routine(e: dict, tombs: dict) -> bool:
     origin = "phone" if e.get("origin") == "phone" else "pc"
     ok, _ = routines.save_routine(str(e.get("name") or "")[:60], str(e.get("prompt") or "")[:2000],
                                   str(e.get("time") or ""), str(e.get("days") or "daily"),
-                                  rid=local["id"] if local else "", origin=origin, updated=ts)
+                                  rid=local["id"] if local else "", origin=origin, updated=ts,
+                                  trigger="home" if e.get("trigger") == "home" else "none")
     return ok
 
 
