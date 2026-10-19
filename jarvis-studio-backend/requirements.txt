@@ -64,3 +64,6 @@ pyautogui>=0.9.54
 aiortc>=1.9.0
 # Android TV control over network ADB (actions/tv.py); optional, lazy-imported.
 adb-shell>=0.4.4
+# WhatsApp channel (whatsapp_channel.py): JARVIS as a linked device of your WhatsApp.
+# Optional, lazy-imported; pinned because it binds a Go core whose API moves.
+neonize==0.5.2

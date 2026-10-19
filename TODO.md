@@ -2,7 +2,7 @@
 
 ## 0. 2026-10-19 catch-up with the phone — built, unit-tested, not yet run live
 
-Baseline after it: `python -m unittest` → **353** (one Windows-only path test can only
+Baseline after it: `python -m unittest` → **370** (one Windows-only path test can only
 pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (unchanged).
 
 - [ ] **Wake word keeps the first words.** Run `python start.py` and say "Hey Jarvis,
@@ -23,6 +23,14 @@ pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (uncha
 - [ ] **TV with two addresses** (home IP + Tailscale IP), and the "different network"
   message from a PC on the other router's Wi-Fi.
 - [ ] **Update notice**: needs a GitHub release newer than the installed version.
+- [ ] **WhatsApp channel** (never connected: the build sandbox's network blocks
+  web.whatsapp.com, so only a failed dial was seen with the real library). On a PC:
+  link by QR; "Jarvis, what time is it?" in Message yourself; a note without the name
+  (ignored); "Jarvis, send me a screenshot" (arrives as an image); "Jarvis, shut down
+  the PC" (asks yes/no in the chat; answer no); a voice note; a message from a number
+  not on the list (ignored); unlink from the phone's Linked devices (status says so).
+  Then the frozen installer build: the neonize and libmagic DLLs must be in
+  `_internal/neonize` and `_internal/magic`.
 
 Last updated **2026-09-23**. Baseline: `python -m unittest` → **189 passed**; GUI
 `npm run build`, `npm test` and `npm run lint` (0 errors, 33 warnings) clean.

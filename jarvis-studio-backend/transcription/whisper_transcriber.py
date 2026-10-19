@@ -315,6 +315,25 @@ async def transcribe() -> str:
     return await loop.run_in_executor(None, _do_transcribe, audio)
 
 
+async def transcribe_voice_note(data: bytes) -> str:
+    """A WhatsApp voice note (Ogg/Opus) → text: Groq first, else the local model,
+    which decodes the file itself (PyAV)."""
+    if not data:
+        return ""
+    from llm.groq_bridge import get_stt, transcribe_audio
+    if _stt_mode == "groq" and get_stt() == "groq":
+        text = await transcribe_audio(data, prompt="Jarvis", filename="voice.ogg")
+        if text is not None:
+            return text
+
+    def _local() -> str:
+        segments, _ = _get_model().transcribe(io.BytesIO(data), language="en", beam_size=1,
+                                              initial_prompt="Jarvis")
+        return " ".join(s.text.strip() for s in segments).strip()
+
+    return await asyncio.get_running_loop().run_in_executor(None, _local)
+
+
 async def transcribe_clip(audio: np.ndarray) -> str:
     """Transcribe a clip the wake detector recorded (the 3 s before "Hey Jarvis" plus
     the command). The hint is the name alone, never "Hey Jarvis": Whisper can echo

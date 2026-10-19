@@ -57,6 +57,11 @@ hiddenimports = [
     "reminders",
     "routines",
     "playbooks",
+    # Root modules main.py imports lazily (inside functions) or that are new.
+    "heartbeat",
+    "skill_files",
+    "updates",
+    "whatsapp_channel",
     "websockets",
     "websockets.legacy",
     "websockets.legacy.server",
@@ -126,6 +131,17 @@ datas += collect_data_files("openwakeword")
 for pkg in ("piper", "piper_phonemize", "espeakng_loader", "playwright"):
     try:
         datas += collect_data_files(pkg)
+    except Exception:
+        pass
+
+# WhatsApp channel (optional): neonize loads its Go core with ctypes from its own
+# package folder (neonize-windows-amd64.dll), and python-magic-bin ships libmagic's
+# DLL and database the same way. Missing → the channel says to pip install neonize.
+for pkg in ("neonize", "magic"):
+    try:
+        hiddenimports += collect_submodules(pkg)
+        datas += collect_data_files(pkg)
+        binaries += collect_dynamic_libs(pkg)
     except Exception:
         pass
 

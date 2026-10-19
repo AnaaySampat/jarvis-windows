@@ -905,6 +905,20 @@ async def _run_handler(fn: Callable[..., Awaitable], data, event_type: str) -> N
             await emit("status", "idle")
 
 
+_taps: "list" = []
+
+
+def add_tap(fn) -> None:
+    """Also hand every HUD event to `fn(event, data)` — even with no HUD open. A
+    WhatsApp turn uses one to collect its reply; remove it with remove_tap."""
+    _taps.append(fn)
+
+
+def remove_tap(fn) -> None:
+    if fn in _taps:
+        _taps.remove(fn)
+
+
 async def emit(event: str, data):
     """Broadcast a legacy HUD event to authenticated loopback clients only.
 
@@ -914,6 +928,11 @@ async def emit(event: str, data):
     provider configuration, or another user's activity merely because the HUD
     happens to broadcast them.
     """
+    for tap in tuple(_taps):
+        try:
+            tap(event, data)
+        except Exception as exc:  # noqa: BLE001 — a tap never breaks the HUD
+            print(f"[WebSocket] event tap failed: {exc}", flush=True)
     clients = [client for client in tuple(_clients) if _is_loopback(client)]
     if not clients:
         return

@@ -55,7 +55,7 @@ export default function App() {
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     overlay, agentTasks, conversations, setupProgress,
-    devicePairing, devices, tvState,
+    devicePairing, devices, tvState, waState,
     createPairing, listDevices, revokeDevice,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand,
     resetConversation, newConversation, openConversation, deleteConversation, listConversations, clearConversations,
@@ -421,6 +421,7 @@ export default function App() {
           onListDevices={listDevices}
           onRevokeDevice={revokeDevice}
           tvState={tvState}
+          waState={waState}
           onTv={(type, data) => wsSend({ type, data })}
         />
       )}

@@ -722,12 +722,14 @@ def set_stt(mode: str) -> str:
     return _config["stt"]
 
 
-async def transcribe_audio(wav_bytes: bytes, prompt: str = "") -> "str | None":
+async def transcribe_audio(wav_bytes: bytes, prompt: str = "",
+                           filename: str = "speech.wav") -> "str | None":
     """Transcribe spoken audio via Groq Whisper (whisper-large-v3-turbo).
 
     Returns the recognised text, or None on any failure (no key, network, bad
     response) so the caller can fall back to the local model. Never raises.
-    ``prompt`` is Whisper's vocabulary hint."""
+    ``prompt`` is Whisper's vocabulary hint; ``filename``'s extension tells Groq the
+    format (a WhatsApp voice note is Ogg/Opus)."""
     if not _api_key or not wav_bytes:
         return None
     data = {"model": STT_MODEL, "language": "en", "response_format": "json",
@@ -741,7 +743,8 @@ async def transcribe_audio(wav_bytes: bytes, prompt: str = "") -> "str | None":
             f"{GROQ_BASE_URL}/audio/transcriptions",
             headers={"Authorization": f"Bearer {_api_key}"},
             data=data,
-            files={"file": ("speech.wav", wav_bytes, "audio/wav")},
+            files={"file": (filename, wav_bytes,
+                            "audio/ogg" if filename.endswith(".ogg") else "audio/wav")},
         )
         if resp.status_code != 200:
             print(f"[STT] Groq transcription HTTP {resp.status_code}: "

@@ -78,7 +78,8 @@ export function useWebSocket() {
   const [routineResult, setRoutineResult] = useState(null);  // last Memory ▸ Routines save {ok, message}
   const [devicePairing, setDevicePairing] = useState(null); // active QR pairing payload {ok,payload,pin,host,...}
   const [devices, setDevices] = useState([]);              // paired-phone roster
-  const [tvState, setTvState] = useState(null);            // {config:{host,model}|null, result:{ok,summary}|null}
+  const [tvState, setTvState] = useState(null);
+  const [waState, setWaState] = useState(null);            // WhatsApp channel {status, qr, number, error, enabled, allow}            // {config:{host,model}|null, result:{ok,summary}|null}
 
   const wsRef      = useRef(null);
   const wsUrlRef   = useRef(null);
@@ -291,6 +292,9 @@ export function useWebSocket() {
             break;
           case "tv.state":
             setTvState(msg.data || null);
+            break;
+          case "whatsapp.state":
+            setWaState(msg.data || null);
             break;
           // ── Agent Activity feed (autopilot steps + page screenshots) ──────
           case "agent_task": {
@@ -645,7 +649,7 @@ export function useWebSocket() {
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     activeApp, overlay, agentTasks, conversations, setupProgress,
-    devicePairing, devices, tvState,
+    devicePairing, devices, tvState, waState,
     createPairing, listDevices, revokeDevice,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand, triggerListen, stopSpeech,
     stopControl, pauseControl, sendCorrection, finishListen, pttStart,

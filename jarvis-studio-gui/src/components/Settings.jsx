@@ -162,6 +162,90 @@ function RemotePairingSection({ devicePairing, devices, onCreatePairing,
   );
 }
 
+// WhatsApp channel (backend whatsapp_channel.py): JARVIS as a linked device of the user's
+// WhatsApp, by QR. Commands come from the account's own "Message yourself" chat (starting
+// with "Jarvis") or from numbers listed here; replies and approvals go back there.
+const WA_STATUS = {
+  off: "Off",
+  connecting: "Connecting…",
+  linking: "Scan the code to link",
+  connected: "Linked",
+  logged_out: "Unlinked from the phone",
+  error: "Not connected",
+};
+
+function WhatsAppSection({ waState, onWhatsApp }) {
+  const st = waState || { status: "off", enabled: false, allow: [] };
+  const [allow, setAllow] = useState(null);            // null = show the saved list
+  const allowText = allow ?? (st.allow || []).map((n) => `+${n}`).join(", ");
+  // The drawn code, kept with the text it encodes: a stale image never shows.
+  const [drawn, setDrawn] = useState({ code: "", url: "" });
+  const qr = st.qr && drawn.code === st.qr ? drawn.url : "";
+  useEffect(() => { onWhatsApp && onWhatsApp("whatsapp.state"); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    let dead = false;
+    if (st.qr) {
+      QRCode.toDataURL(st.qr, { margin: 2, width: 640, errorCorrectionLevel: "L" })
+        .then((url) => { if (!dead) setDrawn({ code: st.qr, url }); })
+        .catch(() => {});
+    }
+    return () => { dead = true; };
+  }, [st.qr]);
+  const set = (patch) => onWhatsApp && onWhatsApp("whatsapp.set", patch);
+
+  return (
+    <div className="settings-sec">
+      <label>WhatsApp</label>
+      <div className="settings-hint">
+        Message JARVIS from anywhere. Link it like WhatsApp Web, then write to yourself in
+        WhatsApp&apos;s <b>Message yourself</b> chat, starting with its name: “Jarvis, what&apos;s on my
+        agenda?”, “Jarvis, send me a screenshot”. Voice notes work too. Replies come back in that
+        chat and the PC stays quiet; anything that needs your approval asks you there (reply
+        yes or no). Notes to yourself that don&apos;t start with “Jarvis” are left alone.
+      </div>
+      <div className="settings-warn" style={{ marginTop: 6 }}>
+        This uses an unofficial WhatsApp client (the WhatsApp Web protocol). It isn&apos;t covered
+        by WhatsApp&apos;s terms, and WhatsApp can restrict accounts that use one. Linking a second
+        number for JARVIS is the cautious option.
+      </div>
+      <label className="settings-check" style={{ marginTop: 8 }}>
+        <input type="checkbox" className="sw" checked={!!st.enabled}
+               onChange={(e) => set({ enabled: e.target.checked })} />
+        <span>Use WhatsApp · <b>{WA_STATUS[st.status] || st.status}</b>
+          {st.status === "connected" && st.number ? ` as +${st.number}` : ""}</span>
+      </label>
+      {st.error && <div className="settings-warn" style={{ marginTop: 6 }}>{st.error}</div>}
+      {qr && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10, alignItems: "center" }}>
+          <img src={qr} alt="WhatsApp link QR code"
+               style={{ width: "100%", maxWidth: 300, aspectRatio: "1 / 1", borderRadius: 8,
+                        background: "#fff", padding: 10 }} />
+          <div className="settings-hint" style={{ margin: 0, textAlign: "center" }}>
+            On your phone: WhatsApp → Settings → Linked devices → Link a device, then scan this.
+            The code refreshes every few seconds.
+          </div>
+        </div>
+      )}
+      <div className="settings-hint" style={{ marginTop: 10 }}>
+        Other numbers that may command JARVIS (optional, e.g. your own number if JARVIS is
+        linked to a second one). Everyone else, and every group, is ignored.
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        <input type="text" placeholder="+91 98765 43210, …" value={allowText}
+               onChange={(e) => setAllow(e.target.value)} />
+        <button className="dirlist-addbtn" disabled={allow === null}
+                onClick={() => { set({ allow: allowText }); setAllow(null); }}>Save</button>
+      </div>
+      {(st.status === "connected" || st.number) && (
+        <button className="dir-rm" style={{ marginTop: 8 }}
+                onClick={() => onWhatsApp && onWhatsApp("whatsapp.unlink")}>
+          Unlink and forget this WhatsApp
+        </button>
+      )}
+    </div>
+  );
+}
+
 // The user's Android TV — network ADB from this PC (backend actions/tv.py); nothing is
 // installed on the TV. Saved only once the TV answers, i.e. after the user accepts
 // "Allow USB debugging?" on it.
@@ -405,13 +489,13 @@ const SECTIONS = [
   { id: "autopilot", label: "Autopilot", icon: "⌖", words: "autopilot browser desktop operator reasoning vision screenshot" },
   { id: "interface", label: "Interface", icon: "▣", words: "overlay pill floating interface apps hide" },
   { id: "files", label: "Files & Location", icon: "⌂", words: "storage folder directories files read location weather pin" },
-  { id: "devices", label: "Devices", icon: "⌁", words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix" },
+  { id: "devices", label: "Devices", icon: "⌁", words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix whatsapp message chat" },
   { id: "system", label: "System", icon: "⚙", words: "system ram resources repair components" },
 ];
 let lastSection = "ai";   // reopen where the user left off (per app session)
 
 export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocation, onRefreshModels, onRerankModels, onRepairSetup,
-  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv }) {
+  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState }) {
   // Re-discover models when the panel opens so the dropdown is current (e.g. a
   // local Ollama model pulled since launch, or a key just added in another client).
   // Cheap — the backend skips the network when credentials are unchanged.
@@ -931,6 +1015,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
               />
             )}
             {current.id === "devices" && <TvSection tvState={tvState} onTv={onTv} />}
+            {current.id === "devices" && <WhatsAppSection waState={waState} onWhatsApp={onTv} />}
 
             {current.id === "system" && (<>
               <div className="settings-sec">

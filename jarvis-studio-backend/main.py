@@ -20,6 +20,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 from server.websocket_server import (
+    add_tap, remove_tap,
     emit, send_to, start as start_websocket, register_handler, on_connect,
     on_disconnect, send_to_current, current_client_id,
     configure_device_identity, set_remote_allowed,
@@ -53,6 +54,7 @@ import routines
 import reminders
 import playbooks
 import places
+import whatsapp_channel
 # First-run asset provisioning is OPTIONAL. If the module is missing from a frozen
 # build, or fails to import for any reason, the backend MUST still start — the
 # assets then fall back to lazy download-on-first-use. Never let it brick startup.
@@ -120,7 +122,7 @@ def _setup_snapshot_for_replay():
     return {"stage": "snapshot", **snap}
 from wake_word.base import WakeWordDetector
 from transcription.whisper_transcriber import (
-    transcribe, transcribe_clip, preload as preload_whisper,
+    transcribe, transcribe_clip, transcribe_voice_note, preload as preload_whisper,
 )
 from wake_word.capture import command_after_wake, is_noise as is_noise_transcript
 from tts.tts_engine import TTSEngine
@@ -133,6 +135,10 @@ _WAKE_PHRASES = ("wake up", "wake", "jarvis wake", "are you there", "you awake")
 _tts: "TTSEngine | None" = None
 _trigger_listen: "asyncio.Event | None" = None
 _pipeline_lock: "asyncio.Lock | None" = None
+# The WhatsApp channel (whatsapp_channel.py), once enabled, and the chat a running
+# WhatsApp turn answers (None during any other turn).
+_wa: "whatsapp_channel.Channel | None" = None
+_wa_chat = None
 # Set while always-on continuous voice mode is enabled (no wake word needed).
 _always_on_event: "asyncio.Event | None" = None
 # Set by the Stop button: aborts the in-flight reply (stops generation, drops any
@@ -227,16 +233,38 @@ async def request_permission(kind: str, description: str, timeout: float = 120.0
     _pending_perms[req_id] = fut
     await emit("permission_request", {"id": req_id, "kind": kind, "description": description})
     print(f"[Permission] Awaiting approval: {description}", flush=True)
+    # A WhatsApp turn: nobody may be at the PC, so ask in the chat too. Either answer
+    # counts; the chat is the owner's own (whatsapp_channel.admit).
+    remote = _ask_whatsapp(
+        fut, f"Approve? I'd like to {_clean_desc(description)}. Reply *yes* or *no*.",
+        timeout, whatsapp_channel.is_yes)
     try:
         return bool(await asyncio.wait_for(fut, timeout))
     except asyncio.TimeoutError:
         print(f"[Permission] Timed out (denied): {description}", flush=True)
         return False
     finally:
+        if remote is not None:
+            remote.cancel()
         _pending_perms.pop(req_id, None)
         # The request is broadcast to every window (HUD + floating overlay);
         # answering in one must dismiss it everywhere, including on timeout.
         await emit("permission_request", None)
+
+
+def _ask_whatsapp(fut: "asyncio.Future", question: str, timeout: float, read,
+                  on_timeout: str = "No answer, so I've taken that as a no.") -> "asyncio.Task | None":
+    """During a WhatsApp turn, also put `question` to that chat; its answer, through
+    `read`, resolves `fut` unless the HUD answered first. None outside such a turn."""
+    chat = _wa_chat
+    if chat is None or _wa is None:
+        return None
+
+    async def ask() -> None:
+        answer = await _wa.ask(chat, question, timeout, on_timeout)
+        if answer is not None and not fut.done():
+            fut.set_result(read(answer))
+    return asyncio.create_task(ask())
 
 
 async def handle_permission_response(data) -> None:
@@ -265,12 +293,16 @@ async def request_clarification(question: str, timeout: float = 90.0) -> str:
     _pending_clarify[req_id] = fut
     await emit("clarify_request", {"id": req_id, "question": question})
     print(f"[Clarify] Awaiting answer: {question}", flush=True)
+    remote = _ask_whatsapp(fut, question, timeout, lambda answer: answer,
+                           "No answer, so I'll carry on without it.")
     try:
         return str(await asyncio.wait_for(fut, timeout) or "").strip()
     except asyncio.TimeoutError:
         print(f"[Clarify] Timed out (skipped): {question}", flush=True)
         return ""
     finally:
+        if remote is not None:
+            remote.cancel()
         _pending_clarify.pop(req_id, None)
         await emit("clarify_request", None)        # dismiss in every window
 
@@ -2532,259 +2564,362 @@ async def _run_native_audio_turn() -> None:
 
 
 async def _run_pipeline(text: str, emit_transcription: bool = True,
-                        task_tier: str = "") -> None:
-    """Run the full LLM + TTS pipeline. Serialised by _pipeline_lock."""
+                        task_tier: str = "", wa_chat=None, tap=None,
+                        shown: str = "") -> None:
+    """Run the full LLM + TTS pipeline. Serialised by _pipeline_lock.
+
+    A WhatsApp turn passes the chat it came from (``wa_chat``): it runs with the PC's
+    voice quiet, approvals are also asked in that chat, and every HUD event of the
+    turn goes to ``tap`` so the reply can be sent back. ``shown`` is the user bubble's
+    text when it differs from what the model gets."""
+    global _wa_chat
     async with _pipeline_lock:
-        if _interrupt is not None:
-            _interrupt.clear()          # fresh turn — forget any earlier Stop
-        _acted_and_failed.clear()       # a new request may try any task again
-        # ── Standby mode: ignore everything until the user says "wake up" ──────
-        if skills.is_sleeping():
-            if _is_wake_phrase(text):
-                skills.wake()
-                if emit_transcription:
-                    await emit("transcription", text)
-                await emit("response", "I'm awake, sir. How can I help?")
-                if _tts and not skills.is_muted():
-                    await emit("status", "speaking")
-                    await _tts.speak("I'm awake, sir. How can I help?")
-                await emit("status", "idle")
-            else:
-                await emit("status", "idle")
+        if wa_chat is None:
+            await _pipeline_turn(text, emit_transcription, task_tier, shown)
             return
-
-        if emit_transcription:
-            await emit("transcription", text)
-
-        sid = f"{time.time()}"          # stream id so the UI can finalize idempotently
-        full_raw = ""
-        cursor = 0
-        started = False
-        speaking = False
-        tts_queue: "asyncio.Queue" = asyncio.Queue()
-        consumer: "asyncio.Task | None" = None
-
-        async def _enqueue(sentence: str) -> None:
-            nonlocal consumer, speaking
-            if not speaking:
-                speaking = True
-                await emit("status", "speaking")
-                consumer = asyncio.create_task(_drain_tts(tts_queue))
-            tts_queue.put_nowait(sentence)
-
+        _wa_chat = wa_chat
+        add_tap(tap)
+        skills.set_quiet(True)
         try:
-            await emit("status", "thinking")
-            print(f"[Jarvis] Thinking… [Route] {routing_note(text, task_tier)}", flush=True)
+            await _pipeline_turn(text, emit_transcription, task_tier, shown)
+        finally:
+            remove_tap(tap)
+            skills.set_quiet(False)
+            _wa_chat = None
 
-            # Inject any playbook(s) relevant to THIS request so JARVIS follows the
-            # learned recipe (cleared when nothing matches, so it never lingers).
-            set_skill_context(playbooks.context_block(text))
 
-            speak_ok = _tts is not None and not skills.is_muted()
-            leaky = model_leaks_reasoning(text, task_tier)
-            quote_only = reply_is_quote_wrapped(text, task_tier)
-            # Native function/tool calls land here (empty unless the model called
-            # tools); the bridge keeps yielding (delta, full) text exactly as before.
-            tool_sink: "list" = []
-            async for _delta, full_raw in stream_prompt(text, tool_sink=tool_sink,
-                                                        task_tier=task_tier):
-                if _interrupted():          # user hit Stop — abort generation now
-                    break
-                if not started:
-                    await emit("stream_start", {"sid": sid})
-                    started = True
-                if leaky:
-                    continue                # accumulate only; clean + reveal at the end
-                disp = _display_text(full_raw)
-                await emit("stream_delta", {"sid": sid, "text": disp})
-                if speak_ok:
-                    sentences, cursor = _complete_sentences(disp, cursor)
-                    for s in sentences:
-                        await _enqueue(s)
+async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
+                         shown: str = "") -> None:
+    """The body of one pipeline turn; the caller holds _pipeline_lock."""
+    if _interrupt is not None:
+        _interrupt.clear()          # fresh turn — forget any earlier Stop
+    _acted_and_failed.clear()       # a new request may try any task again
+    # ── Standby mode: ignore everything until the user says "wake up" ──────
+    if skills.is_sleeping():
+        if _is_wake_phrase(text):
+            skills.wake()
+            if emit_transcription:
+                await emit("transcription", shown or text)
+            await emit("response", "I'm awake, sir. How can I help?")
+            if _tts and not skills.is_muted():
+                await emit("status", "speaking")
+                await _tts.speak("I'm awake, sir. How can I help?")
+            await emit("status", "idle")
+        else:
+            await emit("status", "idle")
+        return
 
-            # If the user interrupted, finalize the partial text and bail out — no
-            # actions, no further speech (finally restores idle + drains TTS).
-            if _interrupted():
-                disp = _display_text(full_raw)
-                if leaky:
-                    disp = _strip_reasoning(disp, quote_only=quote_only)
-                if not started:
-                    await emit("stream_start", {"sid": sid})
-                await emit("response_end", {"sid": sid, "text": disp, "actions": []})
-                return
+    if emit_transcription:
+        await emit("transcription", shown or text)
 
-            # A tool-only turn (the model called a function with no spoken preamble)
-            # is NOT an empty reply — its confirmation comes from the action result.
-            if not (full_raw or "").strip() and not tool_sink:
-                full_raw = _EMPTY_REPLY_MSG
-                if not started:
-                    await emit("stream_start", {"sid": sid})
-                    started = True
-                await emit("stream_delta", {"sid": sid, "text": full_raw})
-                if speak_ok:
-                    await _enqueue(full_raw)
+    sid = f"{time.time()}"          # stream id so the UI can finalize idempotently
+    full_raw = ""
+    cursor = 0
+    started = False
+    speaking = False
+    tts_queue: "asyncio.Queue" = asyncio.Queue()
+    consumer: "asyncio.Task | None" = None
 
-            # Stream done — run the turn's actions. Gated (dangerous) ones are
-            # deferred until the user approves; everything else runs immediately.
-            # NATIVE path: the model's function calls (tool_sink) become specs and
-            # run through the SAME dispatcher (run_specs) as the legacy [ACTION]
-            # tags, so all downstream handling below is identical. Run off the event
-            # loop: actions can block on the network or the browser worker, which
-            # would otherwise freeze telemetry, the websocket and the Stop button.
-            loop = asyncio.get_running_loop()
-            if tool_sink:
-                for _c in tool_sink:
-                    print(f"[Tool] {_c.get('name')}({_c.get('args')})", flush=True)
-                specs = [live_tools.to_spec(_c.get("name", ""), _c.get("args"))
-                         for _c in tool_sink]
-                clean = _display_text(full_raw)
-                if leaky:
-                    clean = _strip_reasoning(clean, quote_only=quote_only)
-                    await emit("stream_delta", {"sid": sid, "text": clean})
-                results = await loop.run_in_executor(None, run_specs, specs)
-            else:
-                clean, results = await loop.run_in_executor(None, execute_actions, full_raw)
-                if leaky:
-                    clean = _strip_reasoning(clean, quote_only=quote_only)   # recover reply
-                    await emit("stream_delta", {"sid": sid, "text": clean})
-            results = _autopilot_fallbacks(results, text)
-            immediate = [r for r in results if not r.get("needs_permission")
-                         and not r.get("needs_vision") and not r.get("needs_image_gen")
-                         and not r.get("needs_autopilot") and not r.get("needs_web_search")
-                         and not r.get("needs_location_set")]
-            pending = [r for r in results if r.get("needs_permission")]
-            vision = [r for r in results if r.get("needs_vision")]
-            images = [r for r in results if r.get("needs_image_gen")]
-            websearch = [r for r in results if r.get("needs_web_search")]
-            locsets = [r for r in results if r.get("needs_location_set")]
-            autop = [r for r in results if r.get("needs_autopilot")]
-            feeds = [r["feed_to_model"] for r in immediate if r.get("feed_to_model")]
-            observed_results = list(immediate)
-            for r in immediate:
-                tag = "✓" if r.get("ok") else "✗"
-                print(f"[Action] {tag} {r.get('type')} → {r.get('message')}", flush=True)
-            print(f"\n[Jarvis] {clean}\n")
+    async def _enqueue(sentence: str) -> None:
+        nonlocal consumer, speaking
+        if not speaking:
+            speaking = True
+            await emit("status", "speaking")
+            consumer = asyncio.create_task(_drain_tts(tts_queue))
+        tts_queue.put_nowait(sentence)
 
-            if speak_ok:
-                tail = (clean if leaky else _display_text(full_raw)[cursor:]).strip()
-                if tail:
-                    await _enqueue(tail)
-                err_brief = "" if _failure_feeds(immediate) \
-                    else await _brief_errors(immediate, text)
-                if not speaking:
-                    ok_speech = _spoken_summary(immediate)
-                    if ok_speech:
-                        await _enqueue(ok_speech)
-                    if err_brief:
-                        await _enqueue(err_brief)
-                elif err_brief:
-                    await _enqueue(err_brief)
+    try:
+        await emit("status", "thinking")
+        print(f"[Jarvis] Thinking… [Route] {routing_note(text, task_tier)}", flush=True)
 
+        # Inject any playbook(s) relevant to THIS request so JARVIS follows the
+        # learned recipe (cleared when nothing matches, so it never lingers).
+        set_skill_context(playbooks.context_block(text))
+
+        speak_ok = _tts is not None and not skills.is_muted()
+        leaky = model_leaks_reasoning(text, task_tier)
+        quote_only = reply_is_quote_wrapped(text, task_tier)
+        # Native function/tool calls land here (empty unless the model called
+        # tools); the bridge keeps yielding (delta, full) text exactly as before.
+        tool_sink: "list" = []
+        async for _delta, full_raw in stream_prompt(text, tool_sink=tool_sink,
+                                                    task_tier=task_tier):
+            if _interrupted():          # user hit Stop — abort generation now
+                break
             if not started:
                 await emit("stream_start", {"sid": sid})
+                started = True
+            if leaky:
+                continue                # accumulate only; clean + reveal at the end
+            disp = _display_text(full_raw)
+            await emit("stream_delta", {"sid": sid, "text": disp})
+            if speak_ok:
+                sentences, cursor = _complete_sentences(disp, cursor)
+                for s in sentences:
+                    await _enqueue(s)
 
-            await emit("response_end", {"sid": sid, "text": clean,
-                                         "actions": _shown(immediate)})
-            await _apply_action_side_effects(immediate)
+        # If the user interrupted, finalize the partial text and bail out — no
+        # actions, no further speech (finally restores idle + drains TTS).
+        if _interrupted():
+            disp = _display_text(full_raw)
+            if leaky:
+                disp = _strip_reasoning(disp, quote_only=quote_only)
+            if not started:
+                await emit("stream_start", {"sid": sid})
+            await emit("response_end", {"sid": sid, "text": disp, "actions": []})
+            return
 
-            for _v in vision:
-                await _handle_vision(_v)
+        # A tool-only turn (the model called a function with no spoken preamble)
+        # is NOT an empty reply — its confirmation comes from the action result.
+        if not (full_raw or "").strip() and not tool_sink:
+            full_raw = _EMPTY_REPLY_MSG
+            if not started:
+                await emit("stream_start", {"sid": sid})
+                started = True
+            await emit("stream_delta", {"sid": sid, "text": full_raw})
+            if speak_ok:
+                await _enqueue(full_raw)
 
-            for im in images:
-                await _handle_image_gen(im)
+        # Stream done — run the turn's actions. Gated (dangerous) ones are
+        # deferred until the user approves; everything else runs immediately.
+        # NATIVE path: the model's function calls (tool_sink) become specs and
+        # run through the SAME dispatcher (run_specs) as the legacy [ACTION]
+        # tags, so all downstream handling below is identical. Run off the event
+        # loop: actions can block on the network or the browser worker, which
+        # would otherwise freeze telemetry, the websocket and the Stop button.
+        loop = asyncio.get_running_loop()
+        if tool_sink:
+            for _c in tool_sink:
+                print(f"[Tool] {_c.get('name')}({_c.get('args')})", flush=True)
+            specs = [live_tools.to_spec(_c.get("name", ""), _c.get("args"))
+                     for _c in tool_sink]
+            clean = _display_text(full_raw)
+            if leaky:
+                clean = _strip_reasoning(clean, quote_only=quote_only)
+                await emit("stream_delta", {"sid": sid, "text": clean})
+            results = await loop.run_in_executor(None, run_specs, specs)
+        else:
+            clean, results = await loop.run_in_executor(None, execute_actions, full_raw)
+            if leaky:
+                clean = _strip_reasoning(clean, quote_only=quote_only)   # recover reply
+                await emit("stream_delta", {"sid": sid, "text": clean})
+        results = _autopilot_fallbacks(results, text)
+        immediate = [r for r in results if not r.get("needs_permission")
+                     and not r.get("needs_vision") and not r.get("needs_image_gen")
+                     and not r.get("needs_autopilot") and not r.get("needs_web_search")
+                     and not r.get("needs_location_set")]
+        pending = [r for r in results if r.get("needs_permission")]
+        vision = [r for r in results if r.get("needs_vision")]
+        images = [r for r in results if r.get("needs_image_gen")]
+        websearch = [r for r in results if r.get("needs_web_search")]
+        locsets = [r for r in results if r.get("needs_location_set")]
+        autop = [r for r in results if r.get("needs_autopilot")]
+        feeds = [r["feed_to_model"] for r in immediate if r.get("feed_to_model")]
+        observed_results = list(immediate)
+        for r in immediate:
+            tag = "✓" if r.get("ok") else "✗"
+            print(f"[Action] {tag} {r.get('type')} → {r.get('message')}", flush=True)
+        print(f"\n[Jarvis] {clean}\n")
 
-            web_answers = []
-            for ws in websearch:
-                _ans = await _handle_web_search(ws)
-                if _ans:
-                    web_answers.append(_ans)
+        if speak_ok:
+            tail = (clean if leaky else _display_text(full_raw)[cursor:]).strip()
+            if tail:
+                await _enqueue(tail)
+            err_brief = "" if _failure_feeds(immediate) \
+                else await _brief_errors(immediate, text)
+            if not speaking:
+                ok_speech = _spoken_summary(immediate)
+                if ok_speech:
+                    await _enqueue(ok_speech)
+                if err_brief:
+                    await _enqueue(err_brief)
+            elif err_brief:
+                await _enqueue(err_brief)
 
-            for ls in locsets:
-                await _handle_location_set(ls)
+        if not started:
+            await emit("stream_start", {"sid": sid})
 
-            for a in autop:
-                observed_results.append(_autopilot_record(a, await _run_autopilot_task(a)))
+        await emit("response_end", {"sid": sid, "text": clean,
+                                     "actions": _shown(immediate)})
+        await _apply_action_side_effects(immediate)
 
-            for p in pending:
-                spoken_msg = ""
-                kind = p.get("kind", "action")
-                if kind == "browser" and browser.is_approved():
-                    approved = True
-                elif kind == "computer" and computer.is_armed():
-                    approved = True
-                else:
-                    await emit("status", "idle")
-                    approved = await request_permission(kind, p.get("description", "that action"))
-                if approved:
-                    if kind == "browser":
-                        browser.approve()
-                    elif kind == "computer":
-                        computer.arm()
-                    res = await loop.run_in_executor(None, run_action, p["spec"])
-                    if res.get("needs_vision"):
-                        await _handle_vision(res)
-                        continue
-                    if res.get("needs_image_gen"):
-                        await _handle_image_gen(res)
-                        continue
-                    if res.get("needs_web_search"):
-                        await _handle_web_search(res)
-                        continue
-                    if res.get("needs_autopilot"):
-                        observed_results.append(
-                            _autopilot_record(res, await _run_autopilot_task(res)))
-                        continue
-                    tag = "✓" if res.get("ok") else "✗"
-                    print(f"[Action] {tag} (approved) {res.get('type')} → {res.get('message')}", flush=True)
-                    await emit("action", [res])
-                    _remember_outcomes([res])
-                    await _log_commands([res])
-                    observed_results.append(res)
-                    spoken_msg = res.get("speak", res.get("message", ""))
-                    if res.get("feed_to_model"):
-                        feeds.append(res["feed_to_model"])
-                else:
-                    spoken_msg = _spoken_refusal(p.get("description"))
-                    await emit("action", [{"type": p.get("type"), "ok": False, "message": spoken_msg}])
-                if spoken_msg and _tts and not skills.is_muted():
-                    await emit("status", "speaking")
-                    await _tts.speak(spoken_msg)
+        for _v in vision:
+            await _handle_vision(_v)
 
-            # Persist transient lookup ANSWERS (web search, nearby places, weather,
-            # directions, news…) into history so follow-up turns keep context — a
-            # native tool-only turn otherwise logs NOTHING (which is why "find one
-            # close to me" forgot the topic was croissants). Durable HUD state lives
-            # in LIVE STATE and is intentionally NOT recorded here.
-            if not _interrupted():
-                _info_msgs = [r.get("message", "") for r in immediate
-                              if r.get("ok") and r.get("message")
-                              and str(r.get("type") or "").lower() in _INFO_RESULT_TYPES]
-                _outcome = " ".join(x for x in (web_answers + _info_msgs) if x).strip()
-                if _outcome:
-                    remember_turn_outcome(text, _outcome)
+        for im in images:
+            await _handle_image_gen(im)
 
-            if not _interrupted():
-                if _suspected_missed_tasks(text, results):
-                    feeds += await _completion_check(text, observed_results, task_tier)
-                elif _claimed_done_without_acting(text, clean, results):
-                    # The model claimed it acted but emitted no action — recover the
-                    # dropped [ACTION] so JARVIS does what it said (or admits it can't).
-                    print("[Check] reply claimed success with no action — recovering",
-                          flush=True)
-                    feeds += await _completion_check(text, observed_results, task_tier)
+        web_answers = []
+        for ws in websearch:
+            _ans = await _handle_web_search(ws)
+            if _ans:
+                web_answers.append(_ans)
 
-            feeds += _failure_feeds(observed_results)
-            await _observe_browser_if_needed(feeds, observed_results)
-            if feeds:
-                await _agentic_loop(feeds, text, task_tier=task_tier)
+        for ls in locsets:
+            await _handle_location_set(ls)
 
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            await _report_pipeline_error(exc, text)
-        finally:
-            await _finish_tts(consumer, tts_queue)
-            await emit("status", "idle")
+        for a in autop:
+            observed_results.append(_autopilot_record(a, await _run_autopilot_task(a)))
+
+        for p in pending:
+            spoken_msg = ""
+            kind = p.get("kind", "action")
+            if kind == "browser" and browser.is_approved():
+                approved = True
+            elif kind == "computer" and computer.is_armed():
+                approved = True
+            else:
+                await emit("status", "idle")
+                approved = await request_permission(kind, p.get("description", "that action"))
+            if approved:
+                if kind == "browser":
+                    browser.approve()
+                elif kind == "computer":
+                    computer.arm()
+                res = await loop.run_in_executor(None, run_action, p["spec"])
+                if res.get("needs_vision"):
+                    await _handle_vision(res)
+                    continue
+                if res.get("needs_image_gen"):
+                    await _handle_image_gen(res)
+                    continue
+                if res.get("needs_web_search"):
+                    await _handle_web_search(res)
+                    continue
+                if res.get("needs_autopilot"):
+                    observed_results.append(
+                        _autopilot_record(res, await _run_autopilot_task(res)))
+                    continue
+                tag = "✓" if res.get("ok") else "✗"
+                print(f"[Action] {tag} (approved) {res.get('type')} → {res.get('message')}", flush=True)
+                await emit("action", [res])
+                _remember_outcomes([res])
+                await _log_commands([res])
+                observed_results.append(res)
+                spoken_msg = res.get("speak", res.get("message", ""))
+                if res.get("feed_to_model"):
+                    feeds.append(res["feed_to_model"])
+            else:
+                spoken_msg = _spoken_refusal(p.get("description"))
+                await emit("action", [{"type": p.get("type"), "ok": False, "message": spoken_msg}])
+            if spoken_msg and _tts and not skills.is_muted():
+                await emit("status", "speaking")
+                await _tts.speak(spoken_msg)
+
+        # Persist transient lookup ANSWERS (web search, nearby places, weather,
+        # directions, news…) into history so follow-up turns keep context — a
+        # native tool-only turn otherwise logs NOTHING (which is why "find one
+        # close to me" forgot the topic was croissants). Durable HUD state lives
+        # in LIVE STATE and is intentionally NOT recorded here.
+        if not _interrupted():
+            _info_msgs = [r.get("message", "") for r in immediate
+                          if r.get("ok") and r.get("message")
+                          and str(r.get("type") or "").lower() in _INFO_RESULT_TYPES]
+            _outcome = " ".join(x for x in (web_answers + _info_msgs) if x).strip()
+            if _outcome:
+                remember_turn_outcome(text, _outcome)
+
+        if not _interrupted():
+            if _suspected_missed_tasks(text, results):
+                feeds += await _completion_check(text, observed_results, task_tier)
+            elif _claimed_done_without_acting(text, clean, results):
+                # The model claimed it acted but emitted no action — recover the
+                # dropped [ACTION] so JARVIS does what it said (or admits it can't).
+                print("[Check] reply claimed success with no action — recovering",
+                      flush=True)
+                feeds += await _completion_check(text, observed_results, task_tier)
+
+        feeds += _failure_feeds(observed_results)
+        await _observe_browser_if_needed(feeds, observed_results)
+        if feeds:
+            await _agentic_loop(feeds, text, task_tier=task_tier)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        await _report_pipeline_error(exc, text)
+    finally:
+        await _finish_tts(consumer, tts_queue)
+        await emit("status", "idle")
+
+
+# ── WhatsApp channel (whatsapp_channel.py) ─────────────────────────────────────
+
+async def _run_whatsapp_turn(text: str, chat, heard: bool = False) -> None:
+    """One WhatsApp command: an ordinary turn with the PC's voice quiet, its reply
+    (and any picture it made) sent back to the chat it came from. The HUD shows the
+    turn too, marked 📱, so the PC keeps a record of what was asked remotely."""
+    events: list = []
+
+    def tap(event: str, data) -> None:
+        if event in ("response_end", "response", "action"):
+            events.append((event, data))
+        elif event == "agent_task" and isinstance(data, dict) and _wa is not None:
+            # A browser/desktop task takes a while: say it has started.
+            _track_task(_wa.send(chat, f"On it: {data.get('goal', '')}"), "whatsapp ack")
+
+    if _wa is None:
+        return
+    await _wa.typing(chat, True)
+    try:
+        await _run_pipeline(text, emit_transcription=True, wa_chat=chat, tap=tap,
+                            shown=f"📱 {text}")
+    finally:
+        await _wa.typing(chat, False)
+    reply, images = whatsapp_channel.compose(events)
+    if not reply and not images:
+        reply = ("I'm on standby, sir. Send “Jarvis, wake up” to wake me."
+                 if skills.is_sleeping() else "I didn't come up with a reply to that.")
+    if heard:
+        reply = f"🎙 “{text}”\n\n{reply}".strip()
+    await _wa.send(chat, reply)
+    for blob, caption in images[:4]:
+        await _wa.send_image(chat, blob, caption)
+
+
+async def _on_whatsapp_command(text: str, chat, heard: bool) -> None:
+    print(f"[WhatsApp] command: {text[:80]!r}", flush=True)
+    _track_task(_run_whatsapp_turn(text, chat, heard), "whatsapp turn")
+
+
+async def _emit_whatsapp(state: "dict | None" = None) -> None:
+    st = state or (_wa.state if _wa is not None else
+                   {"status": "off", "qr": "", "number": "", "error": ""})
+    await emit("whatsapp.state", {**st, **whatsapp_channel.settings()})
+
+
+async def _start_whatsapp() -> None:
+    global _wa
+    if _wa is None:
+        _wa = whatsapp_channel.Channel(_on_whatsapp_command, _emit_whatsapp,
+                                       transcribe_voice_note)
+    await _wa.start()
+
+
+async def handle_whatsapp_state(_data) -> None:
+    await _emit_whatsapp()
+
+
+async def handle_whatsapp_set(data) -> None:
+    """Settings ▸ Devices ▸ WhatsApp: turn the channel on/off, edit the allowed numbers."""
+    cur = whatsapp_channel.save_settings(data if isinstance(data, dict) else {})
+    if cur["enabled"]:
+        await _start_whatsapp()
+    elif _wa is not None:
+        await _wa.stop()
+    await _emit_whatsapp()
+
+
+async def handle_whatsapp_unlink(_data) -> None:
+    """Log JARVIS out of WhatsApp and forget the session; linking again needs the QR."""
+    whatsapp_channel.save_settings({"enabled": False})
+    if _wa is not None:
+        await _wa.unlink()
+    else:
+        for suffix in ("", "-wal", "-shm"):
+            p = whatsapp_channel.db_path()
+            p.with_name(p.name + suffix).unlink(missing_ok=True)
+    await _emit_whatsapp()
 
 
 def _autopilot_record(task: dict, outcome: str) -> dict:
@@ -4208,6 +4343,10 @@ async def main(use_text: bool) -> None:
     register_handler("run_action", handle_run_action)
     register_handler("app_version", handle_app_version)
     register_handler("routine_save", handle_routine_save)
+    # WhatsApp: local HUD only — never on the remote (phone) allowlist below.
+    register_handler("whatsapp.state", handle_whatsapp_state)
+    register_handler("whatsapp.set", handle_whatsapp_set)
+    register_handler("whatsapp.unlink", handle_whatsapp_unlink)
     register_handler("routine_run", handle_routine_run)
     register_handler("set_config", handle_set_config)
     register_handler("reset", handle_reset)
@@ -4332,6 +4471,9 @@ async def main(use_text: bool) -> None:
         asyncio.create_task(active_app_loop()),
         asyncio.create_task(heartbeat_loop()),
     ]
+    # The WhatsApp channel, when the user turned it on (Settings ▸ Devices).
+    if whatsapp_channel.settings()["enabled"]:
+        _track_task(_start_whatsapp(), "whatsapp")
 
     # ── First-run asset provisioning ────────────────────────────────────────────
     # The installer ships lean, so the heavy runtime assets (Chromium, the Whisper

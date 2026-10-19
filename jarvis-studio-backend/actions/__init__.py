@@ -621,6 +621,10 @@ def _run_one(spec: dict) -> dict:
                 **({"image": data_url} if data_url else {})}
     elif atype in ("screenshot", "screen_capture"):
         ok, msg = skills.screenshot()
+        saved = re.search(r"saved to (.+?)\.?$", msg or "") if ok else None
+        if saved:       # the file itself, so a WhatsApp turn can send the picture
+            return {"type": "screenshot", "target": target, "ok": ok, "message": msg,
+                    "file": saved.group(1)}
     elif atype in ("see_screen", "look_at_screen", "analyze_screen", "screen_vision", "what_is_on_screen"):
         # Deferred: main.py captures the screen and asks the vision model (async).
         return {"type": "see_screen", "needs_vision": True, "ok": None,

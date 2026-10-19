@@ -40,6 +40,7 @@ landed, and corrects itself when it didn't.
 | 🌐 **Browser autopilot** | Goal in, result out. Sandboxed to a browser JARVIS owns, with approvals for anything risky. Watch every step and screenshot in the Agent Activity panel. |
 | 🖥️ **Desktop control** | Opens, closes and operates Windows apps through UI Automation. Off until you arm it, with a live "JARVIS CONTROLLING" bar to pause or correct it. |
 | 📱 **Phone remote** | QR + PIN pairing, signed messages, WebRTC screen streaming. A phone can run tasks but can never touch the PC's keys or settings. |
+| 💬 **WhatsApp** | Optional: link JARVIS to your WhatsApp and message it from anywhere ("Jarvis, send me a screenshot"). Replies and approvals come back in the chat; voice notes work. |
 | 📺 **TV** | Control an Android TV over its own network ADB: play a show on Netflix or YouTube, pause, volume, power, and multi-step tasks by sight. |
 | 📊 **Rich answers** | Charts, tables, timelines and flowcharts render inline in the chat. |
 | 💾 **Memory & playbooks** | "Remember that…" keeps facts across sessions. Teach a multi-step routine once and it reuses it. Everything is stored locally and viewable in the Memory panel. |
@@ -140,6 +141,34 @@ whether a goal needs the browser or the desktop before any model commits to one.
 | `jarvis-studio-gui/` | Tauri 2 + React HUD: main window, status pill overlay, browser panel, control bar |
 | `scripts/` | Installer build scripts |
 | `start.py` | Launches backend + GUI for development |
+
+## WhatsApp
+
+Settings → Devices → WhatsApp → **Use WhatsApp**, then scan the code from your phone
+(WhatsApp → Settings → Linked devices → Link a device), the same way you'd link
+WhatsApp Web. After that, write to yourself in WhatsApp's **Message yourself** chat,
+starting with JARVIS's name:
+
+> Jarvis, what's on my agenda today?
+> Jarvis, send me a screenshot
+> Jarvis, open Spotify and play some jazz
+
+- The reply comes back in that chat, and the PC stays quiet. Pictures (screenshots,
+  generated images, QR codes) are sent as images, and voice notes are transcribed.
+- Anything that normally asks for approval on screen asks you in the chat too: reply
+  *yes* or *no*.
+- Notes to yourself that don't start with "Jarvis" are left alone. Messages to and
+  from anyone else, and every group, are ignored. If JARVIS is linked to a second
+  number, list your own number under it and message that number instead.
+- Commands sent while the PC was off aren't run when it comes back; JARVIS says so.
+
+It needs the `neonize` package: `pip install -r requirements.txt` from source; the
+installer includes it from the next release. It uses an unofficial
+WhatsApp client, the WhatsApp Web protocol through
+[neonize](https://github.com/krypton-byte/neonize)/whatsmeow, the same approach as
+OpenClaw. That isn't covered by WhatsApp's terms, and WhatsApp can restrict accounts
+that use one: a second number for JARVIS is the cautious choice. **Unlink** in the same
+settings logs it out and deletes the session from this PC.
 
 ## Two routers at home?
 

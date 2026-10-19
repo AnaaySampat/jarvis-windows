@@ -46,6 +46,9 @@ In scope, for example:
 - getting past phone pairing, impersonating a paired device, or replaying signed
   envelopes
 - a remote (phone) client calling a handler outside the remote allowlist
+- the WhatsApp channel running a command from anyone but the linked account's own
+  "Message yourself" chat or a number the user listed, or sending JARVIS's output to
+  any chat other than the one the command came from
 - running desktop or browser autopilot actions without the user's consent or
   approval gate, including through prompt injection from a web page, file or
   screen content
@@ -81,6 +84,11 @@ Out of scope:
   needs them. Only add ones you wrote or trust: a downloaded skill can steer what
   JARVIS does as much as anything you type, though every action still goes through
   the same approval prompts.
+- The WhatsApp channel (off by default) makes your WhatsApp account a way to command
+  this PC, as powerful as typing into JARVIS; approvals still apply, and are asked in
+  the chat. Its session lives in `%APPDATA%\Jarvis\whatsapp.db` and is as sensitive as
+  a WhatsApp Web login: anyone with that file can read and send your messages. Unlink
+  it in Settings when you stop using it. It's an unofficial client; see the README.
 - TV control turns on the TV's network ADB (port 5555 on your home network). If you
   add the TV's Tailscale address, it is reachable from your tailnet too; the TV's own
   "Allow USB debugging?" prompt stays the gate either way.
