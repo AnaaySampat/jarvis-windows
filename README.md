@@ -170,6 +170,14 @@ OpenClaw. That isn't covered by WhatsApp's terms, and WhatsApp can restrict acco
 that use one: a second number for JARVIS is the cautious choice. **Unlink** in the same
 settings logs it out and deletes the session from this PC.
 
+## One memory with the phone
+
+What you ask JARVIS to remember, and your routines, are shared with the paired phone
+app: tell either one, both know, and forgetting works the same way. The phone syncs
+whenever it's connected (every minute, and right after a change). A timed routine still
+goes off only on the device it was made on; the other lists it as "(on your phone)" /
+"(on your PC)" and runs it when you say its name. Playbooks stay on each device.
+
 ## MCP servers: more tools
 
 JARVIS can use any **MCP server** (Model Context Protocol), the same ones Claude Desktop,

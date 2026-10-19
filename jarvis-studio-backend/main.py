@@ -3578,6 +3578,19 @@ async def handle_mcp_restart(data) -> None:
     await mcp_client.restart(str((data or {}).get("name") or ""))
 
 
+async def handle_memory_sync(data) -> None:
+    """The paired phone's memory.sync (memory_sync.py): merge its facts and routines,
+    answer with this PC's changes since its cursor. Remote-allowed: it's the owner's
+    authenticated phone, and nothing synced runs on its own here (a phone's timed
+    routine fires on the phone)."""
+    import memory_sync
+    reply, changed = await asyncio.get_running_loop().run_in_executor(
+        None, memory_sync.handle, data or {})
+    await send_to_current("memory.synced", reply)
+    if changed:
+        await _emit_memory()
+
+
 async def handle_memory_list(_data) -> None:
     await _emit_memory()
 
@@ -4421,6 +4434,7 @@ async def main(use_text: bool) -> None:
     register_handler("delete_conversation", handle_delete_conversation)
     register_handler("clear_conversations", handle_clear_conversations)
     register_handler("memory_list", handle_memory_list)
+    register_handler("memory.sync", handle_memory_sync)
     register_handler("memory_remember", handle_memory_remember)
     register_handler("memory_forget", handle_memory_forget)
     # Android TV setup — local HUD only (host-configuring, never on the remote allowlist).
@@ -4460,6 +4474,8 @@ async def main(use_text: bool) -> None:
             "task.submit", "task.cancel", "task.subscribe", "task.unsubscribe",
             "task.status", "task.list", "task.answer", "approval.response",
             "protocol.hello", "stop_control",
+            # One memory: the phone merges facts and routines (memory_sync.py).
+            "memory.sync",
             # Live remote-desktop: WebRTC screen signalling + direct input.
             "webrtc_offer", "webrtc_ice", "stop_screen",
             "arm_control", "disarm_control", "remote_input",

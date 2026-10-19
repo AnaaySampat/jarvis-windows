@@ -23,6 +23,10 @@ pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (uncha
 - [ ] **TV with two addresses** (home IP + Tailscale IP), and the "different network"
   message from a PC on the other router's Wi-Fi.
 - [ ] **Update notice**: needs a GitHub release newer than the installed version.
+- [ ] **One memory with the phone** (unit-tested both sides, never run between the
+  real devices): remember something on the phone, see it on the PC within a minute;
+  forget it on the PC, gone from the phone; a timed routine made on the phone shows
+  "(on your phone)" here and doesn't fire here.
 - [ ] **MCP servers** (unit-tested, and end to end against a real stdio server with
   mcp 1.30 and 2.2 on Linux; never on Windows): add
   `npx -y @modelcontextprotocol/server-filesystem C:\Users\<you>\Documents` in

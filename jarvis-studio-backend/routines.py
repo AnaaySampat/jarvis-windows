@@ -92,17 +92,19 @@ def when(r: dict) -> str:
              "Weekdays" if days == ["mon", "tue", "wed", "thu", "fri"] else
              "Weekends" if days == ["sat", "sun"] else
              ", ".join(d.capitalize() for d in days or []))
-    return f"{label} at {r['time']}"
+    return f"{label} at {r['time']}" + (" (on your phone)" if r.get("origin") == "phone" else "")
 
 
 def add_routine(time_str, prompt, days="daily", name="") -> "tuple[bool, str]":
     return save_routine(name, prompt, time_str, days)
 
 
-def save_routine(name, prompt, time_str="", days="daily",
-                 rid: str = "") -> "tuple[bool, str]":
+def save_routine(name, prompt, time_str="", days="daily", rid: str = "",
+                 origin: str = "", updated: int = 0) -> "tuple[bool, str]":
     """Add a routine, or replace the one with id `rid` (keeping its place and today's
-    run). A routine needs a time, a name to be run by, or both."""
+    run). A routine needs a time, a name to be run by, or both. `origin` is the device
+    whose clock fires it ("pc" or "phone", memory_sync); `updated` (ms) dates a change
+    synced from the phone."""
     name = re.sub(r"\s+", " ", str(name or "")).strip()[:60]
     prompt = (prompt or "").strip()
     if not prompt:
@@ -119,7 +121,8 @@ def save_routine(name, prompt, time_str="", days="daily",
                         for r in routines):
             return False, f"There's already a routine called “{name}”, sir."
         rec = {"id": rid or f"r{int(time.time() * 1000)}", "name": name, "time": t,
-               "prompt": prompt, "days": nd, "enabled": True, "last": ""}
+               "prompt": prompt, "days": nd, "enabled": True, "last": "",
+               "origin": origin or "pc", "updated": updated or int(time.time() * 1000)}
         idx = next((i for i, r in enumerate(routines) if rid and r.get("id") == rid), None)
         if rid and idx is None:
             return False, "That routine is gone, sir."
@@ -127,9 +130,13 @@ def save_routine(name, prompt, time_str="", days="daily",
             routines.append(rec)
         else:
             rec["last"] = routines[idx].get("last", "")
+            rec["origin"] = origin or routines[idx].get("origin") or "pc"
             routines[idx] = rec
         if not _save(routines):
             return False, "I couldn't save that, sir — the write failed."
+    if name:
+        import memory_sync
+        memory_sync.revived("routines", memory_sync.routine_key(name))
     label = f"“{name}”" if name else f"“{prompt}”"
     return True, (f"Routine {label} saved: {when(rec).lower()}." if t else
                   f"Routine {label} saved. Say its name and I'll run it.")
@@ -165,7 +172,8 @@ def items() -> list:
     """For the HUD's Routines list."""
     return [{"id": r.get("id", ""), "name": _name(r), "when": when(r), "prompt": r.get("prompt", ""),
              "time": r.get("time", ""), "days": r.get("days", "daily"),
-             "last": r.get("last", ""), "named": bool(r.get("name"))}
+             "last": r.get("last", ""), "named": bool(r.get("name")),
+             "origin": r.get("origin") or "pc"}
             for r in all_routines()]
 
 
@@ -186,7 +194,7 @@ def prompt_hint() -> str:
             "with action 'run' and that name.")
 
 
-def remove_routine(query) -> "tuple[bool, str]":
+def remove_routine(query, at: "int | None" = None) -> "tuple[bool, str]":
     query = str(query or "").strip().lower()
     if not query:
         return False, "Which routine should I remove, sir?"
@@ -202,12 +210,18 @@ def remove_routine(query) -> "tuple[bool, str]":
             return False, "I couldn't find a routine matching that, sir."
         if not _save(kept):
             return False, "I couldn't save that, sir — the write failed."
+    import memory_sync                 # deletions reach the phone as tombstones
+    memory_sync.gone("routines", [memory_sync.routine_key(r.get("name", ""))
+                                  for r in routines if r not in kept], at=at)
     return True, f"Removed {removed} routine{'s' if removed != 1 else ''}, sir."
 
 
 def clear_routines() -> "tuple[bool, str]":
+    gone = all_routines()
     if not _save([]):
         return False, "I couldn't clear the routines, sir — the write failed."
+    import memory_sync
+    memory_sync.gone("routines", [memory_sync.routine_key(r.get("name", "")) for r in gone])
     return True, "All routines cleared, sir."
 
 
@@ -233,6 +247,8 @@ def due(now: "_dt.datetime | None" = None) -> list:
         for r in routines:
             if not r.get("enabled", True) or r.get("time") != cur or r.get("last") == today:
                 continue
+            if (r.get("origin") or "pc") != "pc":
+                continue                     # a phone routine: the phone's alarm fires it
             days = r.get("days")
             if days != "daily" and wd not in (days or []):
                 continue

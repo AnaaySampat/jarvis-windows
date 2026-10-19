@@ -45,6 +45,9 @@ In scope, for example:
   token, or from an origin that should be rejected
 - getting past phone pairing, impersonating a paired device, or replaying signed
   envelopes
+- a paired phone's `memory.sync` doing more than merging facts and named routines
+  (it may add, change and delete those, which is the point; a routine it adds never
+  runs on this PC's clock)
 - a remote (phone) client calling a handler outside the remote allowlist (a paired
   phone is told this PC's network adapters, MAC and LAN address, in the signed
   `auth.ready`, to wake it with Wake-on-LAN; nothing else about the host)
