@@ -59,7 +59,7 @@ export default function App() {
     createPairing, listDevices, revokeDevice,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand,
     resetConversation, newConversation, openConversation, deleteConversation, listConversations, clearConversations,
-    memory, listMemory, rememberFact, forgetMemory,
+    memory, listMemory, rememberFact, forgetMemory, saveRoutine, runRoutine, routineResult,
     sendOcr, sendLocation, sendManualLocation, triggerListen, stopSpeech,
     stopControl, finishListen, pttStart,
     respondPermission, respondClarify, setMute, runAction, setBrowserOpen, sendUpload,
@@ -274,6 +274,7 @@ export default function App() {
           powerOpen={powerOpen} setPowerOpen={setPowerOpen}
           memoryOpen={memoryOpen} setMemoryOpen={setMemoryOpen}
           memory={memory} onRemember={rememberFact} onForget={forgetMemory}
+          onSaveRoutine={saveRoutine} onRunRoutine={runRoutine} routineResult={routineResult}
           onSend={sendMessage}
           onStop={stopSpeech}
           onCommand={sendCommand}

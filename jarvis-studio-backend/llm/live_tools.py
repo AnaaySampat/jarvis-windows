@@ -280,14 +280,16 @@ def function_declarations(places_ok: "bool | None" = None,
             "Read what the user currently has copied to the clipboard, e.g. to "
             "summarise or act on it."),
         _fn("manage_routine",
-            "Create, list, or remove a recurring routine — something JARVIS does on "
-            "its own at a set time (e.g. a daily morning brief).",
-            {"action": _str("What to do.", ["add", "list", "remove"]),
-             "time": _str("Time of day for 'add', e.g. '08:00' or '7am'."),
-             "days": _str("When it repeats: 'daily', 'weekdays', 'weekends', or "
-                          "'mon,wed,fri'."),
-             "prompt": _str("What JARVIS should do when it fires (for 'add'), or the "
-                            "text to match (for 'remove').")},
+            "Save, run, list or remove a routine: steps JARVIS runs by name ('movie "
+            "night'), at a set time (a daily morning brief), or both.",
+            {"action": _str("What to do.", ["add", "run", "list", "remove"]),
+             "name": _str("The routine's name (to run or remove it by; give one when "
+                          "adding a routine the user will ask for by name)."),
+             "time": _str("For 'add', only if it should run by itself: time of day, "
+                          "e.g. '08:00' or '7am'."),
+             "days": _str("When a timed routine repeats: 'daily', 'weekdays', "
+                          "'weekends', or 'mon,wed,fri'."),
+             "prompt": _str("For 'add': the steps, in plain English.")},
             ["action"]),
         _fn("get_weather",
             "Get the current weather and a few days' forecast for the user's location."),
@@ -579,7 +581,8 @@ _SPEC = {
     "forget_fact":       lambda a: {"type": "forget", "text": a.get("text", "")},
     "read_clipboard":    lambda a: {"type": "clipboard"},
     "manage_routine":    lambda a: {"type": "routine", "do": a.get("action", "list"),
-                                    "time": a.get("time", ""), "days": a.get("days", "daily"),
+                                    "name": a.get("name", ""), "time": a.get("time", ""),
+                                    "days": a.get("days", "daily"),
                                     "prompt": a.get("prompt", ""), "match": a.get("prompt", "")},
     "get_weather":       lambda a: {"type": "weather"},
     "find_places":       lambda a: {"type": "places", "query": a.get("query", "")},

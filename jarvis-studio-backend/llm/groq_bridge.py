@@ -29,6 +29,7 @@ import app_secrets
 import jarvis_paths
 import storage
 import memory_store
+import routines
 import skill_files
 from server.websocket_server import emit
 from . import gemini_bridge
@@ -1275,27 +1276,29 @@ async def _walk_routes(text: str = "", pinned: str = "", task_tier: str = "",
         await asyncio.sleep(wait + 0.25)
 
 
-# How long each model took to start answering lately. Every voice command waits on a
-# chat turn, and one slow model (the phone measured gemma-4-31b at 16.6 s where the
+# How long each model took to start answering a chat turn lately. Every voice command
+# waits on one, and one slow model (the phone measured gemma-4-31b at 16.6 s where the
 # next route answered in ~2 s) costs every turn its wait. A model slow lately is tried
 # after the others; quality order is kept among the rest and it still answers if they
-# all fail. Time to the FIRST output, so a long answer never counts as slow.
+# all fail. Time to the FIRST output, so a long answer never counts as slow — which is
+# why this isn't quota.note_latency, the autopilot's whole-call average (a step with a
+# screenshot takes 10 s+ on a model that starts a chat reply in one).
 _SLOW_ROUTE_S = 8.0
 _LATENCY_MEMORY_S = 3600.0
-_latency: "dict[str, tuple[float, float]]" = {}      # provider/model -> (secs, when)
+_chat_latency: "dict[str, tuple[float, float]]" = {}   # provider/model -> (secs, when)
 
 
-def note_latency(route: "quota.Route", secs: float, now: "float | None" = None) -> None:
+def note_chat_latency(route: "quota.Route", secs: float, now: "float | None" = None) -> None:
     now = time.time() if now is None else now
     key = f"{route.provider}/{route.model}"
-    prev = _latency.get(key)
+    prev = _chat_latency.get(key)
     if prev and now - prev[1] < _LATENCY_MEMORY_S:
         secs = (prev[0] + secs) / 2
-    _latency[key] = (secs, now)
+    _chat_latency[key] = (secs, now)
 
 
 def _slow_lately(route: "quota.Route", now: float) -> bool:
-    e = _latency.get(f"{route.provider}/{route.model}")
+    e = _chat_latency.get(f"{route.provider}/{route.model}")
     return bool(e) and now - e[1] < _LATENCY_MEMORY_S and e[0] > _SLOW_ROUTE_S
 
 
@@ -1757,6 +1760,17 @@ def _places_source() -> str:
         return "osm"
 
 
+def _heartbeat_info() -> dict:
+    """Settings ▸ Voice ▸ Heartbeat: the settings plus whether the checklist has
+    anything in it (an empty one never costs a call)."""
+    try:
+        import heartbeat
+        return {**heartbeat.settings(), "file": str(heartbeat.path()),
+                "has_items": bool(heartbeat.checklist())}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def get_sysinfo() -> dict:
     """Snapshot for the Settings panel + onboarding state."""
     ram = _get_free_ram_mb()
@@ -1812,6 +1826,8 @@ def get_sysinfo() -> dict:
         "always_on": bool(_config.get("always_on")),
         "conversation_mode": bool(_config.get("conversation_mode")),
         "system_alerts": bool(_config.get("system_alerts")),
+        "heartbeat": _heartbeat_info(),
+        "skills_count": len(skill_files.catalog()),
         "stt": _config.get("stt", "groq"),
         "stt_active": get_stt(),
         "screen": get_screen(),
@@ -1913,6 +1929,9 @@ def _system_messages(user_text: str = "") -> list:
         else:
             msgs.append({"role": "system", "content": _TV_PROMPT if native else
                          _TV_PROMPT + "\n" + _TV_ACTION_SHAPE})
+    named_routines = routines.prompt_hint()
+    if named_routines:
+        msgs.append({"role": "system", "content": named_routines})
     if native:
         skills_index = skill_files.prompt_block()
         if skills_index:
@@ -3047,6 +3066,8 @@ async def stream_prompt(text: str, record_history: bool = True, slim: bool = Fal
     # Slim agentic steps use provider-aware history depth (more on Gemini).
     if not slim:
         live_tools.begin_turn(text)     # this turn's tool groups (follow-ups keep them)
+        if routines.mentioned(text):    # "movie night" alone runs that routine
+            live_tools.activate(["planner"])
     system_msgs = ([{"role": "system", "content": _AGENTIC_SYSTEM_PROMPT}]
                    if slim else _system_messages(text))
     slim_turns = _slim_history_turns(model, text) if slim else None
@@ -3105,7 +3126,7 @@ async def stream_prompt(text: str, record_history: bool = True, slim: bool = Fal
         # — and then told the user their quota was spent.
         if full or tool_sink:
             secs = first_out if first_out is not None else time.monotonic() - started
-            note_latency(route, secs)
+            note_chat_latency(route, secs)
             print(f"[Route] {route.provider}/{route.model} answered in {secs:.1f}s",
                   flush=True)
             break

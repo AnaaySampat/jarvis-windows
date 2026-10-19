@@ -91,11 +91,11 @@ class NoRepeatTests(unittest.IsolatedAsyncioTestCase):
 
 class RouteTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        gb._latency.clear()
+        gb._chat_latency.clear()
 
     def test_slow_models_go_to_the_back_in_quality_order(self):
         a, b, c = (quota.Route("gemini", m, 0) for m in ("best", "mid", "low"))
-        gb.note_latency(a, 14.0, now=1000.0)
+        gb.note_chat_latency(a, 14.0, now=1000.0)
         self.assertEqual(gb.fast_first([a, b, c], now=1001.0), [b, c, a])
         # Forgotten after an hour.
         self.assertEqual(gb.fast_first([a, b, c], now=1000.0 + 3601), [a, b, c])

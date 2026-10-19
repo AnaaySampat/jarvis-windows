@@ -484,6 +484,8 @@ export function PowerOverlay({ open, onClose, runAction }) {
 const MEM_KINDS = [
   { key: "facts", kind: "fact", label: "About you", color: "var(--ac)",
     note: "JARVIS reads these before every reply." },
+  { key: "routines", kind: "routine", label: "Routines", color: "#c7a6ff",
+    note: "Steps JARVIS runs when you say a routine's name, at its time, or when you press Run." },
   { key: "playbooks", kind: "playbook", label: "Playbooks", color: "#6ee7a8",
     note: "Recipes JARVIS follows when you say one of their phrases." },
   { key: "learned", kind: "learned", label: "Learned routines", color: "var(--amber)",
@@ -506,8 +508,48 @@ function memDate(ts) {
 // "1) click X. 2) read the page." → ["click X", "read the page"]
 const memSteps = (s) => (s || "").split(/\s*\d+\)\s*/).map((x) => x.trim().replace(/\.$/, "")).filter(Boolean);
 
-export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onOpenConversation, onOpenChat }) {
+// Memory ▸ Routines ▸ Add / Edit. A routine needs a name to be run by, a time, or both.
+const DAY_SETS = { daily: "Every day", weekdays: "Weekdays", weekends: "Weekends" };
+const daysKey = (d) => (d === "daily" ? "daily"
+  : JSON.stringify(d) === JSON.stringify(["mon", "tue", "wed", "thu", "fri"]) ? "weekdays"
+  : JSON.stringify(d) === JSON.stringify(["sat", "sun"]) ? "weekends" : "daily");
+
+function RoutineForm({ initial, onSave, onCancel, result }) {
+  const [f, setF] = useState(() => ({
+    name: initial?.named ? initial.name : "", prompt: initial?.prompt || "",
+    time: initial?.time || "", days: daysKey(initial?.days),
+  }));
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const submit = (e) => {
+    e.preventDefault();
+    onSave({ ...f, id: initial?.id || "" });
+  };
+  return (
+    <form className="memx-rform" onSubmit={submit}>
+      <input value={f.name} onChange={set("name")} placeholder="Name — e.g. movie night"
+             aria-label="Routine name" maxLength={60} autoFocus />
+      <textarea value={f.prompt} onChange={set("prompt")} rows={3} aria-label="Routine steps"
+                placeholder="The steps, as you'd say them — e.g. open Netflix on the TV, set the volume to 30" />
+      <div className="memx-rform-row">
+        <label>At <input type="time" value={f.time} onChange={set("time")} aria-label="Time (optional)" /></label>
+        <select value={f.days} onChange={set("days")} disabled={!f.time} aria-label="Days">
+          {Object.entries(DAY_SETS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+        </select>
+        <span className="memx-rform-hint">{f.time ? "" : "No time: it runs when you ask."}</span>
+        <button type="button" className="memx-open" onClick={onCancel}>Cancel</button>
+        <button type="submit" className="memx-rform-save"
+                disabled={!f.prompt.trim() || (!f.name.trim() && !f.time)}>Save</button>
+      </div>
+      {result && <p className={result.ok ? "memx-rform-ok" : "memx-rform-err"}>{result.message}</p>}
+    </form>
+  );
+}
+
+export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onOpenConversation, onOpenChat,
+  onSaveRoutine, onRunRoutine, routineResult }) {
   const [tab, setTab] = useState("facts");
+  const [editing, setEditing] = useState(null);   // null | "new" | a routine
+  const [sentAt, setSentAt] = useState(null);     // routineResult when the form was sent
   const [draft, setDraft] = useState("");
   const [armed, setArmed] = useState(null);   // id awaiting its confirming second click
   const [focus, setFocus] = useState(null);   // id picked on the timeline
@@ -515,6 +557,7 @@ export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onO
   const m = memory || {};
   const lists = {
     facts: [...(m.facts || [])].reverse(),
+    routines: m.routines || [],
     playbooks: m.playbooks || [],
     learned: [...(m.learned || [])].reverse(),
     conversations: m.conversations || [],
@@ -541,7 +584,14 @@ export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onO
   const t0 = Math.min(now - 86400, ...dated.map((d) => d.x.ts));
   const at = (ts) => `${((ts - t0) / (now - t0)) * 100}%`;
 
-  const pick = (key) => { setTab(key); setFocus(null); setArmed(null); mainRef.current?.scrollTo(0, 0); };
+  const pick = (key) => {
+    setTab(key); setFocus(null); setArmed(null); setEditing(null); mainRef.current?.scrollTo(0, 0);
+  };
+  // The form closes once the backend says the routine saved; a refusal stays on it.
+  const freshResult = routineResult && routineResult !== sentAt ? routineResult : null;
+  const formFor = freshResult?.ok ? null : editing;
+  const edit = (r) => { setSentAt(routineResult); setEditing(r); };
+  const saveRoutine = (r) => { setSentAt(routineResult); onSaveRoutine && onSaveRoutine(r); };
   const forget = (e, kind, id) => {
     e.preventDefault();                       // inside <summary>: don't toggle the row
     if (armed !== id) { setArmed(id); return; }
@@ -614,6 +664,16 @@ export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onO
               </form>
             )}
 
+            {tab === "routines" && (formFor ? (
+              <RoutineForm key={formFor === "new" ? "new" : formFor.id}
+                           initial={formFor === "new" ? null : formFor} result={freshResult}
+                           onSave={saveRoutine} onCancel={() => setEditing(null)} />
+            ) : (
+              <div className="memx-add">
+                <button type="button" onClick={() => edit("new")}>Add a routine</button>
+              </div>
+            ))}
+
             {tab === "conversations" && m.current > 0 && (
               <div className="memx-row memx-row--current">
                 <span className="memx-text">This conversation</span>
@@ -627,6 +687,7 @@ export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onO
               <p className="memx-empty">
                 {{
                   facts: "Nothing yet. Tell JARVIS “remember that…”, or add something above.",
+                  routines: "No routines. Add one above, or say “make a routine called…”.",
                   playbooks: "No playbooks. Teach one by saying “learn a playbook called…”.",
                   learned: "Nothing learned yet. Routines appear here after JARVIS completes a multi-step task.",
                   conversations: "No saved chats. Starting a new chat saves the current one here.",
@@ -641,6 +702,24 @@ export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onO
                     <span className="memx-text">{f.text}</span>
                     <span className="memx-meta">{memDate(f.ts)}</span>
                     {forgetBtn("fact", f.id)}
+                  </div>
+                </li>
+              ))}
+
+              {tab === "routines" && list.map((r) => (
+                <li key={r.id} {...row(r.id)}>
+                  <div className="memx-card">
+                    <div className="memx-row">
+                      <span className="memx-name">{r.name}</span>
+                      <span className="memx-meta">
+                        {r.when}{r.last === new Date().toISOString().slice(0, 10) ? " · ran today" : ""}
+                      </span>
+                      {forgetBtn("routine", r.id, "Remove")}
+                      <button type="button" className="memx-open" onClick={() => edit(r)}>Edit</button>
+                      <button type="button" className="memx-open"
+                              onClick={() => { onRunRoutine && onRunRoutine(r.id); onClose(); }}>Run</button>
+                    </div>
+                    <p className="memx-steps">{r.prompt}</p>
                   </div>
                 </li>
               ))}

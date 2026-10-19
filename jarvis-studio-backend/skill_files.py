@@ -40,6 +40,29 @@ def skills_dir() -> Path:
     return storage.get_root() / "skills"
 
 
+_EXAMPLE = """---
+name: example skill
+description: What a skill file looks like (delete or edit me)
+---
+Write the steps the way you'd tell a person, using what JARVIS can already do:
+
+1. Open https://example.com in the browser.
+2. Read the page's main heading and tell me what it says.
+
+JARVIS sees only the name and description above until a request needs the skill;
+then it reads the whole file and follows it. Approval prompts still apply.
+"""
+
+
+def ensure_dir() -> Path:
+    """The skills folder, created with one example the first time it's opened."""
+    d = skills_dir()
+    if not d.exists():
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "example-skill.md").write_text(_EXAMPLE, encoding="utf-8")
+    return d
+
+
 def _front_matter(text: str) -> "tuple[dict, str]":
     """({key: value}, body) for a leading ``---`` block of ``key: value`` lines."""
     m = re.match(r"\A﻿?---\s*\n(.*?)\n---\s*(?:\n|\Z)", text, re.DOTALL)

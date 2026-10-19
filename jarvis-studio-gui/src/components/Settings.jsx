@@ -184,8 +184,14 @@ function TvSection({ tvState, onTv }) {
         Developer options → <b>USB debugging</b>. Enter the TV&apos;s IP (Settings → Network)
         and Connect.
       </div>
+      <div className="settings-hint">
+        More than one router at home? A second router in router mode gives its Wi-Fi its own
+        network, and the TV can&apos;t be reached across it. Set that router to <b>Access
+        Point</b> mode, or install Tailscale on the TV and add its 100.x address after a comma
+        (192.168.1.50, 100.64.1.2): JARVIS uses whichever answers.
+      </div>
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <input type="text" placeholder="192.168.1.50" value={host}
+        <input type="text" placeholder="192.168.1.50 (, Tailscale address)" value={host}
           onChange={(e) => setHost(e.target.value.trim())} />
         <button className="dirlist-addbtn" disabled={busy || !host}
           onClick={() => { setSentWith(tvState); onTv && onTv("tv.pair", { host }); }}>
@@ -436,6 +442,12 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   const [storageDir, setStorageDir] = useState(sysInfo.storage_dir ?? "");
   const [keys, setKeys] = useState({});   // key name -> text typed this session
   const [sysAlerts, setSysAlerts] = useState(!!sysInfo.system_alerts);
+  const [hb, setHb] = useState({
+    enabled: !!sysInfo.heartbeat?.enabled,
+    every_min: sysInfo.heartbeat?.every_min ?? 30,
+    start: sysInfo.heartbeat?.start ?? "08:00",
+    end: sysInfo.heartbeat?.end ?? "22:00",
+  });
   const [autopilotModel, setAutopilotModel] = useState(sysInfo.autopilot_model ?? "");
   const [autopilotThinking, setAutopilotThinking] = useState(
     (sysInfo.autopilot_thinking ?? -1) === 0 ? "off" : "dynamic");
@@ -466,7 +478,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   const removeDir = (d) => setDirs(dirs.filter((x) => x !== d));
 
   const cfg = {
-    model_override: model, tts, allowed_dirs: dirs, system_alerts: sysAlerts,
+    model_override: model, tts, allowed_dirs: dirs, system_alerts: sysAlerts, heartbeat: hb,
     overlay: { enabled: ovlEnabled, mode: ovlMode, apps: ovlApps },
     autopilot_model: autopilotModel.trim(),
     autopilot_thinking: autopilotThinking === "off" ? 0 : -1,
@@ -723,6 +735,39 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                   is maxed out or the battery is low. Agenda reminders and timers are unaffected.
                 </div>
               </div>
+
+              <div className="settings-sec">
+                <label>Heartbeat</label>
+                <label className="settings-check">
+                  <input type="checkbox" className="sw" checked={hb.enabled}
+                         onChange={(e) => setHb({ ...hb, enabled: e.target.checked })} />
+                  <span>Check in on my own, from a checklist you write</span>
+                </label>
+                <div className="settings-hint">
+                  Every so often JARVIS reads your checklist (HEARTBEAT.md) against what the HUD
+                  knows — the time, agenda, battery, CPU, weather — and speaks only when something
+                  on it needs you: “tell me 10 minutes before a meeting”, “say if the battery is low
+                  and unplugged”. It can only speak, never act. Each check is one call from your
+                  model quota; an empty checklist costs nothing.
+                  {sysInfo.heartbeat?.enabled && !sysInfo.heartbeat?.has_items &&
+                    " Your checklist is empty, so nothing runs yet."}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <select value={hb.every_min} disabled={!hb.enabled}
+                          onChange={(e) => setHb({ ...hb, every_min: Number(e.target.value) })}>
+                    {[15, 30, 60, 120].map((m) => <option key={m} value={m}>Every {m} minutes</option>)}
+                  </select>
+                  <span className="settings-hint">between</span>
+                  <input type="time" value={hb.start} disabled={!hb.enabled}
+                         onChange={(e) => setHb({ ...hb, start: e.target.value })} />
+                  <span className="settings-hint">and</span>
+                  <input type="time" value={hb.end} disabled={!hb.enabled}
+                         onChange={(e) => setHb({ ...hb, end: e.target.value })} />
+                  <button className="dirlist-addbtn" onClick={() => onSave({ heartbeat_open: true })}>
+                    Edit checklist
+                  </button>
+                </div>
+              </div>
             </>)}
 
             {current.id === "autopilot" && (
@@ -807,6 +852,22 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                 </div>
                 <input type="text" className="settings-model-id" value={storageDir}
                        onChange={(e) => setStorageDir(e.target.value)} placeholder="C:\Users\you\Jarvis" />
+              </div>
+
+              <div className="settings-sec">
+                <label>Skill files</label>
+                <div className="settings-hint">
+                  Teach JARVIS a procedure by writing it down: a Markdown file in the{" "}
+                  <code>skills/</code> folder (OpenClaw-style <code>SKILL.md</code> folders work too),
+                  with a <code>name:</code> and <code>description:</code> at the top. JARVIS sees only
+                  the names and descriptions, and reads a skill in full when a request needs it, so
+                  long notes cost nothing until they&apos;re used.
+                  {sysInfo.skills_count ? ` ${sysInfo.skills_count} skill${sysInfo.skills_count === 1 ? "" : "s"} found.` : ""}
+                </div>
+                <button className="dirlist-addbtn" style={{ marginTop: 8 }}
+                        onClick={() => onSave({ skills_open: true })}>
+                  Open skills folder
+                </button>
               </div>
 
               <div className="settings-sec">

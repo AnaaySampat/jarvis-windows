@@ -64,7 +64,7 @@ export function JarvisHUD({
   onRefreshConversations,
   onClearConversations,
   // memory view
-  memory, onRemember, onForget,
+  memory, onRemember, onForget, onSaveRoutine, onRunRoutine, routineResult,
 }) {
   const c = config;
   const d = telemetry || DEFAULT_TELEMETRY;
@@ -149,6 +149,7 @@ export function JarvisHUD({
       <MemoryOverlay
         open={memoryOpen} onClose={closeMemory} memory={memory}
         onRemember={onRemember} onForget={onForget}
+        onSaveRoutine={onSaveRoutine} onRunRoutine={onRunRoutine} routineResult={routineResult}
         onOpenChat={() => { closeMemory(); setChatOpen(true); }}
         onOpenConversation={(id) => { onOpenConversation(id); closeMemory(); setChatOpen(true); }}
       />

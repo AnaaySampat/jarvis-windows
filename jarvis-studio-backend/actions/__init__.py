@@ -706,12 +706,25 @@ def _run_one(spec: dict) -> dict:
             ok, msg = _routines.add_routine(
                 spec.get("time"),
                 spec.get("prompt") or spec.get("task") or spec.get("text"),
-                spec.get("days") or spec.get("day") or "daily")
+                spec.get("days") or spec.get("day") or "daily",
+                spec.get("name") or "")
+        elif do in ("run", "start", "do"):
+            # The steps go back to the model, which does them with its tools in this
+            # same turn: a routine is text, never a second way to execute anything.
+            r, why = _routines.find(spec.get("name") or spec.get("match") or spec.get("prompt"))
+            if r is None:
+                return {"type": "routine", "do": do, "ok": False, "message": why}
+            from llm import live_tools
+            live_tools.activate(live_tools.groups_for(r.get("prompt") or ""))
+            return {"type": "routine", "do": do, "ok": True,
+                    "message": f"Running “{_routines._name(r)}”.", "speak": "",
+                    "feed_to_model": {"name": "routine", "content": _routines.run_turn(r)}}
         elif do in ("list", "get", "show", ""):
             ok, msg = True, _routines.list_text()
         elif do in ("remove", "delete", "cancel"):
             ok, msg = _routines.remove_routine(
-                spec.get("match") or spec.get("query") or spec.get("time") or spec.get("prompt"))
+                spec.get("name") or spec.get("match") or spec.get("query") or spec.get("time")
+                or spec.get("prompt"))
         elif do in ("clear", "clear_all", "remove_all"):
             ok, msg = _routines.clear_routines()
         else:

@@ -3214,6 +3214,24 @@ async def handle_set_config(data) -> None:
         await emit("conversation_mode", bool(data["conversation_mode"]))
     if "system_alerts" in data:
         set_system_alerts(bool(data["system_alerts"]))
+    if isinstance(data.get("heartbeat"), dict):
+        import heartbeat
+        hb = heartbeat.save_settings(data["heartbeat"])
+        if hb["enabled"]:
+            heartbeat.ensure_file()      # so "Edit checklist" has something to open
+    if data.get("skills_open"):
+        import skill_files
+        try:
+            skills._open_file(skill_files.ensure_dir())
+        except Exception as exc:  # noqa: BLE001
+            await emit("warning", f"Couldn't open the skills folder: {exc}")
+    if data.get("heartbeat_open"):
+        # Settings ▸ Voice ▸ Heartbeat ▸ Edit checklist: the file, in the user's editor.
+        import heartbeat
+        try:
+            skills._open_file(heartbeat.ensure_file())
+        except Exception as exc:  # noqa: BLE001
+            await emit("warning", f"Couldn't open HEARTBEAT.md: {exc}")
     if "autopilot_model" in data:
         from llm.groq_bridge import set_autopilot_model
         set_autopilot_model(data["autopilot_model"])
@@ -3338,6 +3356,7 @@ async def _emit_memory() -> None:
         "facts": memory_store.all_facts(),
         "playbooks": [pb(p) for p in playbooks.all_playbooks()],
         "learned": [pb(p) for p in playbooks.learned()],
+        "routines": [{**r, "ts": _id_ts(r["id"])} for r in routines.items()],
         "conversations": memory_store.list_conversations(),
         "current": len(get_history()),
         "now": time.time(),            # timeline right edge (render stays pure)
@@ -3386,7 +3405,27 @@ async def handle_memory_forget(data) -> None:
     elif kind == "conversation" and iid:
         memory_store.delete_conversation(iid)
         await _emit_conversations()
+    elif kind == "routine" and iid:
+        routines.remove_routine(iid)        # exact id
     await _emit_memory()
+
+
+async def handle_routine_save(data) -> None:
+    """Memory ▸ Routines ▸ Add / Edit. The result line goes back to the form."""
+    d = data or {}
+    ok, msg = routines.save_routine(d.get("name"), d.get("prompt"), d.get("time") or "",
+                                    d.get("days") or "daily", str(d.get("id") or ""))
+    await emit("routine_saved", {"ok": ok, "message": msg})
+    await _emit_memory()
+
+
+async def handle_routine_run(data) -> None:
+    """Memory ▸ Routines ▸ Run: the routine's turn, as if the user had asked for it."""
+    r, why = routines.find((data or {}).get("id") or "")
+    if r is None:
+        await emit("warning", why)
+        return
+    _track_task(_run_routine({**r, "prompt": routines.run_turn(r)}), "routine run")
 
 
 
@@ -3867,6 +3906,36 @@ async def ping_loop() -> None:
         await asyncio.sleep(4)
 
 
+async def heartbeat_loop() -> None:
+    """OpenClaw-style heartbeat (heartbeat.py): when it's due, one small model call
+    reads HEARTBEAT.md against the live HUD state and speaks only if something there
+    needs the user. Waits while the user is mid-turn, an autopilot runs, or JARVIS is
+    asleep; never acts, only speaks."""
+    import heartbeat
+    while True:
+        await asyncio.sleep(60)
+        try:
+            if not heartbeat.due():
+                continue
+            if (_user_busy or _autopilot_owner or skills.is_sleeping()
+                    or (_pipeline_lock is not None and _pipeline_lock.locked())):
+                continue                         # try again next minute
+
+            async def complete(system: str, user: str) -> str:
+                return await quick_completion(system, user, task_tier="dumb",
+                                              max_tokens=160, temperature=0.2)
+
+            msg = await heartbeat.check(build_live_context(),
+                                        memory_store.facts_block(), complete)
+            if msg:
+                print(f"[Heartbeat] {msg}", flush=True)
+                await _speak_proactive(msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — a heartbeat never takes the app down
+            print(f"[Heartbeat] check failed: {exc}", flush=True)
+
+
 async def slow_info_loop() -> None:
     """Emit connectivity + weather + schedule on start, then every ~10 min."""
     global _last_netinfo, _last_weather
@@ -4133,6 +4202,8 @@ async def main(use_text: bool) -> None:
     register_handler("set_mute", handle_set_mute)
     register_handler("run_action", handle_run_action)
     register_handler("app_version", handle_app_version)
+    register_handler("routine_save", handle_routine_save)
+    register_handler("routine_run", handle_routine_run)
     register_handler("set_config", handle_set_config)
     register_handler("reset", handle_reset)
     register_handler("set_location", handle_set_location)
@@ -4254,6 +4325,7 @@ async def main(use_text: bool) -> None:
         asyncio.create_task(ping_loop()),
         asyncio.create_task(slow_info_loop()),
         asyncio.create_task(active_app_loop()),
+        asyncio.create_task(heartbeat_loop()),
     ]
 
     # ── First-run asset provisioning ────────────────────────────────────────────

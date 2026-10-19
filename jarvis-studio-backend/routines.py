@@ -1,9 +1,12 @@
-"""Scheduled spoken routines — recurring proactive briefings or actions.
+"""Routines — saved steps JARVIS runs by name, at a set time, or both.
 
-A routine fires JARVIS's normal pipeline with a saved prompt at a set time on set
-days, e.g. "every weekday at 08:00 → give me a morning brief". This is distinct
-from the agenda (which only *reminds* you of an item): a routine actually *runs*
-a request and speaks the result.
+"Run movie night" (a voice macro) and "every weekday at 08:00, give me a morning
+brief" (a timed briefing) are one store. A routine is only saved text: running it hands
+that text to JARVIS's normal pipeline as an ordinary turn, so every step goes through
+the same tools and approval prompts — there is no second execution path. Distinct from
+the agenda (which only *reminds* you of an item): a routine actually *runs* a request
+and speaks the result. Named, untimed routines and editing came from the Android app
+(2026-10-18); timed routines without a name, from before, still work.
 
 Persisted via :mod:`memory_store` to ``<storage-root>/memory/routines.json``.
 ``due()`` is self-de-duping: it stamps each fired routine with today's date and
@@ -75,25 +78,112 @@ def _norm_days(days) -> "str | list":
     return out or "daily"
 
 
-def _days_label(days) -> str:
-    return "every day" if days == "daily" else ", ".join(days)
+def _name(r: dict) -> str:
+    """A routine's name; a timed one saved before names existed goes by its steps."""
+    return (r.get("name") or "").strip() or (r.get("prompt") or "")[:40]
 
 
-def add_routine(time_str, prompt, days="daily") -> "tuple[bool, str]":
-    t = _norm_time(time_str)
-    if not t:
-        return False, "I need a valid time like 08:00, sir."
+def when(r: dict) -> str:
+    """'Every day at 08:00', 'Weekdays at 07:30', or 'When you ask'."""
+    if not r.get("time"):
+        return "When you ask"
+    days = r.get("days")
+    label = ("Every day" if days == "daily" else
+             "Weekdays" if days == ["mon", "tue", "wed", "thu", "fri"] else
+             "Weekends" if days == ["sat", "sun"] else
+             ", ".join(d.capitalize() for d in days or []))
+    return f"{label} at {r['time']}"
+
+
+def add_routine(time_str, prompt, days="daily", name="") -> "tuple[bool, str]":
+    return save_routine(name, prompt, time_str, days)
+
+
+def save_routine(name, prompt, time_str="", days="daily",
+                 rid: str = "") -> "tuple[bool, str]":
+    """Add a routine, or replace the one with id `rid` (keeping its place and today's
+    run). A routine needs a time, a name to be run by, or both."""
+    name = re.sub(r"\s+", " ", str(name or "")).strip()[:60]
     prompt = (prompt or "").strip()
     if not prompt:
         return False, "What should the routine do, sir?"
+    t = _norm_time(time_str) if str(time_str or "").strip() else ""
+    if str(time_str or "").strip() and not t:
+        return False, "I need a valid time like 08:00, sir."
+    if not t and not name:
+        return False, "Give the routine a name to run it by, or a time like 08:00, sir."
     nd = _norm_days(days)
     with _lock:
         routines = all_routines()
-        routines.append({"id": f"r{int(time.time() * 1000)}", "time": t, "prompt": prompt,
-                         "days": nd, "enabled": True, "last": ""})
+        if name and any(r.get("id") != rid and (r.get("name") or "").lower() == name.lower()
+                        for r in routines):
+            return False, f"There's already a routine called “{name}”, sir."
+        rec = {"id": rid or f"r{int(time.time() * 1000)}", "name": name, "time": t,
+               "prompt": prompt, "days": nd, "enabled": True, "last": ""}
+        idx = next((i for i, r in enumerate(routines) if rid and r.get("id") == rid), None)
+        if rid and idx is None:
+            return False, "That routine is gone, sir."
+        if idx is None:
+            routines.append(rec)
+        else:
+            rec["last"] = routines[idx].get("last", "")
+            routines[idx] = rec
         if not _save(routines):
             return False, "I couldn't save that, sir — the write failed."
-    return True, f"Routine set for {t} {_days_label(nd)}: “{prompt}”."
+    label = f"“{name}”" if name else f"“{prompt}”"
+    return True, (f"Routine {label} saved: {when(rec).lower()}." if t else
+                  f"Routine {label} saved. Say its name and I'll run it.")
+
+
+def find(query) -> "tuple[dict | None, str]":
+    """(routine, '') by id, exact name, or the only name/steps containing the words;
+    else (None, why)."""
+    q = str(query or "").strip().lower()
+    routines = all_routines()
+    if not q:
+        return None, "Which routine, sir?"
+    for r in routines:
+        if q in (r.get("id", "").lower(), (r.get("name") or "").lower()):
+            return r, ""
+    hits = [r for r in routines if q in _name(r).lower() or q in (r.get("prompt") or "").lower()]
+    if len(hits) == 1:
+        return hits[0], ""
+    if hits:
+        return None, ("Which one, sir? " + ", ".join(f"“{_name(r)}”" for r in hits[:5]) + ".")
+    return None, "I couldn't find a routine matching that, sir."
+
+
+def run_turn(r: dict) -> str:
+    """The turn a routine runs as. A legacy timed routine is its prompt as it was."""
+    if not r.get("name"):
+        return r.get("prompt") or ""
+    return (f"Run my routine “{r['name']}”. Do these now with your tools, in order, and "
+            f"tell me what actually happened: {r.get('prompt', '')}")
+
+
+def items() -> list:
+    """For the HUD's Routines list."""
+    return [{"id": r.get("id", ""), "name": _name(r), "when": when(r), "prompt": r.get("prompt", ""),
+             "time": r.get("time", ""), "days": r.get("days", "daily"),
+             "last": r.get("last", ""), "named": bool(r.get("name"))}
+            for r in all_routines()]
+
+
+def mentioned(text: str) -> bool:
+    """Whether a request says one of the named routines' names."""
+    said = f" {re.sub(r'[^a-z0-9]+', ' ', (text or '').lower())} "
+    return any(f" {re.sub(r'[^a-z0-9]+', ' ', r['name'].lower()).strip()} " in said
+               for r in all_routines() if (r.get("name") or "").strip())
+
+
+def prompt_hint() -> str:
+    """Named routines for the system prompt, so saying a name alone runs it."""
+    names = [f"“{r['name']}”" for r in all_routines() if r.get("name")]
+    if not names:
+        return ""
+    return ("SAVED ROUTINES\nThe user's routines: " + ", ".join(names[:30]) + ". When the "
+            "user says a routine's name on its own or asks to run one, call manage_routine "
+            "with action 'run' and that name.")
 
 
 def remove_routine(query) -> "tuple[bool, str]":
@@ -104,6 +194,7 @@ def remove_routine(query) -> "tuple[bool, str]":
         routines = all_routines()
         kept = [r for r in routines
                 if query not in (r.get("prompt") or "").lower()
+                and query != (r.get("name") or "").lower()
                 and query != (r.get("time") or "")
                 and query != (r.get("id") or "")]
         removed = len(routines) - len(kept)
@@ -124,7 +215,7 @@ def list_text() -> str:
     routines = all_routines()
     if not routines:
         return "You have no routines set, sir."
-    lines = [f"- {r.get('time')} ({_days_label(r.get('days'))}): {r.get('prompt')}"
+    lines = [f"- {_name(r)} — {when(r)}: {r.get('prompt')}"
              for r in routines if r.get("enabled", True)]
     return "Your routines, sir:\n" + "\n".join(lines) if lines else "You have no active routines, sir."
 
