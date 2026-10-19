@@ -63,6 +63,8 @@ hiddenimports = [
     "updates",
     "whatsapp_channel",
     "mcp_client",
+    "memory_sync",
+    "memory_digest",
     "websockets",
     "websockets.legacy",
     "websockets.legacy.server",

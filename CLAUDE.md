@@ -14,6 +14,7 @@ WebSocket also serves a cryptographically paired phone over Tailscale. See
 | Which operator runs a goal | `jarvis-studio-backend/task_router.py` |
 | Model routing / tiers / fallback | `jarvis-studio-backend/llm/groq_bridge.py` |
 | Tool palette, tool groups per turn (`load_tools`) | `jarvis-studio-backend/llm/live_tools.py` |
+| Nightly memory digest (user's own words → ≤5 facts + journal note, after 03:00) | `jarvis-studio-backend/memory_digest.py`, `main.digest_loop` |
 | One memory with the phone (facts + named routines, newest wins, tombstones, routine `origin`) | `jarvis-studio-backend/memory_sync.py`, `main.handle_memory_sync` (remote-allowed) |
 | MCP servers (sessions on the main loop, tool group `mcp`, approval unless read-only/trusted) | `jarvis-studio-backend/mcp_client.py`, Settings ▸ MCP Servers |
 | Skill files (`read_skill`), heartbeat, routines | `jarvis-studio-backend/skill_files.py`, `heartbeat.py`, `routines.py` |
@@ -43,7 +44,7 @@ cd jarvis-studio-backend; python -m unittest discover -s . -p "test_*.py" -t .
 cd jarvis-studio-gui; npm run build
 ```
 
-419 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
+423 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
 installs a hand-picked minimum — add to that list if a new test needs a module).
 For anything touching the live voice/WS wiring, run the app (`python start.py`),
 don't stop at compiling.

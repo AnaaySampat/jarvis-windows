@@ -192,6 +192,12 @@ def _conv_meta(c: dict) -> dict:
             "ts": c.get("ts") or 0, "count": len(c.get("messages") or [])}
 
 
+def archived_messages() -> "list[list]":
+    """Every archived conversation's messages, oldest conversation first."""
+    return [_clean_messages(c.get("messages")) for c in reversed(_read_conversations())
+            if isinstance(c, dict)]
+
+
 def list_conversations() -> list:
     """Archived conversations as metadata only (for the Recents list), newest first."""
     return [_conv_meta(c) for c in _read_conversations()

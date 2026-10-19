@@ -3360,6 +3360,9 @@ async def handle_set_config(data) -> None:
         hb = heartbeat.save_settings(data["heartbeat"])
         if hb["enabled"]:
             heartbeat.ensure_file()      # so "Edit checklist" has something to open
+    if isinstance(data.get("digest"), dict):
+        import memory_digest
+        memory_digest.save_settings(data["digest"])
     if data.get("skills_open"):
         import skill_files
         try:
@@ -4140,6 +4143,35 @@ async def heartbeat_loop() -> None:
             print(f"[Heartbeat] check failed: {exc}", flush=True)
 
 
+async def digest_loop() -> None:
+    """The nightly memory digest (memory_digest.py): once a night after 03:00, when the
+    user isn't mid-turn, one cheap model call turns the day's messages into a few new
+    facts and a journal note. Silent: the facts show in Memory, the note in the journal."""
+    import memory_digest
+    while True:
+        await asyncio.sleep(300)
+        try:
+            if not memory_digest.due():
+                continue
+            if _user_busy or (_pipeline_lock is not None and _pipeline_lock.locked()):
+                continue
+
+            async def complete(system: str, user: str) -> str:
+                return await quick_completion(system, user, task_tier="dumb",
+                                              max_tokens=500, temperature=0.2)
+
+            res = await memory_digest.run(complete)
+            print(f"[Digest] {res['date']}: read {res['read']} message(s), "
+                  f"learned {len(res['added'])}{' — ' + res['error'] if res.get('error') else ''}",
+                  flush=True)
+            if res["added"]:
+                await _emit_memory()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — never takes the app down
+            print(f"[Digest] failed: {exc}", flush=True)
+
+
 async def slow_info_loop() -> None:
     """Emit connectivity + weather + schedule on start, then every ~10 min."""
     global _last_netinfo, _last_weather
@@ -4546,6 +4578,7 @@ async def main(use_text: bool) -> None:
         asyncio.create_task(slow_info_loop()),
         asyncio.create_task(active_app_loop()),
         asyncio.create_task(heartbeat_loop()),
+        asyncio.create_task(digest_loop()),
     ]
     # The WhatsApp channel, when the user turned it on (Settings ▸ Devices).
     if whatsapp_channel.settings()["enabled"]:

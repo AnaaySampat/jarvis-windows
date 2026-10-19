@@ -678,6 +678,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
     start: sysInfo.heartbeat?.start ?? "08:00",
     end: sysInfo.heartbeat?.end ?? "22:00",
   });
+  const [digest, setDigest] = useState({ enabled: sysInfo.digest?.enabled !== false });
   const [autopilotModel, setAutopilotModel] = useState(sysInfo.autopilot_model ?? "");
   const [autopilotThinking, setAutopilotThinking] = useState(
     (sysInfo.autopilot_thinking ?? -1) === 0 ? "off" : "dynamic");
@@ -708,7 +709,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   const removeDir = (d) => setDirs(dirs.filter((x) => x !== d));
 
   const cfg = {
-    model_override: model, tts, allowed_dirs: dirs, system_alerts: sysAlerts, heartbeat: hb,
+    model_override: model, tts, allowed_dirs: dirs, system_alerts: sysAlerts, heartbeat: hb, digest,
     overlay: { enabled: ovlEnabled, mode: ovlMode, apps: ovlApps },
     autopilot_model: autopilotModel.trim(),
     autopilot_thinking: autopilotThinking === "off" ? 0 : -1,
@@ -996,6 +997,24 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                   <button className="dirlist-addbtn" onClick={() => onSave({ heartbeat_open: true })}>
                     Edit checklist
                   </button>
+                </div>
+              </div>
+
+              <div className="settings-sec">
+                <label>Nightly memory digest</label>
+                <label className="settings-check">
+                  <input type="checkbox" className="sw" checked={digest.enabled}
+                         onChange={(e) => setDigest({ enabled: e.target.checked })} />
+                  <span>Each night, keep what&apos;s worth remembering from the day</span>
+                </label>
+                <div className="settings-hint">
+                  After 3 am JARVIS reads what you said to it that day — only your own words — and
+                  saves up to five new facts about you to Memory (Forget removes any), plus a short
+                  note of the day in your journal folder. One call from your model quota a night,
+                  none when there was nothing new.
+                  {sysInfo.digest?.learned?.length
+                    ? ` Lately learned: ${sysInfo.digest.learned.map((l) => `“${l.text}”`).join(", ")}.`
+                    : ""}
                 </div>
               </div>
             </>)}

@@ -1780,6 +1780,15 @@ def _heartbeat_info() -> dict:
         return {}
 
 
+def _digest_info() -> dict:
+    """Settings ▸ Voice ▸ Nightly memory digest (memory_digest.py)."""
+    try:
+        import memory_digest
+        return memory_digest.info()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def get_sysinfo() -> dict:
     """Snapshot for the Settings panel + onboarding state."""
     ram = _get_free_ram_mb()
@@ -1836,6 +1845,7 @@ def get_sysinfo() -> dict:
         "conversation_mode": bool(_config.get("conversation_mode")),
         "system_alerts": bool(_config.get("system_alerts")),
         "heartbeat": _heartbeat_info(),
+        "digest": _digest_info(),
         "skills_count": len(skill_files.catalog()),
         "stt": _config.get("stt", "groq"),
         "stt_active": get_stt(),

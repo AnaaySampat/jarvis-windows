@@ -45,6 +45,8 @@ In scope, for example:
   token, or from an origin that should be rejected
 - getting past phone pairing, impersonating a paired device, or replaying signed
   envelopes
+- the nightly memory digest (memory_digest.py) reading anything but the user's own
+  messages, or deleting facts
 - a paired phone's `memory.sync` doing more than merging facts and named routines
   (it may add, change and delete those, which is the point; a routine it adds never
   runs on this PC's clock)

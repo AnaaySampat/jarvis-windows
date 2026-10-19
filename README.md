@@ -178,6 +178,11 @@ whenever it's connected (every minute, and right after a change). A timed routin
 goes off only on the device it was made on; the other lists it as "(on your phone)" /
 "(on your PC)" and runs it when you say its name. Playbooks stay on each device.
 
+Once a night (after 3 am) the **memory digest** reads what you said to JARVIS that day,
+only your own words, and saves up to five new facts about you to Memory, plus a short
+note of the day in `journal/` in your storage folder ("what did I do on Tuesday?").
+Switch it off in Settings → Voice.
+
 A routine can also run **when you get home** ("when I get home, turn on the TV"): make
 it here or on the phone, and the phone, which knows when it joins your home Wi-Fi,
 offers to run it as you arrive.

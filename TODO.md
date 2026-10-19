@@ -23,6 +23,9 @@ pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (uncha
 - [ ] **TV with two addresses** (home IP + Tailscale IP), and the "different network"
   message from a PC on the other router's Wi-Fi.
 - [ ] **Update notice**: needs a GitHub release newer than the installed version.
+- [ ] **Nightly memory digest** (unit-tested with a fake model): leave the PC on
+  overnight after a day of use; next morning check `[Digest]` in the log, Memory for new
+  facts, and `journal/<date>.md`.
 - [ ] **One memory with the phone** (unit-tested both sides, never run between the
   real devices): remember something on the phone, see it on the PC within a minute;
   forget it on the PC, gone from the phone; a timed routine made on the phone shows
