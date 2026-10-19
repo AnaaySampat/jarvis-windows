@@ -1,0 +1,87 @@
+# Push a tag vX.Y.Z (matching jarvis-studio-gui/package.json and tauri.conf.json) and
+# this runs the tests, builds the Windows installer (frozen backend with its offline
+# assets, then the Tauri NSIS bundle — scripts/build.ps1) and publishes it as a GitHub
+# release, which the app's update notice (updates.py) then offers. Run it by hand ("Run
+# workflow") for a dry run: same tests and build, the installer as a workflow artifact,
+# no release. The installer isn't code-signed, so Windows SmartScreen will warn.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    env:
+      PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag matches the app's version
+        if: env.PUBLISH == 'true'
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME -replace '^v', ''
+          $pkg = (Get-Content jarvis-studio-gui/package.json | ConvertFrom-Json).version
+          $conf = (Get-Content jarvis-studio-gui/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          if ($pkg -ne $tag -or $conf -ne $tag) {
+            Write-Output "::error::Tag $env:GITHUB_REF_NAME, but package.json says $pkg and tauri.conf.json says $conf. Bump both, then tag."
+            exit 1
+          }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: jarvis-studio-gui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The same checks as ci.yml, so a tag can't ship what main wouldn't.
+      - name: Backend tests
+        working-directory: jarvis-studio-backend
+        run: |
+          pip install websockets httpx cryptography numpy pyaudio faster-whisper pillow
+          python -m unittest discover -s . -p "test_*.py" -t .
+      - name: Frontend checks
+        working-directory: jarvis-studio-gui
+        run: |
+          npm ci
+          npm run icons
+          npm run lint
+          npm test
+
+      - name: Build the installer
+        shell: pwsh
+        run: ./scripts/build.ps1
+
+      - name: Name it
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem jarvis-studio-gui/src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { Write-Output "::error::No installer was produced."; exit 1 }
+          $name = "JARVIS-$($env:GITHUB_REF_NAME -replace '/', '-')-setup.exe"
+          Copy-Item $exe.FullName $name
+          "INSTALLER=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Publish the release
+        if: env.PUBLISH == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.INSTALLER }}
+          generate_release_notes: true
+
+      - name: Keep the dry run's installer
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-installer
+          path: ${{ env.INSTALLER }}

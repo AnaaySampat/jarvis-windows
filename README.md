@@ -273,6 +273,14 @@ assets, and writes the NSIS installer to
 `jarvis-studio-gui\src-tauri\target\release\bundle\nsis\`. Add `-Lean` to
 `scripts\package-backend.ps1` for a small installer that downloads assets on first run.
 
+**Releasing.** Bump `version` in `jarvis-studio-gui/package.json` and
+`jarvis-studio-gui/src-tauri/tauri.conf.json`, commit, then tag and push:
+`git tag v0.3.0 && git push origin v0.3.0`. The Release workflow
+(`.github/workflows/release.yml`) runs the tests, builds the installer and publishes it
+as a GitHub release; installed copies then show the update notice. It refuses a tag
+that doesn't match the version. "Run workflow" on the Actions tab does a dry run: the
+same build, kept as a workflow artifact, nothing published.
+
 ## Contributing
 
 Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
