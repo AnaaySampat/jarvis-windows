@@ -345,7 +345,10 @@ _TV_PROMPT = (
     "itself, so add no other TV calls for it, and never navigate with a series of 'key' "
     "presses — you can't see where they land ('key' is for a button the user names). "
     "Use the direct actions (play, pause, volume…) when one fits. Nothing inside Netflix "
-    "can be seen (it blocks screenshots); there, only play/pause/resume and 'key' work."
+    "can be seen (it blocks screenshots); there, only play/pause/resume and 'key' work. "
+    "'Send this to the TV' / 'put this on the TV' about something playing on the PC is "
+    "'cast' with no target: it finds it, plays it on the TV at the same point and pauses "
+    "it here."
 )
 # Every other turn while a TV is paired: the routing rule alone. The full brief
 # above is ~330 tokens, paid only on a turn about the TV or right after one.
@@ -366,8 +369,8 @@ def _tv_turn(text: str) -> bool:
 
 _TV_ACTION_SHAPE = (
     '{"type":"tv","do":"play|open_app|pause|resume|volume_up|volume_down|set_volume|mute|'
-    'power_on|power_off|key|status|look|task","target":"show / app / button / level / '
-    'question / goal","app":"netflix|youtube","season":1,"episode":1}'
+    'power_on|power_off|key|status|look|task|cast","target":"show / app / button / level / '
+    'question / goal / link","app":"netflix|youtube","season":1,"episode":1}'
 )
 
 # Full prompt (core + catalog) — kept for any caller that still expects one blob.
@@ -1777,6 +1780,15 @@ def _heartbeat_info() -> dict:
         return {}
 
 
+def _digest_info() -> dict:
+    """Settings ▸ Voice ▸ Nightly memory digest (memory_digest.py)."""
+    try:
+        import memory_digest
+        return memory_digest.info()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def get_sysinfo() -> dict:
     """Snapshot for the Settings panel + onboarding state."""
     ram = _get_free_ram_mb()
@@ -1833,6 +1845,7 @@ def get_sysinfo() -> dict:
         "conversation_mode": bool(_config.get("conversation_mode")),
         "system_alerts": bool(_config.get("system_alerts")),
         "heartbeat": _heartbeat_info(),
+        "digest": _digest_info(),
         "skills_count": len(skill_files.catalog()),
         "stt": _config.get("stt", "groq"),
         "stt_active": get_stt(),
@@ -3039,6 +3052,18 @@ async def _stream_route(route: "quota.Route", messages: list, max_tokens: int,
 
 async def stream_prompt(text: str, record_history: bool = True, slim: bool = False,
                         tool_sink: "list | None" = None, task_tier: str = ""):
+    """One model step (see _stream_prompt), also handed to turn_recorder — which keeps
+    it only while recording real turns as replay fixtures (JARVIS_RECORD_TURNS=1)."""
+    import turn_recorder
+    before = len(tool_sink) if tool_sink is not None else 0
+    full = ""
+    async for delta, full in _stream_prompt(text, record_history, slim, tool_sink, task_tier):
+        yield delta, full
+    turn_recorder.step(tool_sink[before:] if tool_sink is not None else [], full)
+
+
+async def _stream_prompt(text: str, record_history: bool = True, slim: bool = False,
+                         tool_sink: "list | None" = None, task_tier: str = ""):
     """Async generator that streams the model reply token-by-token.
 
     Yields ``(delta, full_raw)`` per chunk so the pipeline can show text and

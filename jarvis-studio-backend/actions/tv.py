@@ -27,6 +27,7 @@ import unicodedata
 import urllib.parse
 
 import jarvis_paths
+from actions import wol
 
 # ── Setup (the TV's address) ──────────────────────────────────────────────────
 
@@ -36,15 +37,40 @@ _KEY_PATH = jarvis_paths.app_data_dir() / "tv_adbkey"
 
 
 def config() -> "dict | None":
-    """{"host", "model"} once a TV has answered, else None. `host` may list several
-    addresses for the same TV, comma-separated (see _targets)."""
+    """{"host", "model", "mac"} once a TV has answered, else None. `host` may list
+    several addresses for the same TV, comma-separated (see _targets); `mac` is for
+    waking it from off (actions/wol.py), "" until known."""
     try:
         cfg = json.loads(_CFG_PATH.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — missing or corrupt = no TV
         return None
     host = str(cfg.get("host") or "")
-    return {"host": host, "model": str(cfg.get("model") or "")[:80]} \
-        if _targets(host) else None
+    return {"host": host, "model": str(cfg.get("model") or "")[:80],
+            "mac": wol.norm_mac(cfg.get("mac"))} if _targets(host) else None
+
+
+def _save(cfg: dict) -> None:
+    _CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CFG_PATH.write_text(json.dumps(cfg), encoding="utf-8")
+
+
+def _read_mac(host: str) -> str:
+    """The TV's own MAC (for Wake-on-LAN), read over ADB while it's reachable."""
+    ok, out, _ = shell(host, "ip -o link")
+    return wol.mac_from_ip_link(out) if ok else ""
+
+
+def set_mac(mac: str) -> "tuple[bool, str]":
+    """Settings → Devices → TV: the MAC typed in by hand (the TV's network settings
+    show it as the MAC address)."""
+    cfg = config()
+    if not cfg:
+        return False, "Set up the TV first."
+    clean = wol.norm_mac(mac)
+    if mac and not clean:
+        return False, "That isn't a MAC address — it looks like 12:34:56:78:9A:BC."
+    _save({**cfg, "mac": clean})
+    return True, "Saved the TV's MAC address." if clean else "Forgot the TV's MAC address."
 
 
 def configured() -> bool:
@@ -61,8 +87,8 @@ def pair(host: str) -> "tuple[bool, str]":
     if not ok:
         return False, summary or "The TV didn't answer."
     model = out.strip()[:80]
-    _CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _CFG_PATH.write_text(json.dumps({"host": host, "model": model}), encoding="utf-8")
+    mac = _read_mac(host) or (config() or {}).get("mac", "")
+    _save({"host": host, "model": model, "mac": mac})
     return True, f"Connected to {model or 'the TV'}."
 
 
@@ -497,6 +523,10 @@ class Tv:
             path = f"watch/{ep['id']}"
             name = (f"{show['name']} season {season}, episode {episode}"
                     + (f" (“{ep['title']}”)" if ep.get("title") else ""))
+        return self.netflix_open(path, name)
+
+    def netflix_open(self, path: str, name: str) -> "tuple[bool, str]":
+        """Open a Netflix `title/<id>` or `watch/<id>` link and confirm it plays."""
         cold = not self.sh(f"pidof {NETFLIX}").strip()
         before = None if cold else self.playing_now(NETFLIX)
         sent_at = self.now()
@@ -533,6 +563,34 @@ class Tv:
             return True, f"Playing {name} on Netflix."
         return False, (f"I opened {name} on Netflix, but I couldn't confirm it started "
                        "playing — it may be waiting on the TV screen.")
+
+    def cast(self, link: dict, start_s: int = 0, name: str = "") -> "tuple[bool, str]":
+        """A link from now_playing.parse_link on the TV. YouTube starts at `start_s`
+        (checked against the position the TV reports); Netflix resumes wherever the
+        profile left off, which is where it was just paused on the PC or phone."""
+        label = f"“{name}”" if name else "it"
+        if link.get("service") == "netflix" and str(link.get("id", "")).isdigit():
+            return self.netflix_open(f"{link.get('kind') or 'title'}/{link['id']}",
+                                     label if name else "the title")
+        vid = str(link.get("id", ""))
+        if link.get("service") != "youtube" or not re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
+            return False, "Only YouTube and Netflix links can be sent to the TV."
+        start = max(int(start_s or 0), 0)
+        url = f"https://www.youtube.com/watch?v={vid}" + (f"&t={start}s" if start >= 5 else "")
+        self.sh(f"am start -a android.intent.action.VIEW -d {shell_quote(url)} {YOUTUBE}")
+        if not self.wait_for_focus(YOUTUBE):
+            return False, "I asked the TV to open YouTube, but it didn't come up."
+        for _ in range(8):
+            self.wait(2)
+            playing, _before, after = self.playing_now(YOUTUBE)
+            if not playing:
+                continue
+            if start >= 5 and after and after[1] < (start - 10) * 1000:
+                return True, (f"Playing {label} on YouTube on the TV, but from the start: "
+                              f"it didn't take the start time ({_clock(start)}).")
+            return True, (f"Playing {label} on YouTube on the TV"
+                          + (f" from {_clock(start)}." if start >= 5 else "."))
+        return False, f"I opened {label} in YouTube on the TV, but couldn't confirm it started playing."
 
     def youtube_play(self, query: str) -> "tuple[bool, str]":
         """YouTube's own search link (verified on the TV), then OK on the top result."""
@@ -644,6 +702,12 @@ class Tv:
                       + (f", volume {vol[0]}" if vol else "") + ".")
 
 
+def _clock(seconds: int) -> str:
+    h, rest = divmod(int(seconds), 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
 def _int(value, default=None):
     try:
         return int(float(value))
@@ -708,9 +772,100 @@ def run(spec: dict) -> dict:
     if do == "open_app" and not target.strip():
         target = app          # live: the model named the app in "app", not "target"
     tv = Tv(lambda cmd: shell(cfg["host"], cmd))
-    ok, msg = run_tv(tv, do, target, app or "netflix",
-                     _int(spec.get("season"), 0), _int(spec.get("episode"), 0))
+    woke = None
+    if do == "power_on" or (do in ("play", "open_app", "cast") and cfg.get("mac")):
+        woke = wake(cfg)
+        if woke is not None and not woke[0]:
+            return {"type": "tv", "ok": False, "message": woke[1]}
+    if do == "cast":
+        try:
+            ok, msg = cast(tv, target)
+        except TvUnreachable as exc:
+            ok, msg = False, str(exc)
+    else:
+        ok, msg = run_tv(tv, do, target, app or "netflix",
+                         _int(spec.get("season"), 0), _int(spec.get("episode"), 0))
+    if ok and woke and do == "power_on":
+        msg = "Turned the TV on (woke it over the network)."
+    if ok and not cfg.get("mac"):
+        mac = _read_mac(cfg["host"])     # learn it while the TV answers, for next time
+        if mac:
+            _save({**cfg, "mac": mac})
     return {"type": "tv", "ok": ok, "message": msg}
+
+
+def cast(tv: Tv, target: str, np=None) -> "tuple[bool, str]":
+    """"Send this to the TV": a YouTube/Netflix link in `target`, or else whatever is
+    playing on this PC right now — found by its title in Windows' media controls and
+    its page in the browser's address bar. It's paused here only once the TV plays it
+    (Netflix the other way round: paused first, so the TV resumes at the same spot)."""
+    if np is None:
+        from actions import now_playing as np
+    if target.strip():
+        link = np.parse_link(target)
+        if not link:
+            return False, "That isn't a YouTube or Netflix link I can play on the TV."
+        return tv.cast(link, link.get("t", 0))
+    found = np.playing_on_pc()
+    title = (found or {}).get("title", "")
+    if found is None and np.media_available():
+        return False, "Nothing is playing on this PC right now."
+    if found and not np.is_browser(found["app"]):
+        return False, (f"“{title or 'That'}” is playing in {found['app'] or 'an app'}; only "
+                       "YouTube or Netflix in a browser can be sent to the TV.")
+    page = np.pick(title, np.browser_windows())
+    if page is None:
+        if found and title:
+            return False, (f"I can see “{title}” playing on this PC, but not which YouTube or "
+                           "Netflix page it's on — bring its tab to the front and ask again.")
+        return False, ("I couldn't find a YouTube or Netflix page open on this PC. (Install "
+                       "the winrt-Windows.Media.Control package so I can see what's playing.)")
+    link, name = page["link"], title or ""
+    if link["service"] == "netflix":
+        paused = bool(found) and np.pause(found)
+        if paused:
+            tv.wait(3)                       # let Netflix save where it is
+        ok, msg = tv.cast(link, 0, name)
+        if paused:
+            msg += " Paused it on the PC." if ok else " (It's paused on the PC.)"
+        return ok, msg
+    start = found["position"] if found else link.get("t", 0)
+    ok, msg = tv.cast(link, start, name)
+    if ok and found:
+        msg += " Paused it on the PC." if np.pause(found) else " (I couldn't pause it on the PC.)"
+    elif ok:
+        msg += " It's still playing on the PC."
+    return ok, msg
+
+
+_WAKE_WAIT_S = 30.0
+
+
+def wake(cfg: dict, wait=time.sleep, now=time.monotonic) -> "tuple[bool, str] | None":
+    """If the TV doesn't answer ADB (fully off, or deep standby with its network down),
+    send its MAC a Wake-on-LAN packet and wait for ADB to come back. None: it was
+    already reachable (or there's no MAC to wake it with) — carry on as usual."""
+    ok, _, why = shell(cfg["host"], "echo ok")
+    # Only a TV that can't be reached at all might be off: one that refused this PC,
+    # or a missing package, is reported by the command itself.
+    if ok or not cfg.get("mac") or not why.startswith(("I can't reach", "The TV at")):
+        return None
+    if "different networks" in why:
+        return False, why          # a broadcast can't cross into another router's network
+    # The TV's home-network address (not its Tailscale one) gives the subnet broadcast.
+    near = next((h for h, _ in _targets(cfg["host"]) if len(wol.targets(h)) > 1), "")
+    sent, msg = wol.send(cfg["mac"], near)
+    if not sent:
+        return False, msg
+    deadline = now() + _WAKE_WAIT_S
+    while now() < deadline:
+        wait(2.0)
+        if shell(cfg["host"], "echo ok")[0]:
+            return True, "Woke the TV over the network."
+    return False, ("I sent the TV a wake-up packet, but it didn't come online within "
+                   f"{int(_WAKE_WAIT_S)} seconds. On the TV, turn on Settings → Network → "
+                   "Remote start (it may be called 'Turn on with Wi-Fi/LAN'), and make sure "
+                   "this PC is on the same network as the TV.")
 
 
 # ── Seeing the screen ─────────────────────────────────────────────────────────

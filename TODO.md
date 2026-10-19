@@ -23,6 +23,33 @@ pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (uncha
 - [ ] **TV with two addresses** (home IP + Tailscale IP), and the "different network"
   message from a PC on the other router's Wi-Fi.
 - [ ] **Update notice**: needs a GitHub release newer than the installed version.
+- [ ] **A false "done" is spoken before the claim check runs** (found by test_replay.py,
+  2026-10-19): a streamed reply like "Resumed — back to Arcane." with no tool call is
+  spoken while it streams; the recheck then runs the real action. The phone holds such
+  a reply back. Fix idea: on an action-like request, hold speech until the step ends and
+  it's known whether the model called a tool. Costs latency only on those turns.
+- [ ] **Nightly memory digest** (unit-tested with a fake model): leave the PC on
+  overnight after a day of use; next morning check `[Digest]` in the log, Memory for new
+  facts, and `journal/<date>.md`.
+- [ ] **One memory with the phone** (unit-tested both sides, never run between the
+  real devices): remember something on the phone, see it on the PC within a minute;
+  forget it on the PC, gone from the phone; a timed routine made on the phone shows
+  "(on your phone)" here and doesn't fire here.
+- [ ] **MCP servers** (unit-tested, and end to end against a real stdio server with
+  mcp 1.30 and 2.2 on Linux; never on Windows): add
+  `npx -y @modelcontextprotocol/server-filesystem C:\Users\<you>\Documents` in
+  Settings → MCP Servers, check it shows Connected with its tools, then "use the
+  filesystem server to list my Documents" (no prompt: read-only), and a write (asks
+  first). Also an HTTP server with a header, and the frozen installer build.
+- [ ] **Send this to the TV** (built and unit-tested, never run): YouTube in Chrome,
+  then Edge, at ~10 minutes in → "send this to the TV" (TV starts there? PC paused?);
+  Netflix in Chrome (TV resumes the same episode?); with the video tab not in front
+  (should say so, not send another video); Spotify playing (should refuse). Check the
+  address bar is readable through UI Automation on the user's browser language.
+- [ ] **Wake-on-LAN** (built and unit-tested, never on real hardware): with Remote
+  start on, let the TV go fully off (deep standby), then "turn on the TV"
+  (`[TV]` log: packet sent, then answered). Check Settings → Devices → TV shows the
+  MAC it learned. From the phone: "turn on my PC" with the PC asleep, then shut down.
 - [ ] **WhatsApp channel** (never connected: the build sandbox's network blocks
   web.whatsapp.com, so only a failed dial was seen with the real library). On a PC:
   link by QR; "Jarvis, what time is it?" in Message yourself; a note without the name

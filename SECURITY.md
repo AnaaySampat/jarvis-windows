@@ -45,10 +45,21 @@ In scope, for example:
   token, or from an origin that should be rejected
 - getting past phone pairing, impersonating a paired device, or replaying signed
   envelopes
-- a remote (phone) client calling a handler outside the remote allowlist
+- the nightly memory digest (memory_digest.py) reading anything but the user's own
+  messages, or deleting facts
+- a paired phone's `memory.sync` doing more than merging facts and named routines
+  (it may add, change and delete those, which is the point; a routine it adds never
+  runs on this PC's clock)
+- a remote (phone) client calling a handler outside the remote allowlist (a paired
+  phone is told this PC's network adapters, MAC and LAN address, in the signed
+  `auth.ready`, to wake it with Wake-on-LAN; nothing else about the host)
 - the WhatsApp channel running a command from anyone but the linked account's own
   "Message yourself" chat or a number the user listed, or sending JARVIS's output to
   any chat other than the one the command came from
+- an MCP server's tool running without approval when it isn't marked read-only and
+  its server isn't marked trusted, or text an MCP server returns being followed as
+  instructions (MCP servers themselves are programs the user chose to run, so what a
+  malicious server does on its own is out of scope)
 - running desktop or browser autopilot actions without the user's consent or
   approval gate, including through prompt injection from a web page, file or
   screen content

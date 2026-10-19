@@ -170,6 +170,36 @@ OpenClaw. That isn't covered by WhatsApp's terms, and WhatsApp can restrict acco
 that use one: a second number for JARVIS is the cautious choice. **Unlink** in the same
 settings logs it out and deletes the session from this PC.
 
+## One memory with the phone
+
+What you ask JARVIS to remember, and your routines, are shared with the paired phone
+app: tell either one, both know, and forgetting works the same way. The phone syncs
+whenever it's connected (every minute, and right after a change). A timed routine still
+goes off only on the device it was made on; the other lists it as "(on your phone)" /
+"(on your PC)" and runs it when you say its name. Playbooks stay on each device.
+
+Once a night (after 3 am) the **memory digest** reads what you said to JARVIS that day,
+only your own words, and saves up to five new facts about you to Memory, plus a short
+note of the day in `journal/` in your storage folder ("what did I do on Tuesday?").
+Switch it off in Settings → Voice.
+
+A routine can also run **when you get home** ("when I get home, turn on the TV"): make
+it here or on the phone, and the phone, which knows when it joins your home Wi-Fi,
+offers to run it as you arrive.
+
+## MCP servers: more tools
+
+JARVIS can use any **MCP server** (Model Context Protocol), the same ones Claude Desktop,
+Cursor and others use: GitHub, Notion, databases, Home Assistant, your file system. Add
+one under Settings → MCP Servers (a command such as
+`npx -y @modelcontextprotocol/server-github`, or a server URL, plus its token), or paste
+Claude Desktop's `mcpServers` block into `%APPDATA%\Jarvis\mcp.json`. Its tools load
+when you name the server ("what's open on GitHub?"). A tool that changes something
+asks you first, unless the server says the tool only reads or you mark the server
+**trusted**. What a server returns is treated as data, never as instructions. It needs
+`pip install mcp`; servers started with `npx` or `uvx` also need Node.js or uv. Each
+server is a program running on your PC, so add only ones you trust.
+
 ## Two routers at home?
 
 The PC, the phone and the TV reach each other directly, so they need to be on one
@@ -188,6 +218,29 @@ Two fixes, either one works:
    JARVIS uses whichever answers and remembers which one did.
 
 If the TV can't be reached because it's on another router's network, JARVIS says so.
+
+## Send this to the TV
+
+Watching YouTube or Netflix in the browser? "Send this to the TV" plays it on the TV at
+the same point and pauses it on the PC once the TV is playing (Netflix: paused here
+first, so your profile resumes on the TV where it stopped). JARVIS reads what's playing
+and where from Windows' media controls (the `winrt-Windows.Media.Control` package) and
+which video it is from the browser's address bar, so the tab has to be the one in
+front. A YouTube or Netflix link works too: "play this on the TV: <link>". The phone
+app does the same for what's playing on the phone.
+
+## Switching things on from off (Wake-on-LAN)
+
+"Turn on the TV" works even when the TV is fully off (deep standby with its network
+down): JARVIS sends its network card a Wake-on-LAN packet and waits for it to answer
+before saying it's on. Turn on **Remote start** on the TV (Settings → Network; some
+models call it "Turn on with Wi-Fi/LAN"). JARVIS reads the TV's MAC address the first
+time the TV answers, or you can type it in Settings → Devices → TV. The phone app does
+the same for the TV, and can switch **this PC** on ("turn on my PC"): the PC tells the
+paired phone its network adapters when it connects. For that, enable Wake on LAN in the
+PC's BIOS and in Device Manager → network adapter → Power Management ("Allow this
+device to wake the computer"), and let JARVIS start with Windows. A wake-up packet
+can't cross into another router's network, so the sender has to be on the same one.
 
 ## Privacy
 
@@ -219,6 +272,14 @@ CI runs all of these on every push. Build the Windows installer with
 assets, and writes the NSIS installer to
 `jarvis-studio-gui\src-tauri\target\release\bundle\nsis\`. Add `-Lean` to
 `scripts\package-backend.ps1` for a small installer that downloads assets on first run.
+
+**Releasing.** Bump `version` in `jarvis-studio-gui/package.json` and
+`jarvis-studio-gui/src-tauri/tauri.conf.json`, commit, then tag and push:
+`git tag v0.3.0 && git push origin v0.3.0`. The Release workflow
+(`.github/workflows/release.yml`) runs the tests, builds the installer and publishes it
+as a GitHub release; installed copies then show the update notice. It refuses a tag
+that doesn't match the version. "Run workflow" on the Actions tab does a dry run: the
+same build, kept as a workflow artifact, nothing published.
 
 ## Contributing
 

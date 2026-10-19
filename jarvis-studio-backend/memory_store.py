@@ -192,6 +192,12 @@ def _conv_meta(c: dict) -> dict:
             "ts": c.get("ts") or 0, "count": len(c.get("messages") or [])}
 
 
+def archived_messages() -> "list[list]":
+    """Every archived conversation's messages, oldest conversation first."""
+    return [_clean_messages(c.get("messages")) for c in reversed(_read_conversations())
+            if isinstance(c, dict)]
+
+
 def list_conversations() -> list:
     """Archived conversations as metadata only (for the Recents list), newest first."""
     return [_conv_meta(c) for c in _read_conversations()
@@ -280,8 +286,9 @@ def _save_facts(facts: list) -> bool:
         return True
 
 
-def add_fact(text: str) -> "tuple[bool, str]":
-    """Remember a durable fact about the user. De-dupes case-insensitively."""
+def add_fact(text: str, at: "float | None" = None) -> "tuple[bool, str]":
+    """Remember a durable fact about the user. De-dupes case-insensitively. `at` (epoch
+    seconds) is when it was learned, for a fact synced from the phone."""
     text = (text or "").strip().strip('"')[:_MAX_FACT_LEN]
     if not text:
         return False, "There was nothing to remember, sir."
@@ -295,9 +302,11 @@ def add_fact(text: str) -> "tuple[bool, str]":
         taken = {f.get("id") for f in facts}
         while f"f{n}" in taken:
             n += 1
-        facts.append({"id": f"f{n}", "text": text, "ts": time.time()})
+        facts.append({"id": f"f{n}", "text": text, "ts": at or time.time()})
         if not _save_facts(facts):
             return False, "I couldn't save that to memory, sir — the write failed."
+    import memory_sync                 # lazily: memory_sync imports this module
+    memory_sync.revived("facts", memory_sync.fact_key(text))
     return True, "Noted, sir — I'll remember that."
 
 
@@ -308,9 +317,11 @@ def forget_fact(query: str) -> "tuple[bool, str]":
         return False, "What would you like me to forget, sir?"
     with _facts_lock:                # read-modify-write must be atomic
         facts = all_facts()
+        import memory_sync             # deletions reach the phone as tombstones
         if query in ("all", "everything", "all of it"):
             if not _save_facts([]):
                 return False, "I couldn't clear my memory, sir — the write failed."
+            memory_sync.gone("facts", [memory_sync.fact_key(f.get("text", "")) for f in facts])
             return True, "I've cleared everything I'd remembered about you, sir."
         kept = [f for f in facts if query not in (f.get("text") or "").lower()]
         removed = len(facts) - len(kept)
@@ -318,15 +329,23 @@ def forget_fact(query: str) -> "tuple[bool, str]":
             return False, "I couldn't find anything matching that to forget, sir."
         if not _save_facts(kept):
             return False, "I couldn't update my memory, sir — the write failed."
+        memory_sync.gone("facts", [memory_sync.fact_key(f.get("text", ""))
+                                   for f in facts if f not in kept])
     return True, "Forgotten, sir."
 
 
-def delete_fact(fid: str) -> bool:
-    """Drop exactly one fact by id (the Memory view's per-row Forget)."""
+def delete_fact(fid: str, at: "int | None" = None) -> bool:
+    """Drop exactly one fact by id (the Memory view's per-row Forget). `at` (ms) dates
+    the deletion, for one synced from the phone."""
+    import memory_sync
     with _facts_lock:
         facts = all_facts()
         kept = [f for f in facts if f.get("id") != fid]
-        return len(kept) < len(facts) and _save_facts(kept)
+        if len(kept) == len(facts) or not _save_facts(kept):
+            return False
+        memory_sync.gone("facts", [memory_sync.fact_key(f.get("text", ""))
+                                   for f in facts if f.get("id") == fid], at=at)
+        return True
 
 
 def facts_block() -> str:

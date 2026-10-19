@@ -67,3 +67,11 @@ adb-shell>=0.4.4
 # WhatsApp channel (whatsapp_channel.py): JARVIS as a linked device of your WhatsApp.
 # Optional, lazy-imported; pinned because it binds a Go core whose API moves.
 neonize==0.5.2
+# MCP servers as tools (mcp_client.py). Optional, lazy-imported; 1.x and 2.x both work.
+mcp>=1.9
+# "Send this to the TV" (actions/now_playing.py): what's playing and where it is, from
+# Windows' media controls. Optional, lazy-imported; without it only the link is found.
+winrt-runtime>=2.0.0 ; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0.0 ; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.0.0 ; sys_platform == "win32"
+winrt-Windows.Media.Control>=2.0.0 ; sys_platform == "win32"

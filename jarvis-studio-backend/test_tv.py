@@ -146,7 +146,7 @@ class TvControlTest(unittest.TestCase):
     def test_every_advertised_action_has_a_handler(self):
         decl = next(d for d in live_tools._tv_tools(True) if d["name"] == "tv_control")
         for action in decl["parameters"]["properties"]["action"]["enum"]:
-            if action in ("look", "task"):          # tv.run's own (see SeeingTest)
+            if action in ("look", "task", "cast"):  # tv.run's own (SeeingTest, test_now_playing)
                 continue
             t, _ = fake_tv([(r"mCurrentFocus", focus("com.netflix.ninja"))])
             self.assertNotRegex(run(t, action, "1", "netflix")[1], "don't know the TV action", action)

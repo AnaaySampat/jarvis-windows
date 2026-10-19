@@ -23,7 +23,7 @@ from server.websocket_server import (
     add_tap, remove_tap,
     emit, send_to, start as start_websocket, register_handler, on_connect,
     on_disconnect, send_to_current, current_client_id,
-    configure_device_identity, set_remote_allowed,
+    configure_device_identity, set_remote_allowed, set_ready_info,
     emit_task_event, subscribe_task, subscribe_local_clients,
     is_current_sender_remote, current_authenticated_device,
     connected_device_ids,
@@ -51,6 +51,8 @@ import tv_operator
 import storage
 import memory_store
 import routines
+import mcp_client
+import turn_recorder
 import reminders
 import playbooks
 import places
@@ -2574,18 +2576,22 @@ async def _run_pipeline(text: str, emit_transcription: bool = True,
     text when it differs from what the model gets."""
     global _wa_chat
     async with _pipeline_lock:
-        if wa_chat is None:
-            await _pipeline_turn(text, emit_transcription, task_tier, shown)
-            return
-        _wa_chat = wa_chat
-        add_tap(tap)
-        skills.set_quiet(True)
+        turn_recorder.begin(text)          # a no-op unless JARVIS_RECORD_TURNS=1
         try:
-            await _pipeline_turn(text, emit_transcription, task_tier, shown)
+            if wa_chat is None:
+                await _pipeline_turn(text, emit_transcription, task_tier, shown)
+                return
+            _wa_chat = wa_chat
+            add_tap(tap)
+            skills.set_quiet(True)
+            try:
+                await _pipeline_turn(text, emit_transcription, task_tier, shown)
+            finally:
+                remove_tap(tap)
+                skills.set_quiet(False)
+                _wa_chat = None
         finally:
-            remove_tap(tap)
-            skills.set_quiet(False)
-            _wa_chat = None
+            turn_recorder.end()
 
 
 async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
@@ -3359,6 +3365,9 @@ async def handle_set_config(data) -> None:
         hb = heartbeat.save_settings(data["heartbeat"])
         if hb["enabled"]:
             heartbeat.ensure_file()      # so "Edit checklist" has something to open
+    if isinstance(data.get("digest"), dict):
+        import memory_digest
+        memory_digest.save_settings(data["digest"])
     if data.get("skills_open"):
         import skill_files
         try:
@@ -3525,6 +3534,69 @@ async def handle_tv_unpair(_data) -> None:
     from actions import tv
     tv.unpair()
     await _emit_tv()
+
+
+async def handle_tv_set_mac(data) -> None:
+    """Settings → Devices → TV: its MAC, for switching it on from off (Wake-on-LAN).
+    Usually learned by itself the first time the TV answers."""
+    from actions import tv
+    ok, msg = tv.set_mac(str((data or {}).get("mac") or ""))
+    await _emit_tv({"ok": ok, "summary": msg})
+
+
+async def _emit_mcp() -> None:
+    await emit("mcp.state", mcp_client.state())
+
+
+async def handle_mcp_state(_data) -> None:
+    await _emit_mcp()
+
+
+async def handle_mcp_save(data) -> None:
+    """Settings ▸ MCP servers: add or change one server, then (re)connect it. Header
+    and env values left blank keep what was saved (Settings never sees them)."""
+    data = data or {}
+    name = str(data.get("name") or "").strip()
+    servers = mcp_client.load_config()
+    old = servers.get(name, {})
+    cfg = dict(data.get("config") or {})
+    for key in ("env", "headers"):
+        given = dict(cfg.get(key) or {})
+        cfg[key] = {k: (v if v else (old.get(key) or {}).get(k, "")) for k, v in given.items()}
+    clean, why = mcp_client.clean_server(name, cfg)
+    if clean is None:
+        await emit("mcp.state", {**mcp_client.state(), "result": {"ok": False, "summary": why}})
+        return
+    servers[name] = clean
+    mcp_client.save_config(servers)
+    await mcp_client.restart(name)
+    await emit("mcp.state", {**mcp_client.state(),
+                             "result": {"ok": True, "summary": f"Saved {name}; connecting…"}})
+
+
+async def handle_mcp_remove(data) -> None:
+    name = str((data or {}).get("name") or "")
+    servers = mcp_client.load_config()
+    if servers.pop(name, None) is not None:
+        mcp_client.save_config(servers)
+    await mcp_client.restart(name)
+
+
+async def handle_mcp_restart(data) -> None:
+    await mcp_client.restart(str((data or {}).get("name") or ""))
+
+
+async def handle_memory_sync(data) -> None:
+    """The paired phone's memory.sync (memory_sync.py): merge its facts and routines,
+    answer with this PC's changes since its cursor. Remote-allowed: it's the owner's
+    authenticated phone, and nothing synced runs on its own here (a phone's timed
+    routine fires on the phone)."""
+    import memory_sync
+    reply, changed = await asyncio.get_running_loop().run_in_executor(
+        None, memory_sync.handle, data or {})
+    await send_to_current("memory.synced", reply)
+    if changed:
+        await _emit_memory()
 
 
 async def handle_memory_list(_data) -> None:
@@ -4076,6 +4148,35 @@ async def heartbeat_loop() -> None:
             print(f"[Heartbeat] check failed: {exc}", flush=True)
 
 
+async def digest_loop() -> None:
+    """The nightly memory digest (memory_digest.py): once a night after 03:00, when the
+    user isn't mid-turn, one cheap model call turns the day's messages into a few new
+    facts and a journal note. Silent: the facts show in Memory, the note in the journal."""
+    import memory_digest
+    while True:
+        await asyncio.sleep(300)
+        try:
+            if not memory_digest.due():
+                continue
+            if _user_busy or (_pipeline_lock is not None and _pipeline_lock.locked()):
+                continue
+
+            async def complete(system: str, user: str) -> str:
+                return await quick_completion(system, user, task_tier="dumb",
+                                              max_tokens=500, temperature=0.2)
+
+            res = await memory_digest.run(complete)
+            print(f"[Digest] {res['date']}: read {res['read']} message(s), "
+                  f"learned {len(res['added'])}{' — ' + res['error'] if res.get('error') else ''}",
+                  flush=True)
+            if res["added"]:
+                await _emit_memory()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — never takes the app down
+            print(f"[Digest] failed: {exc}", flush=True)
+
+
 async def slow_info_loop() -> None:
     """Emit connectivity + weather + schedule on start, then every ~10 min."""
     global _last_netinfo, _last_weather
@@ -4370,12 +4471,19 @@ async def main(use_text: bool) -> None:
     register_handler("delete_conversation", handle_delete_conversation)
     register_handler("clear_conversations", handle_clear_conversations)
     register_handler("memory_list", handle_memory_list)
+    register_handler("memory.sync", handle_memory_sync)
     register_handler("memory_remember", handle_memory_remember)
     register_handler("memory_forget", handle_memory_forget)
     # Android TV setup — local HUD only (host-configuring, never on the remote allowlist).
     register_handler("tv.state", handle_tv_state)
     register_handler("tv.pair", handle_tv_pair)
     register_handler("tv.unpair", handle_tv_unpair)
+    register_handler("tv.set_mac", handle_tv_set_mac)
+    # MCP servers — local HUD only: a server is a program this PC runs.
+    register_handler("mcp.state", handle_mcp_state)
+    register_handler("mcp.save", handle_mcp_save)
+    register_handler("mcp.remove", handle_mcp_remove)
+    register_handler("mcp.restart", handle_mcp_restart)
     from actions import tv as _tv
     _tv.attach_loop(_main_loop)
     # ── Remote mobile control ────────────────────────────────────────────────
@@ -4387,6 +4495,9 @@ async def main(use_text: bool) -> None:
         from autonomy.device_identity import DeviceIdentityRegistry
         _device_registry = DeviceIdentityRegistry()
         configure_device_identity(_device_registry)
+        # The phone learns this PC's network adapters on connect, to wake it later.
+        from actions import wol
+        set_ready_info(lambda: {"wake": wol.local_macs()})
         # A cryptographically paired + PIN-verified phone is trusted to drive the
         # whole TASK/CONTROL protocol — task forwarding, its lifecycle (cancel/
         # reconnect/answer/approve), and STOP. Authentication proves it's the owner;
@@ -4400,6 +4511,8 @@ async def main(use_text: bool) -> None:
             "task.submit", "task.cancel", "task.subscribe", "task.unsubscribe",
             "task.status", "task.list", "task.answer", "approval.response",
             "protocol.hello", "stop_control",
+            # One memory: the phone merges facts and routines (memory_sync.py).
+            "memory.sync",
             # Live remote-desktop: WebRTC screen signalling + direct input.
             "webrtc_offer", "webrtc_ice", "stop_screen",
             "arm_control", "disarm_control", "remote_input",
@@ -4470,10 +4583,13 @@ async def main(use_text: bool) -> None:
         asyncio.create_task(slow_info_loop()),
         asyncio.create_task(active_app_loop()),
         asyncio.create_task(heartbeat_loop()),
+        asyncio.create_task(digest_loop()),
     ]
     # The WhatsApp channel, when the user turned it on (Settings ▸ Devices).
     if whatsapp_channel.settings()["enabled"]:
         _track_task(_start_whatsapp(), "whatsapp")
+    # MCP servers (Settings ▸ MCP servers): each keeps its session on this loop.
+    mcp_client.start(asyncio.get_running_loop(), on_change=_emit_mcp)
 
     # ── First-run asset provisioning ────────────────────────────────────────────
     # The installer ships lean, so the heavy runtime assets (Chromium, the Whisper
@@ -4509,6 +4625,8 @@ async def main(use_text: bool) -> None:
     except (KeyboardInterrupt, asyncio.CancelledError):
         print("\n[Jarvis] Shutting down.")
     finally:
+        with contextlib.suppress(Exception):
+            await mcp_client.stop_all()
         for t in hud_tasks:
             t.cancel()
         with contextlib.suppress(asyncio.CancelledError):
