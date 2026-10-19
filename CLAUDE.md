@@ -13,6 +13,8 @@ WebSocket also serves a cryptographically paired phone over Tailscale. See
 | Browser + desktop operators | `jarvis-studio-backend/autopilot.py` |
 | Which operator runs a goal | `jarvis-studio-backend/task_router.py` |
 | Model routing / tiers / fallback | `jarvis-studio-backend/llm/groq_bridge.py` |
+| Tool palette, tool groups per turn (`load_tools`) | `jarvis-studio-backend/llm/live_tools.py` |
+| Skill files (`read_skill`), heartbeat, routines | `jarvis-studio-backend/skill_files.py`, `heartbeat.py`, `routines.py` |
 | Raw actions (apps, fs, computer, browser) | `jarvis-studio-backend/actions/` |
 | Android TV (network ADB, screen capture) / TV operator by sight | `jarvis-studio-backend/actions/tv.py` / `tv_operator.py` — Netflix blocks every screenshot (DRM, by design) |
 | Transport, auth, remote allowlist | `jarvis-studio-backend/server/websocket_server.py` |
@@ -36,7 +38,7 @@ cd jarvis-studio-backend; python -m unittest discover -s . -p "test_*.py" -t .
 cd jarvis-studio-gui; npm run build
 ```
 
-248 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
+352 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
 installs a hand-picked minimum — add to that list if a new test needs a module).
 For anything touching the live voice/WS wiring, run the app (`python start.py`),
 don't stop at compiling.
@@ -49,3 +51,10 @@ don't stop at compiling.
 - A remote (phone) client is confined to the allowlist in `main.py`'s
   `set_remote_allowed({...})`. Adding a handler does **not** expose it remotely —
   and anything host-configuring must stay off that list.
+- A chat turn advertises CORE tools plus the groups in `live_tools.GROUPS` its words
+  (or the last two turns) point at. A new tool goes in a group unless nearly every
+  turn needs it; add cue words for it to `_CUES`. A group only decides what's
+  *advertised*: every call still runs through `to_spec` → `actions.run_specs`.
+- The phone app (`AnaaySampat/jarvis`) is a TypeScript port of this backend and now
+  leads on some fixes; its `docs/STATUS.md` says what was verified on a device. When
+  porting, keep the two in step (its `quota.ts` per-minute windows already are).

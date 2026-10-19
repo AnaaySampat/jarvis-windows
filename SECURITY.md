@@ -77,3 +77,10 @@ Out of scope:
 - Arm desktop control only for as long as you need it.
 - Use API keys with spending limits where the provider supports them. Paid keys
   in Auto routing can bill you.
+- Skill files (`<storage>/skills/`) are instructions JARVIS follows when a request
+  needs them. Only add ones you wrote or trust: a downloaded skill can steer what
+  JARVIS does as much as anything you type, though every action still goes through
+  the same approval prompts.
+- TV control turns on the TV's network ADB (port 5555 on your home network). If you
+  add the TV's Tailscale address, it is reachable from your tailnet too; the TV's own
+  "Allow USB debugging?" prompt stays the gate either way.

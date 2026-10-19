@@ -40,9 +40,12 @@ landed, and corrects itself when it didn't.
 | 🌐 **Browser autopilot** | Goal in, result out. Sandboxed to a browser JARVIS owns, with approvals for anything risky. Watch every step and screenshot in the Agent Activity panel. |
 | 🖥️ **Desktop control** | Opens, closes and operates Windows apps through UI Automation. Off until you arm it, with a live "JARVIS CONTROLLING" bar to pause or correct it. |
 | 📱 **Phone remote** | QR + PIN pairing, signed messages, WebRTC screen streaming. A phone can run tasks but can never touch the PC's keys or settings. |
+| 📺 **TV** | Control an Android TV over its own network ADB: play a show on Netflix or YouTube, pause, volume, power, and multi-step tasks by sight. |
 | 📊 **Rich answers** | Charts, tables, timelines and flowcharts render inline in the chat. |
 | 💾 **Memory & playbooks** | "Remember that…" keeps facts across sessions. Teach a multi-step routine once and it reuses it. Everything is stored locally and viewable in the Memory panel. |
-| ⏰ **Everyday stuff** | Reminders, timers, recurring routines, a voice-editable agenda, weather, nearby places, directions, news, web search with citations. |
+| 📚 **Skill files** | Write a how-to as a Markdown file in the `skills/` folder (OpenClaw `SKILL.md` files work too). JARVIS sees only its name and description, and reads it in full when a request needs it. |
+| 💓 **Heartbeat** | Optional check-ins: every half hour JARVIS reads your checklist (`HEARTBEAT.md`) against the time, agenda, battery and weather, and speaks only when something needs you. |
+| ⏰ **Everyday stuff** | Reminders, timers, routines you run by name or on a schedule (listed and editable in Memory ▸ Routines), a voice-editable agenda, weather, nearby places, directions, news, web search with citations (Gemini, with an optional Tavily backup). |
 | 🛠️ **PC actions** | Volume, power, screenshots, screen/voice/video recording, QR codes, AI images, PDF read/write, speed test, camera OCR with translation. |
 | 🎨 **Make it yours** | Restyle the HUD by voice: colours, background, density and panel layout. Voices: Piper (offline), ElevenLabs or Google Chirp 3 HD. |
 
@@ -137,6 +140,25 @@ whether a goal needs the browser or the desktop before any model commits to one.
 | `jarvis-studio-gui/` | Tauri 2 + React HUD: main window, status pill overlay, browser panel, control bar |
 | `scripts/` | Installer build scripts |
 | `start.py` | Launches backend + GUI for development |
+
+## Two routers at home?
+
+The PC, the phone and the TV reach each other directly, so they need to be on one
+network. A second router plugged in by cable usually runs in **router mode**: its
+Wi-Fi gets its own network (say `192.168.0.x` next to the main router's
+`192.168.1.x`), and nothing on the main router's Wi-Fi can open a connection into it.
+Two fixes, either one works:
+
+1. **Switch the second router to Access Point mode** (on most TP-Link routers:
+   Advanced → System → Operation Mode, or Operation Mode in Quick Setup; follow its
+   cabling note). Its Wi-Fi names stay, but every device on every Wi-Fi joins the main
+   router's network, so the phone, PC and TV see each other wherever they are.
+2. **Tailscale.** The phone already reaches the PC over Tailscale from anywhere. For
+   the TV, install Tailscale on it (it has an Android TV app) and add its `100.x`
+   address after a comma in Settings → Devices → TV (`192.168.1.50, 100.64.1.2`).
+   JARVIS uses whichever answers and remembers which one did.
+
+If the TV can't be reached because it's on another router's network, JARVIS says so.
 
 ## Privacy
 
