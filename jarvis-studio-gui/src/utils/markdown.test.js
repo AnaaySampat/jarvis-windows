@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inlineMarkdownSegments, splitMarkdownTables } from "./markdown";
+import { inlineMarkdownSegments, plainPreview, splitMarkdownTables } from "./markdown";
 
 describe("inlineMarkdownSegments", () => {
   it("splits bold and bold italic, leaving single asterisks alone", () => {
@@ -33,5 +33,19 @@ describe("splitMarkdownTables", () => {
       "c",
     ]);
     expect(splitMarkdownTables("x | y")).toEqual([{ kind: "text", content: "x | y" }]);
+  });
+});
+
+describe("plainPreview", () => {
+  it("flattens a reply to one readable line", () => {
+    const reply = "# Forecast\n**29°C** and `partly cloudy`, see [the map](https://x.y).\n"
+      + "| Day | High |\n|---|---|\n| Mon | 31 |\n```json\n{\"a\": 1}\n```\n- 2*3 in my_file.txt";
+    expect(plainPreview(reply)).toBe("Forecast 29°C and partly cloudy, see the map. 2*3 in my_file.txt");
+  });
+
+  it("is empty for a reply that is only a chart or table", () => {
+    expect(plainPreview("```chart\n{}\n```")).toBe("");
+    expect(plainPreview("| a |\n|---|")).toBe("");
+    expect(plainPreview(undefined)).toBe("");
   });
 });

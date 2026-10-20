@@ -1,35 +1,103 @@
-/* HudApp.jsx — assembles the full HUD as two collapsible rails around the
-   central reactor core, plus a bottom dock that opens the Skills / Capabilities
-   / Power / OCR / Conversation panels. Data panels collapse to free space; App
-   owns the open/collapse state so JARVIS can drive it all by voice. */
+/* HudApp.jsx — the home screen: a header (menus + quick controls), JARVIS at the
+   centre (time, the orb, what it's doing, its last reply and an ask box), and the
+   live cards in a column on each side. Responsive: it lays out for the window
+   rather than scaling a fixed picture. App owns every open/collapse state so
+   JARVIS can drive the screen by voice; `screen` (Customize) picks the accent,
+   background, density and which cards sit on which side. */
 
-import { useState, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import "./hud.css";
-import "./layouts.css";
-import { ReactorCore, BootSequence } from "./HudCore";
+import "./home.css";
+import Orb from "./Orb";
+import { plainPreview as plain } from "../utils/markdown";
+import { Icon } from "./icons";
 import {
-  STATUS_META, DEFAULT_TELEMETRY,
-  ClockPanel, StatusPanel, SysStatsPanel, PowerPanel,
-  WeatherPanel, NetworkPanel, SchedulePanel, TerminalPanel,
-  DockBar, SkillsOverlay, CapabilitiesOverlay, PowerOverlay,
-  ChatOverlay, MemoryOverlay,
-} from "./HudPanels";
+  DEFAULT_TELEMETRY, SystemWidget, PowerWidget, AgendaWidget, WeatherWidget, NetworkWidget, LogWidget,
+} from "./widgets";
+import { SkillsOverlay, CapabilitiesOverlay, PowerOverlay, ChatOverlay, MemoryOverlay } from "./HudPanels";
 
-/* Direction presets */
+/* Theme defaults (App recolours them from the user's screen settings). */
 export const DIRECTIONS = [
-  {
-    id: "reactor", name: "REACTOR CORE", layout: "hud--reactor",
-    accent: "#00e5ff", accent2: "#6fe9ff", rgb: [0, 229, 255],
-    tagline: "Symmetric · classic Stark", spokes: false, sysVariant: "radial",
-  },
+  { id: "default", name: "JARVIS", accent: "#00e5ff", accent2: "#6fe9ff", rgb: [0, 229, 255] },
+];
+
+const STATUS_TEXT = {
+  idle:      ["Standing by", "Say “Hey Jarvis”, hold Ctrl+Space, or click the orb."],
+  listening: ["Listening…", "Go ahead — click the orb to cancel."],
+  thinking:  ["Thinking…", "Click the orb to stop."],
+  speaking:  ["Speaking", "Click the orb to stop."],
+  working:   ["Working on it…", "Click the orb to stop."],
+};
+
+const STARTERS = [
+  "What's on my agenda today?",
+  "What's the weather this week?",
+  "Play lofi on YouTube",
+];
+
+function greeting(h) {
+  return h < 5 ? "Good evening" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+}
+
+/* Ticks on its own so the rest of the screen doesn't re-render every second. */
+function HeroClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const parts = new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit" }).formatToParts(now);
+  const time = parts.filter((p) => p.type !== "dayPeriod").map((p) => p.value).join("").trim();
+  const period = parts.find((p) => p.type === "dayPeriod")?.value;
+  return (
+    <div className="hero-clock">
+      <div className="hero-greet">{greeting(now.getHours())}</div>
+      <div className="hero-time">{time}{period && <span>{period}</span>}</div>
+      <div className="hero-date">{now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}</div>
+    </div>
+  );
+}
+
+/* The ask box: a message goes straight to JARVIS and the reply appears above it. */
+function AskBar({ inputRef, onSend, onListen, status }) {
+  const [text, setText] = useState("");
+  const submit = (e) => {
+    e.preventDefault();
+    const t = text.trim();
+    if (!t) return;
+    onSend(t);
+    setText("");
+  };
+  return (
+    <form className="ask" onSubmit={submit}>
+      <input ref={inputRef} value={text} onChange={(e) => setText(e.target.value)}
+             placeholder="Ask JARVIS anything…" aria-label="Ask JARVIS" />
+      {!text && <kbd className="ask-kbd" title="Press / to type here">/</kbd>}
+      <button type="button" className={`ask-btn${status === "listening" ? " is-on" : ""}`}
+              onClick={onListen} aria-label="Talk" title="Talk (or hold Ctrl+Space)">
+        <Icon name="mic" size={17} />
+      </button>
+      <button type="submit" className="ask-btn ask-btn--send" disabled={!text.trim()} aria-label="Send" title="Send">
+        <Icon name="send" size={17} />
+      </button>
+    </form>
+  );
+}
+
+const NAV = [
+  { id: "chat", label: "Chat", icon: "chat" },
+  { id: "memory", label: "Memory", icon: "memory" },
+  { id: "skills", label: "Skills", icon: "skills" },
+  { id: "caps", label: "Capabilities", icon: "caps" },
 ];
 
 export function JarvisHUD({
   config,
   screen,                       // home-screen look & layout (accent/bg/density/panels/order)
-  booted = false,
+  toolbar,                      // the quick controls (App owns their state)
   // live data
   status = "idle",
+  activeTask,                   // goal of the running autopilot task, if any
   telemetry,
   weather,
   netInfo,
@@ -39,7 +107,7 @@ export function JarvisHUD({
   recordings = {},
   isConnected = false,
   allowedDirs = [],
-  // collapsible data-panel state (controlled by App so JARVIS can toggle them)
+  // collapsible card state (controlled by App so JARVIS can toggle them)
   panels = {}, onTogglePanel,
   // overlays (App owns these so JARVIS can drive them too)
   chatOpen, setChatOpen,
@@ -52,6 +120,7 @@ export function JarvisHUD({
   onAsk,                        // send a message and show the chat (Capabilities "Try")
   onNotify,                     // brief confirmation toast
   onStop,
+  onListen,
   onReset,
   onUpload,
   taskModelTiers = [],
@@ -69,12 +138,12 @@ export function JarvisHUD({
 }) {
   const c = config;
   const d = telemetry || DEFAULT_TELEMETRY;
-  const [isBoot, setIsBoot] = useState(!booted);
+  const askRef = useRef(null);
   const p = (k, def = true) => (panels[k] === undefined ? def : panels[k]);
   const tog = (k) => (v) => onTogglePanel && onTogglePanel(k, v);
-  const closeMemory = useCallback(() => setMemoryOpen(false), [setMemoryOpen]);
+  const closeMemory = () => setMemoryOpen(false);
 
-  // Screen layout config (visibility + per-rail order + background/density).
+  // Screen layout config (visibility + per-side order + background/density).
   const sc = screen || {};
   const vis = sc.panels || {};
   const order = sc.order || { left: ["system", "power", "agenda"], right: ["weather", "network", "terminal"] };
@@ -82,62 +151,106 @@ export function JarvisHUD({
   const density = sc.density || "normal";
   const shown = (key) => vis[key] !== false;
 
-  // name → the panel element (so rails can be rebuilt from `order` in any arrangement).
-  const PANELS = {
-    system: <SysStatsPanel key="system" d={d} collapsible open={p("system")} onToggle={tog("system")} />,
-    power: <PowerPanel key="power" d={d} collapsible open={p("power")} onToggle={tog("power")} />,
-    agenda: <SchedulePanel key="agenda" items={schedule} collapsible open={p("agenda")} onToggle={tog("agenda")} runAction={runAction} />,
-    weather: <WeatherPanel key="weather" weather={weather} collapsible open={p("weather")} onToggle={tog("weather")} />,
-    network: <NetworkPanel key="network" d={d} netInfo={netInfo} collapsible open={p("network")} onToggle={tog("network")} />,
-    terminal: <TerminalPanel key="terminal" commands={commands} open={p("terminal", false)} onToggle={tog("terminal")} />,
+  // "/" puts the cursor in the ask box (when nothing is open over the home screen).
+  const overlayOpen = chatOpen || skillsOpen || capsOpen || powerOpen || memoryOpen;
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || overlayOpen) return;
+      const t = e.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (document.querySelector(".settings-overlay, .cmdk-overlay, .perm-overlay")) return;
+      e.preventDefault();
+      askRef.current?.focus({ preventScroll: true });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [overlayOpen]);
+
+  const CARDS = {
+    system: <SystemWidget key="system" d={d} live={!!telemetry} open={p("system")} onToggle={tog("system")} />,
+    power: <PowerWidget key="power" d={d} open={p("power")} onToggle={tog("power")} />,
+    agenda: <AgendaWidget key="agenda" items={schedule} open={p("agenda")} onToggle={tog("agenda")} runAction={runAction} />,
+    weather: <WeatherWidget key="weather" weather={weather} open={p("weather")} onToggle={tog("weather")} />,
+    network: <NetworkWidget key="network" d={d} live={!!telemetry} netInfo={netInfo} open={p("network")} onToggle={tog("network")} />,
+    terminal: <LogWidget key="terminal" commands={commands} open={p("terminal", false)} onToggle={tog("terminal")} />,
   };
-  const railPanels = (rail) => (order[rail] || []).filter(shown).map((k) => PANELS[k]).filter(Boolean);
+  const column = (side) => (order[side] || []).filter(shown).map((k) => CARDS[k]).filter(Boolean);
+
+  const [title, hint] = STATUS_TEXT[status] || STATUS_TEXT.idle;
+  const busy = status !== "idle";
+  const lastReplyAt = messages.map((m) => m.role !== "user").lastIndexOf(true);
+  const lastReply = lastReplyAt >= 0 ? messages[lastReplyAt] : null;
+  const lastAsk = [...messages.slice(0, lastReplyAt >= 0 ? lastReplyAt : messages.length)].reverse()
+    .find((m) => m.role === "user");
+  const replyText = lastReply ? plain(lastReply.text) : "";
+  const replyExtras = lastReply?.actions?.length || 0;
+  const openNav = {
+    chat: [chatOpen, () => setChatOpen(true)],
+    memory: [memoryOpen, () => setMemoryOpen(true)],
+    skills: [skillsOpen, () => setSkillsOpen(true)],
+    caps: [capsOpen, () => setCapsOpen(true)],
+  };
 
   return (
-    <div className={`hud ${c.layout} hud--bg-${background} hud--density-${density}`}
+    <div className={`hud home home--bg-${background} home--${density}`}
          style={{ "--ac": c.accent, "--ac2": c.accent2 }}>
-      {/* ambient bg layers */}
-      <div className="hud-bg" />
-      <div className="hud-grid-bg" />
-      <div className="hud-scanline" />
+      <div className="home-bg" aria-hidden="true" />
 
-      {/* frame corners + edge ticks */}
-      <div className="hud-frame" aria-hidden="true">
-        <span className="fc tl" /><span className="fc tr" /><span className="fc bl" /><span className="fc br" />
-        <span className="edge-label el-t">J.A.R.V.I.S DISPLAY SYSTEM · {c.name}</span>
-        <span className="edge-label el-b">JUST A RATHER VERY INTELLIGENT SYSTEM · v3.0</span>
-      </div>
-
-      {/* central core */}
-      <div className="hud-core-zone" data-slot="core">
-        <ReactorCore status={status} size={c.layout === "hud--command" ? 442 : 482} rgb={c.rgb} />
-        <div className="core-readout">
-          <span className="core-name">{c.name}</span>
-          <span className="core-sub">{(STATUS_META[status] ?? STATUS_META.idle).label}</span>
+      <header className="home-top">
+        <div className="home-brand">
+          <span className="home-logo" aria-hidden />
+          <span className="home-name">JARVIS</span>
+          <span className={`home-conn${isConnected ? " is-on" : ""}`}>{isConnected ? "Online" : "Offline"}</span>
         </div>
-      </div>
+        <nav className="home-nav" aria-label="Menus">
+          {NAV.map((n) => (
+            <button key={n.id} className={`home-nav-btn${openNav[n.id][0] ? " is-on" : ""}`}
+                    onClick={openNav[n.id][1]} title={n.label}>
+              <Icon name={n.icon} size={16} /><span>{n.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="home-tools">{toolbar}</div>
+      </header>
 
-      {/* ── left rail: clock + the panels assigned to the left (user/JARVIS arrangeable) ── */}
-      <div className="hud-rail hud-rail--left">
-        <ClockPanel rgb={c.rgb} />
-        {railPanels("left")}
-      </div>
+      <main className="home-main">
+        <aside className="home-col home-col--left" aria-label="Left cards">{column("left")}</aside>
 
-      {/* ── right rail: status + the panels assigned to the right ── */}
-      <div className="hud-rail hud-rail--right">
-        <StatusPanel status={status} rgb={c.rgb} />
-        {railPanels("right")}
-      </div>
+        <section className="home-hero" aria-label="JARVIS">
+          <HeroClock />
+          <Orb status={status} onClick={busy ? onStop : onListen}
+               label={busy ? "Stop" : "Talk to JARVIS"} />
+          <div className="hero-status" role="status">
+            <div className={`hero-title hero-title--${status}`}><span className="hero-dot" />{title}</div>
+            <div className="hero-hint">{status === "working" && activeTask ? activeTask : hint}</div>
+          </div>
 
-      {/* ── bottom dock ── */}
-      <DockBar
-        onOpenSkills={() => setSkillsOpen(true)}
-        onOpenCaps={() => setCapsOpen(true)}
-        onOpenPower={() => setPowerOpen(true)}
-        onOpenMemory={() => setMemoryOpen(true)}
-        onOpenChat={() => setChatOpen(true)}
-        chatCount={messages.length}
-      />
+          {lastReply && (
+            <button type="button" className="hero-reply" onClick={() => setChatOpen(true)} title="Open the conversation">
+              {lastAsk && <span className="hero-reply-q">{plain(lastAsk.text)}</span>}
+              <span className="hero-reply-a">
+                {replyText || (lastReply.streaming ? "…" : replyExtras ? "Done — see the result in the chat." : "…")}
+              </span>
+              <span className="hero-reply-more">
+                {replyExtras > 0 && `${replyExtras} result${replyExtras === 1 ? "" : "s"} · `}Open conversation
+                <Icon name="arrowRight" size={13} />
+              </span>
+            </button>
+          )}
+
+          <AskBar inputRef={askRef} onSend={(t) => onSend(t)} onListen={onListen} status={status} />
+
+          {messages.length === 0 && (
+            <div className="hero-starters">
+              {STARTERS.map((s) => (
+                <button key={s} className="hero-starter" onClick={() => onSend(s)}>{s}</button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <aside className="home-col home-col--right" aria-label="Right cards">{column("right")}</aside>
+      </main>
 
       {/* ── overlays ── */}
       <SkillsOverlay
@@ -163,9 +276,6 @@ export function JarvisHUD({
         onOpenConversation={onOpenConversation} onDeleteConversation={onDeleteConversation}
         onRefreshConversations={onRefreshConversations} onClearConversations={onClearConversations}
       />
-
-      {/* boot overlay */}
-      {isBoot && <BootSequence name={c.name} onDone={() => setIsBoot(false)} />}
     </div>
   );
 }

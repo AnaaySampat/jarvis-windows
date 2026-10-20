@@ -1,354 +1,10 @@
-/* HudPanels.jsx — all the ringing data panels + chat & OCR overlays.
-   Ported from jarvis-hud/hud-panels.jsx and wired to LIVE backend data
-   (telemetry / weather / netinfo / schedule / messages) passed in as props.
-   Exports each panel + STATUS_META + useClock  */
+/* HudPanels.jsx — the panels that open over the home screen: Skills, Capabilities,
+   Power, Memory and the chat. The home screen's own widgets are in widgets.jsx. */
 
 import { useState, useEffect, useRef, useCallback, memo } from "react";
-import { CornerBox, RadialGauge, MiniRadial, BarMeter, SegBar, Sparkline, TickStrip, DataRow } from "./HudGauges";
-import { Waveform } from "./HudCore";
 import ResponseRenderer from "../components/ResponseRenderer";
 import { Icon } from "./icons";
 import { ChipList, AddField } from "../components/controls";
-
-/* Sensible idle defaults so the HUD looks alive before the first telemetry
-   frame arrives over the socket. */
-export const DEFAULT_TELEMETRY = {
-  cpu: 0, ram: 0, disk: 0, diskActivity: 0, gpu: 0, net: 0,
-  down: 0, up: 0, ping: 0, temp: null,
-  batteryPct: null, charging: false, remaining: "",
-  ramTotalGb: 16, diskUsedGb: 0, diskTotalGb: 0, gpuName: "",
-};
-
-// Coerce a telemetry field to a finite number (→0). A partial frame missing
-// cpu/ram/disk would otherwise blow up `d.cpu.toFixed(...)` and crash the panel
-// — the gpu/net reads already use `?? 0`, so this just makes the rest consistent.
-const n0 = (x) => (Number.isFinite(x) ? x : (Number.isFinite(+x) ? +x : 0));
-
-/* ───────── status labels (idle→listening→thinking→speaking) ───────── */
-export const STATUS_META = {
-  idle:      { label: 'STANDBY — say "Hey Jarvis"', col: "#00c8ff" },
-  listening: { label: "LISTENING…", col: "#00e5ff" },
-  thinking:  { label: "PROCESSING REQUEST…", col: "#78b4ff" },
-  speaking:  { label: "RESPONDING…", col: "#ffb648" },
-  working:   { label: "EXECUTING TASK…", col: "#22e39a" },
-};
-
-/* ───────── live clock ───────── */
-export function useClock() {
-  const [now, setNow] = useState(new Date());
-  useEffect(() => { const id = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(id); }, []);
-  return now;
-}
-
-/* ───────── rolling history of a live value (for real sparklines) ───────── */
-function useHistory(value, points = 46) {
-  const [hist, setHist] = useState(() => Array(points).fill(0));
-  useEffect(() => {
-    setHist((h) => [...h.slice(1), Number.isFinite(value) ? value : 0]);
-  }, [value]);
-  return hist;
-}
-
-export function ClockPanel({ rgb }) {
-  const now = useClock();
-  const hh = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-  const ss = now.toLocaleTimeString([], { second: "2-digit" }).replace(/\D/g, "").padStart(2, "0");
-  const date = now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
-  const yr = now.getFullYear();
-  return (
-    <div className="clock">
-      <div className="clock-main">
-        <span className="clock-hh">{hh}</span>
-        <span className="clock-ss">{ss}</span>
-      </div>
-      <div className="clock-date">{date} · {yr}</div>
-      <TickStrip count={46} />
-    </div>
-  );
-}
-
-/* ───────── status + waveform ───────── */
-export function StatusPanel({ status, rgb }) {
-  const meta = STATUS_META[status] ?? STATUS_META.idle;
-  return (
-    <div className="statp">
-      <div className="statp-row">
-        <span className="statp-dot" style={{ background: meta.col, boxShadow: `0 0 12px ${meta.col}` }} />
-        <span className="statp-label" style={{ color: meta.col }}>{meta.label}</span>
-      </div>
-      <Waveform status={status} bars={42} height={44} rgb={rgb} />
-    </div>
-  );
-}
-
-/* ───────── system stats (radials) ───────── */
-export function SysStatsPanel({ d, collapsible, open, onToggle }) {
-  const tempSub = d.temp != null ? `${n0(d.temp).toFixed(0)}°C` : "—";
-  const ramSub = d.ramTotalGb ? `${Math.round(d.ramTotalGb)} GB` : "—";
-  return (
-    <CornerBox title="System" code="SYS·01" slot="sysstats"
-               collapsible={collapsible} open={open} onToggle={onToggle}>
-      <div className="sys-grid">
-        <RadialGauge value={d.cpu} label="CPU" size={106} sub={tempSub} />
-        <RadialGauge value={d.ram} label="MEMORY" size={106} sub={ramSub} />
-      </div>
-      <div className="sys-mini">
-        <MiniRadial value={d.gpu ?? 0} label="GPU" size={60} />
-        <MiniRadial value={d.diskActivity ?? 0} label="DISK" size={60} />
-        <MiniRadial value={d.net ?? 0} label="NET" size={60} />
-      </div>
-    </CornerBox>
-  );
-}
-
-/* compact variant for tight rails */
-export function SysStatsCompact({ d }) {
-  const cpuHist = useHistory(d.cpu);
-  const diskRight = d.diskTotalGb
-    ? `${Math.round(n0(d.diskUsedGb))} / ${Math.round(n0(d.diskTotalGb))} GB` : `${n0(d.disk).toFixed(0)}%`;
-  return (
-    <CornerBox title="System Telemetry" code="SYS·01" slot="sysstats">
-      <BarMeter value={d.cpu} label="CPU" right={`${n0(d.cpu).toFixed(0)}%`} warn={n0(d.cpu) > 80} />
-      <BarMeter value={d.ram} label="MEMORY" right={`${((n0(d.ram) / 100) * (d.ramTotalGb || 16)).toFixed(1)} GB`} />
-      <BarMeter value={d.gpu ?? 0} label="GPU" right={d.gpu != null ? `${n0(d.gpu).toFixed(0)}%` : "—"} />
-      <BarMeter value={d.disk} label="DISK" right={diskRight} />
-      <div className="sys-spark">
-        <span className="sys-spark-lbl">CPU LOAD HISTORY</span>
-        <Sparkline points={46} height={36} data={cpuHist} />
-      </div>
-    </CornerBox>
-  );
-}
-
-/* ───────── power / battery ───────── */
-export function PowerPanel({ d, collapsible, open, onToggle }) {
-  const pct = d.batteryPct;
-  const hasBattery = pct != null;
-  const shown = hasBattery ? pct : 100;
-  const label = !hasBattery ? "AC POWER" : d.charging ? "CHARGING" : "BATTERY";
-  return (
-    <CornerBox title="Power" code="PWR" slot="power"
-               collapsible={collapsible} open={open} onToggle={onToggle}>
-      <div className="pwr">
-        <RadialGauge value={shown} label={label} size={96} unit="%" />
-        <div className="pwr-meta">
-          <DataRow k="SOURCE" v={d.charging || !hasBattery ? "AC MAINS" : "CELL"} accent />
-          <DataRow k="STATE" v={!hasBattery ? "PLUGGED IN" : d.charging ? "CHARGING" : "DISCHARGING"} />
-          <DataRow k="REMAINING" v={d.remaining || "—"} />
-          <DataRow k="LEVEL" v={hasBattery ? `${Math.round(pct)}%` : "100%"} accent />
-        </div>
-      </div>
-      <SegBar value={shown} segs={18} label="OUTPUT" />
-    </CornerBox>
-  );
-}
-
-/* ───────── weather ───────── */
-const DEFAULT_WEATHER = {
-  temp: null, condition: "—", location: "LOCATING…",
-  humidity: null, wind: "—", aqi: null, hours: [],
-};
-export function WeatherPanel({ weather, collapsible, open, onToggle }) {
-  const w = weather || DEFAULT_WEATHER;
-  return (
-    <CornerBox title="Weather" code="ATM" slot="weather"
-               collapsible={collapsible} open={open} onToggle={onToggle}>
-      <div className="wx-now">
-        <span className="wx-temp">{w.temp != null ? `${Math.round(w.temp)}°` : "—"}</span>
-        <div className="wx-meta">
-          <span className="wx-cond">{(w.condition || "—").toUpperCase()}</span>
-          <span className="wx-loc">{(w.location || "—").toUpperCase()}</span>
-        </div>
-      </div>
-      <div className="wx-stats">
-        <DataRow k="HUMIDITY" v={w.humidity != null ? `${Math.round(w.humidity)}%` : "—"} />
-        <DataRow k="WIND" v={w.wind || "—"} />
-        {w.aqi != null && <DataRow k="AQI" v={`${w.aqi}`} accent />}
-      </div>
-      {w.hours?.length > 0 && (
-        <div className="wx-hours">
-          {w.hours.slice(0, 6).map((h, i) => (
-            <div key={i} className="wx-h">
-              <span className="wx-h-t">{h.t}</span>
-              <span className="wx-h-i">{h.i}</span>
-              <span className="wx-h-c">{h.c != null ? `${Math.round(n0(h.c))}°` : "—"}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </CornerBox>
-  );
-}
-
-/* ───────── network / connectivity ───────── */
-// Live throughput: 1-decimal under 10 Mbps so background/idle traffic is still
-// visible instead of rounding to a dead "0"; whole numbers once it's busy.
-const fmtMbps = (v) => (v == null ? "0.0" : v < 10 ? v.toFixed(1) : v.toFixed(0));
-
-export function NetworkPanel({ d, netInfo, collapsible, open, onToggle }) {
-  const n = netInfo || {};
-  const downHist = useHistory(d.down);
-  return (
-    <CornerBox title="Network" code="NET·LINK" slot="network"
-               collapsible={collapsible} open={open} onToggle={onToggle}>
-      <div className="net-rates">
-        <div className="net-rate">
-          <span className="net-arrow">▼</span>
-          <span className="net-num">{fmtMbps(d.down)}</span>
-          <span className="net-u">Mbps DOWN</span>
-        </div>
-        <div className="net-rate">
-          <span className="net-arrow up">▲</span>
-          <span className="net-num">{fmtMbps(d.up)}</span>
-          <span className="net-u">Mbps UP</span>
-        </div>
-      </div>
-      <Sparkline points={42} height={34} data={downHist} />
-      <div className="net-meta">
-        <DataRow k="PING" v={d.ping ? `${d.ping} ms` : "—"} accent />
-        <DataRow k="LOCAL IP" v={n.localIp || "—"} />
-        <DataRow k="PUBLIC IP" v={n.publicIp || "—"} />
-        <DataRow k="LOCATION" v={n.location || "—"} />
-      </div>
-    </CornerBox>
-  );
-}
-
-/* ───────── schedule / agenda (editable) ───────── */
-// Add / edit an agenda item in place (was two chained window.prompt()s).
-function AgendaForm({ initial, onSave, onCancel }) {
-  const [task, setTask] = useState(initial?.task || "");
-  const [time, setTime] = useState(/^\d{1,2}:\d{2}$/.test(initial?.time || "") ? initial.time.padStart(5, "0") : "");
-  const submit = (e) => {
-    e.preventDefault();
-    if (task.trim()) onSave({ task: task.trim(), time });
-  };
-  return (
-    <form className="sch-form" onSubmit={submit}
-          onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onCancel(); } }}>
-      <input type="time" className="sch-form-time" value={time} onChange={(e) => setTime(e.target.value)}
-             aria-label="Time (optional)" />
-      <input className="sch-form-task" value={task} onChange={(e) => setTask(e.target.value)} autoFocus
-             placeholder={initial ? "Task" : "What is it?"} aria-label="Task" maxLength={120} />
-      <button type="submit" className="sch-form-btn sch-form-btn--ok" disabled={!task.trim()}
-              aria-label={initial ? "Save" : "Add"} title={initial ? "Save" : "Add"}>
-        <Icon name="check" size={15} stroke={2} />
-      </button>
-      <button type="button" className="sch-form-btn" onClick={onCancel} aria-label="Cancel" title="Cancel">
-        <Icon name="close" size={14} stroke={2} />
-      </button>
-    </form>
-  );
-}
-
-export function SchedulePanel({ items, collapsible, open, onToggle, runAction }) {
-  const list = items || [];
-  const editable = typeof runAction === "function";
-  const [editing, setEditing] = useState(null);   // null | "new" | index of the row being edited
-
-  const addItem = ({ task, time }) => {
-    runAction({ type: "schedule", do: "add", day: "today", time, task });
-    setEditing(null);
-  };
-  const editItem = (it, { task, time }) => {
-    runAction({
-      type: "schedule", do: "edit", day: "today",
-      match: it.task, new_task: task || it.task, new_time: time || it.time,
-    });
-    setEditing(null);
-  };
-  const removeItem = (it) =>
-    runAction({ type: "schedule", do: "remove", day: "today", match: it.task });
-
-  return (
-    <CornerBox title="Agenda" code="TODAY" slot="schedule"
-               collapsible={collapsible} open={open} onToggle={onToggle}>
-      <div className="sch">
-        {list.length === 0 && editing !== "new" ? (
-          <div className="sch-empty">Nothing scheduled today.</div>
-        ) : list.map((it, i) => (editing === i ? (
-          <AgendaForm key={i} initial={it} onSave={(v) => editItem(it, v)} onCancel={() => setEditing(null)} />
-        ) : (
-          <div key={i} className={`sch-row ${it.now ? "now" : ""} ${it.done ? "done" : ""}`}>
-            <span className="sch-t">{it.time}</span>
-            <span className="sch-track"><span className="sch-dot" /></span>
-            <span className="sch-task">{it.task}</span>
-            {it.duration && <span className="sch-dur">{it.duration}</span>}
-            {editable && (
-              <span className="sch-edit">
-                <button title="Edit" aria-label={`Edit ${it.task}`} onClick={() => setEditing(i)}>
-                  <Icon name="edit" size={13} />
-                </button>
-                <button title="Remove" aria-label={`Remove ${it.task}`} onClick={() => removeItem(it)}>
-                  <Icon name="trash" size={13} />
-                </button>
-              </span>
-            )}
-          </div>
-        )))}
-        {editing === "new" && <AgendaForm onSave={addItem} onCancel={() => setEditing(null)} />}
-      </div>
-      {editable && editing !== "new" && (
-        <button className="sch-add" onClick={() => setEditing("new")}>
-          <Icon name="plus" size={14} /> Add item
-        </button>
-      )}
-    </CornerBox>
-  );
-}
-
-/* ───────── command log — JARVIS's mini "terminal" (collapsible) ───────── */
-export function TerminalPanel({ commands = [], open, onToggle }) {
-  const bodyRef = useRef(null);
-  useEffect(() => {
-    if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
-  }, [commands, open]);
-  const fmtTime = (ts) => {
-    try { return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
-    catch { return ""; }
-  };
-  return (
-    <CornerBox title="Terminal" code="LOG" slot="terminal" collapsible open={open} onToggle={onToggle}>
-      <div className="term" ref={bodyRef}>
-        <div className="term-line term-line--sys">JARVIS command log — read-only.</div>
-        {commands.length === 0 && <div className="term-line term-dim">no commands executed yet.</div>}
-        {commands.map((c, i) => (
-          <div key={i} className={`term-line ${c.ok === false ? "term-err" : ""}`}>
-            <span className="term-t">{fmtTime(c.ts)}</span>
-            <span className="term-prompt">{c.ok === false ? "✗" : "›"}</span>
-            <span className="term-cmd">{c.type}{c.target ? ` ${c.target}` : ""}</span>
-            {c.message && <span className="term-out">— {c.message}</span>}
-          </div>
-        ))}
-      </div>
-    </CornerBox>
-  );
-}
-
-/* ───────── bottom dock launcher (replaces the quick-actions grid) ───────── */
-export function DockBar({ onOpenSkills, onOpenCaps, onOpenPower, onOpenMemory, onOpenChat, chatCount = 0 }) {
-  const items = [
-    { l: "SKILLS",       i: "skills", on: onOpenSkills, tip: "Record, QR codes, screenshots, folders" },
-    { l: "MEMORY",       i: "memory", on: onOpenMemory, tip: "What JARVIS knows and remembers" },
-    { l: "CAPABILITIES", i: "caps",   on: onOpenCaps,   tip: "Everything you can ask — with examples" },
-    { l: "POWER",        i: "power",  on: onOpenPower,  tip: "Lock, sleep, restart, shut down" },
-  ];
-  return (
-    <nav className="dock" data-slot="dock" aria-label="Main menu">
-      {items.map((it) => (
-        <button key={it.l} className="dock-btn" onClick={it.on} title={it.tip}>
-          <span className="dock-i"><Icon name={it.i} /></span>
-          <span className="dock-l">{it.l}</span>
-        </button>
-      ))}
-      <button className="dock-btn dock-btn--chat" onClick={onOpenChat} title="Chat with JARVIS">
-        <span className="dock-i"><Icon name="chat" /></span>
-        <span className="dock-l">CONVERSATION</span>
-        {chatCount > 0 && <span className="dock-badge" aria-label={`${chatCount} messages`}>{chatCount}</span>}
-      </button>
-    </nav>
-  );
-}
 
 /* Shared header for the slide-over panels. */
 function SideHeader({ title, sub, onClose }) {
@@ -400,7 +56,7 @@ export function SkillsOverlay({ open, onClose, recordings = {}, runAction, allow
     <div className={`sideov ${open ? "open" : ""}`} aria-hidden={!open}>
       <div className="sideov-scrim" onClick={onClose} />
       <aside className="sideov-panel" role="dialog" aria-label="Skills">
-        <SideHeader title="SKILLS" sub="Quick tools JARVIS can run for you right now" onClose={onClose} />
+        <SideHeader title="Skills" sub="Quick tools JARVIS can run for you right now" onClose={onClose} />
         <div className="sideov-body">
           <section className="skill-sec">
             <h4>Recording {recording > 0 && <span className="tag tag--err">{recording} live</span>}</h4>
@@ -456,7 +112,7 @@ export function SkillsOverlay({ open, onClose, recordings = {}, runAction, allow
           </section>
 
           <section className="skill-sec">
-            <h4>File-system access <span className="skill-safe">SAFE · READ-ONLY</span></h4>
+            <h4>File-system access <span className="skill-safe">Read-only</span></h4>
             <p className="skill-note">
               JARVIS may only <strong>list</strong> these folders and <strong>read</strong> files inside them
               (each read asks your approval). It can never run, write, move, or delete anything.
@@ -521,7 +177,7 @@ export function CapabilitiesOverlay({ open, onClose, onAsk }) {
     <div className={`sideov sideov--left ${open ? "open" : ""}`} aria-hidden={!open}>
       <div className="sideov-scrim" onClick={onClose} />
       <aside className="sideov-panel" role="dialog" aria-label="Capabilities">
-        <SideHeader title="CAPABILITIES" sub="Just ask in plain language — by voice or in chat" onClose={onClose} />
+        <SideHeader title="Capabilities" sub="Just ask in plain language — by voice or in chat" onClose={onClose} />
         <div className="sideov-search">
           <Icon name="search" size={15} />
           <input ref={searchRef} type="search" value={query} onChange={(e) => setQuery(e.target.value)}
@@ -581,7 +237,7 @@ export function PowerOverlay({ open, onClose, runAction }) {
       <div className="powov-scrim" onClick={onClose} />
       <div className="powov-panel" role="dialog" aria-label="Power options">
         <header className="powov-hd">
-          <span className="powov-title">POWER</span>
+          <span className="powov-title">Power</span>
           <button className="x-btn" onClick={onClose} aria-label="Close power options"><Icon name="close" size={16} /></button>
         </header>
         {POWER_GROUPS.map((g) => (
@@ -743,7 +399,7 @@ export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onO
       <section className="memx-panel" role="dialog" aria-label="Memory">
         <header className="memx-hd">
           <div className="memx-hd-txt">
-            <span className="memx-kicker">MEMORY</span>
+            <span className="memx-kicker">Memory</span>
             <h2 className="memx-title">What JARVIS knows</h2>
             {m.location && <p className="memx-loc">Kept on this PC in <code>{m.location}</code></p>}
           </div>
@@ -926,38 +582,6 @@ export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onO
 }
 
 
-/* ───────── connection/comms list (radial layout density) ───────── */
-export function CommsList({ title = "Channels", code = "COMMS", slot = "comms", connected = false }) {
-  const rows = [
-    `UPLINK · GROQ ${connected ? "· LINKED" : "· OFFLINE"}`,
-    "WAKE WORD · ACTIVE", "WHISPER · LOCAL", "TTS · LOCAL",
-    "OCR · STANDBY", "ACTIONS · READY",
-  ];
-  return (
-    <CornerBox title={title} code={code} slot={slot}>
-      <div className="comms">
-        {rows.map((r, i) => (
-          <div key={i} className="comms-row">
-            <span className="comms-pip" />
-            <span className="comms-txt">{r}</span>
-          </div>
-        ))}
-      </div>
-    </CornerBox>
-  );
-}
-
-/* ───────── chat: button + slide-over overlay (LIVE) ───────── */
-export function ChatButton({ onOpen, count = 0 }) {
-  return (
-    <button className="chatbtn" data-slot="chatbtn" onClick={onOpen}>
-      <span className="chatbtn-i">❯_</span>
-      <span className="chatbtn-l">CONVERSATION</span>
-      {count > 0 && <span className="chatbtn-badge">{count}</span>}
-    </button>
-  );
-}
-
 // One chat bubble, memoized: during streaming only the live message's object
 // identity changes (useWebSocket replaces just that entry), so finalized bubbles
 // skip both re-render and ResponseRenderer's re-parse. runAction and onCopy are
@@ -966,7 +590,7 @@ const ChatMessage = memo(function ChatMessage({ m, runAction, onCopy }) {
   const mine = m.role === "user";
   return (
     <div className={`cmsg cmsg--${mine ? "user" : "jarvis"}`}>
-      <span className="cmsg-role">{mine ? "YOU" : "J.A.R.V.I.S"}</span>
+      <span className="cmsg-role">{mine ? "You" : "JARVIS"}</span>
       <div className="cmsg-bubble">
         {mine
           ? m.text
@@ -1095,7 +719,7 @@ export function ChatOverlay({ open, onClose, status, messages = [], onSend, onSt
              onKeyDown={(e) => { if (e.key === "Escape" && histOpen) { e.preventDefault(); toggleHist(); } }}>
         <header className="chatov-hd">
           <div className="sideov-hd-txt">
-            <span className="chatov-title">CONVERSATION</span>
+            <span className="chatov-title">Conversation</span>
             <span className="sideov-sub">
               {messages.length ? `${messages.length} message${messages.length === 1 ? "" : "s"} in this chat` : "A new chat"}
             </span>
@@ -1115,7 +739,7 @@ export function ChatOverlay({ open, onClose, status, messages = [], onSend, onSt
         {/* Recents — saved conversations; slides over the log when toggled */}
         <div className={`chatov-hist ${histOpen ? "open" : ""}`} aria-hidden={!histOpen}>
           <div className="chatov-hist-hd">
-            <span className="chatov-hist-title">RECENTS</span>
+            <span className="chatov-hist-title">Recent chats</span>
             <div className="chatov-hist-hd-btns">
               <button className="btn btn--primary btn--sm" onClick={startNewChat}><Icon name="plus" size={14} />New chat</button>
               {conversations.length > 0 && (
@@ -1179,7 +803,7 @@ export function ChatOverlay({ open, onClose, status, messages = [], onSend, onSt
             <ChatMessage key={m.id} m={m} runAction={runAction} onCopy={copy} />
           ))}
           {status === "thinking" && (
-            <div className="cmsg cmsg--jarvis"><span className="cmsg-role">J.A.R.V.I.S</span>
+            <div className="cmsg cmsg--jarvis"><span className="cmsg-role">JARVIS</span>
               <div className="cmsg-bubble cmsg-typing"><i /><i /><i /></div></div>
           )}
         </div>

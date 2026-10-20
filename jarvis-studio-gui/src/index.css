@@ -6,17 +6,17 @@
 
 :root {
   --bg-base:     #04070d;
-  --bg-surface:  #0a1018;
-  --bg-elevated: #0f1a26;
+  --bg-surface:  #0e1116;
+  --bg-elevated: #151a21;
   --accent:      #00e5ff;   /* JARVIS cyan */
   --accent-soft: #6fe9ff;
   --accent-dim:  color-mix(in oklab, var(--accent) 72%, #000);
   --accent-amber:#ffb648;   /* warm "speaking" accent */
-  --text-pri:    #d8f4ff;
-  --text-sec:    #7fa7bd;
-  --text-muted:  #4d6577;
-  --border:      color-mix(in oklab, var(--accent) 16%, transparent);
-  --border-soft: color-mix(in oklab, var(--accent) 10%, transparent);
+  --text-pri:    #e8edf2;
+  --text-sec:    #9ba6b2;
+  --text-muted:  #67717c;
+  --border:      rgba(255,255,255,0.1);
+  --border-soft: rgba(255,255,255,0.065);
   --warning:     #ffb648;
   --r:           10px;
   --r-sm:        7px;
@@ -711,10 +711,9 @@ html, body, #root {
   box-shadow: 0 32px 80px rgba(0,0,0,.7), 0 0 50px color-mix(in oklab, var(--accent) 8%, transparent);
 }
 .onboard-kicker {
-  font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 3px;
-  text-transform: uppercase; color: var(--accent);
+  font-family: var(--body); font-size: 12.5px; font-weight: 600; color: var(--accent);
 }
-.onboard-hd h2 { font-family: var(--display); font-size: 22px; margin: 6px 0 4px; color: var(--text-pri); letter-spacing: 1px; }
+.onboard-hd h2 { font-family: var(--body); font-size: 22px; font-weight: 600; margin: 6px 0 4px; color: var(--text-pri); }
 .onboard-sub { font-size: 12.5px; line-height: 1.55; color: var(--text-sec); margin: 0; }
 .onboard-sec { display: flex; flex-direction: column; gap: 6px; }
 .onboard-sec label {
@@ -864,11 +863,7 @@ html, body, #root {
   50%       { box-shadow: 0 0 0 7px color-mix(in oklab, var(--accent) 8%, transparent); }
 }
 
-/* ── HUD fixed overlays (settings, offline, warnings) layered above stage ── */
-.hud-fixed-controls {
-  position: fixed; top: 14px; right: 16px; z-index: 200;
-  display: flex; gap: 8px;
-}
+/* ── Header quick controls (in the home screen's header) and top banners ── */
 .hud-fixed-btn {
   width: 34px; height: 34px; border-radius: 7px;
   background: color-mix(in oklab, var(--accent) 6%, transparent); border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent);
@@ -920,7 +915,7 @@ html, body, #root {
 }
 /* Top-centre status stack (browser + offline banners) */
 .hud-top-stack {
-  position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 240;
+  position: fixed; top: 66px; left: 50%; transform: translateX(-50%); z-index: 240;
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   max-width: min(92vw, 720px); pointer-events: none;
 }
@@ -929,10 +924,10 @@ html, body, #root {
 /* Persistent "control is armed" banner with the kill-switch reminder */
 .hud-armed-banner {
   display: flex; align-items: center; gap: 12px;
-  font-family: var(--mono); font-size: 12px; letter-spacing: 1px; color: #ffb3bc;
-  background: rgba(255,84,104,0.12); border: 1px solid rgba(255,84,104,0.45);
-  padding: 7px 14px; border-radius: 7px; backdrop-filter: blur(6px);
-  box-shadow: 0 0 18px rgba(255,84,104,0.22);
+  font-family: var(--body); font-size: 13px; font-weight: 500; color: #ffc2c9;
+  background: rgba(40,14,20,0.92); border: 1px solid rgba(255,84,104,0.4);
+  padding: 7px 8px 7px 14px; border-radius: 12px; backdrop-filter: blur(8px);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.45);
 }
 .hud-armed-dot {
   width: 9px; height: 9px; border-radius: 50%; background: #ff5468;
@@ -940,9 +935,9 @@ html, body, #root {
 }
 .hud-armed-hint { color: rgba(255,179,188,0.6); font-size: 10.5px; letter-spacing: 0.5px; }
 .hud-armed-disarm {
-  font-family: var(--mono); font-size: 11px; letter-spacing: 1px; cursor: pointer;
-  background: rgba(255,84,104,0.2); border: 1px solid rgba(255,84,104,0.6);
-  color: #ffd0d6; padding: 3px 10px; border-radius: 5px;
+  font-family: var(--body); font-size: 12.5px; font-weight: 600; cursor: pointer;
+  background: rgba(255,84,104,0.18); border: 1px solid rgba(255,84,104,0.5);
+  color: #ffd0d6; padding: 5px 12px; border-radius: 8px;
 }
 .hud-armed-disarm:hover { background: rgba(255,84,104,0.38); color: #fff; }
 /* Mouse/keyboard control is LIVE — louder than the browser banner, with a solid
@@ -957,23 +952,24 @@ html, body, #root {
 }
 .hud-armed-disarm--stop:hover { background: #ff5468; box-shadow: 0 0 12px rgba(255,84,104,0.6); }
 .hud-offline {
-  font-family: var(--mono); font-size: 12px; letter-spacing: 1px; color: #ff97a3;
-  background: rgba(255,84,104,0.10); border: 1px solid rgba(255,84,104,0.30);
-  padding: 7px 16px; border-radius: 7px; backdrop-filter: blur(6px);
+  font-family: var(--body); font-size: 13px; color: #ffb3bc;
+  background: rgba(40,14,20,0.92); border: 1px solid rgba(255,84,104,0.35);
+  padding: 8px 14px; border-radius: 12px; backdrop-filter: blur(8px);
 }
 .hud-offline code {
   background: color-mix(in oklab, var(--accent) 10%, transparent); padding: 1px 5px; border-radius: 4px;
   color: var(--accent-soft);
 }
 .hud-warns {
-  position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%); z-index: 200;
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 200;
   display: flex; flex-direction: column; gap: 8px; max-width: 92vw;
 }
 .hud-warn {
-  display: flex; align-items: center; gap: 14px; justify-content: space-between;
-  font-family: var(--mono); font-size: 12.5px; color: var(--warning);
-  background: rgba(255,182,72,0.12); border: 1px solid rgba(255,182,72,0.32);
-  padding: 9px 14px; border-radius: 8px; backdrop-filter: blur(6px);
+  display: flex; align-items: center; gap: 12px; justify-content: space-between;
+  font-family: var(--body); font-size: 13px; color: #ffd9a0;
+  background: rgba(36,26,10,0.94); border: 1px solid rgba(255,182,72,0.32);
+  padding: 8px 10px 8px 14px; border-radius: 12px; backdrop-filter: blur(8px);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.45);
 }
 .hud-warn button {
   background: none; border: none; color: var(--warning); cursor: pointer;
@@ -991,26 +987,26 @@ html, body, #root {
 @keyframes perm-in { from { opacity: 0; } to { opacity: 1; } }
 .perm-dialog {
   width: 440px; max-width: 92vw; text-align: center;
-  padding: 26px 28px 22px; border-radius: 14px;
-  background: linear-gradient(180deg, rgba(255,182,72,0.06), rgba(10,16,24,0.98));
-  border: 1px solid rgba(255,182,72,0.45);
-  box-shadow: 0 24px 70px rgba(0,0,0,0.6), 0 0 40px rgba(255,182,72,0.12);
+  padding: 28px 28px 22px; border-radius: 18px;
+  background: var(--bg-surface);
+  border: 1px solid rgba(255,182,72,0.32);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.6), 0 0 0 4px rgba(255,182,72,0.05);
 }
 .perm-icon {
-  font-size: 34px; color: var(--warning);
-  filter: drop-shadow(0 0 12px rgba(255,182,72,0.6)); line-height: 1;
+  display: inline-grid; place-items: center; width: 56px; height: 56px; border-radius: 16px;
+  color: var(--warning); background: rgba(255,182,72,0.12); line-height: 1;
 }
 .perm-kicker {
-  font-family: var(--mono); font-size: 11px; letter-spacing: 4px;
-  color: var(--warning); margin: 12px 0 10px;
+  font-family: var(--body); font-size: 13px; font-weight: 600;
+  color: var(--warning); margin: 14px 0 8px;
 }
 .perm-desc { font-size: 16px; color: var(--text-pri); line-height: 1.5; }
 .perm-desc strong { color: var(--accent-amber); }
-.perm-sub { font-size: 12.5px; color: var(--text-sec); margin-top: 8px; font-family: var(--mono); }
+.perm-sub { font-size: 13px; color: var(--text-sec); margin-top: 8px; }
 .perm-actions { display: flex; gap: 12px; margin-top: 22px; }
 .perm-actions button {
-  flex: 1; padding: 13px; border-radius: 9px; cursor: pointer;
-  font-family: var(--display); font-size: 13px; font-weight: 700; letter-spacing: 2px;
+  flex: 1; height: 44px; border-radius: 11px; cursor: pointer;
+  font-family: var(--body); font-size: 14px; font-weight: 600;
   transition: filter 0.15s, transform 0.1s, background 0.15s;
 }
 .perm-actions button:active { transform: scale(0.97); }
@@ -1109,8 +1105,8 @@ html, body, #root {
   border-right: 1px solid var(--border-soft); background: rgba(0,0,0,.18); min-height: 0;
 }
 .sx-brand {
-  font-family: var(--display); font-size: 13px; font-weight: 700; letter-spacing: 2.5px;
-  color: var(--accent); display: flex; align-items: center; gap: 9px; padding: 0 6px;
+  font-family: var(--body); font-size: 15px; font-weight: 600;
+  color: var(--text-pri); display: flex; align-items: center; gap: 9px; padding: 0 6px;
 }
 .sx-search {
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--r-sm);
@@ -1259,10 +1255,10 @@ kbd {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 .hud-toast {
-  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 320;
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 320;
   display: flex; align-items: center; gap: 9px; pointer-events: none;
-  font-family: var(--mono); font-size: 12.5px; letter-spacing: .5px; color: var(--text-pri);
-  background: rgba(10,16,24,.92); border: 1px solid rgba(47,214,112,.45); border-radius: 999px;
+  font-family: var(--body); font-size: 13px; font-weight: 500; color: var(--text-pri);
+  background: rgba(16,20,26,.96); border: 1px solid rgba(47,214,112,.4); border-radius: 999px;
   padding: 9px 18px; box-shadow: 0 10px 30px rgba(0,0,0,.5), 0 0 18px rgba(47,214,112,.15);
   animation: toast-in .28s cubic-bezier(.2,.9,.3,1.2);
 }

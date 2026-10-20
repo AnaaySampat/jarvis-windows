@@ -51,8 +51,8 @@ export default function SetupProgress({ progress, onRepair }) {
         <div className="setup-ring" aria-hidden="true">
           <span className="setup-ring-core" />
         </div>
-        <div className="setup-kicker">{anyError ? "SETUP — ACTION NEEDED" : "FIRST-RUN SETUP"}</div>
-        <div className="setup-title">Initialising J.A.R.V.I.S</div>
+        <div className="setup-kicker">{anyError ? "Setup needs your attention" : "First-run setup"}</div>
+        <div className="setup-title">Getting JARVIS ready</div>
         <div className="setup-sub">
           {anyError
             ? "A component couldn't be set up, sir. The rest are ready — retry the missing one below."

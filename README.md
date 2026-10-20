@@ -4,14 +4,14 @@
 
 **A voice assistant that actually does things on your PC.**
 Say *"Hey Jarvis"*, ask for something, and it answers out loud, drives a browser,
-clicks through desktop apps, and remembers you. All from an Iron-Man-style HUD.
+clicks through desktop apps, and remembers you. All from one home screen.
 
 [![CI](https://github.com/AnaaySampat/jarvis-windows/actions/workflows/ci.yml/badge.svg)](https://github.com/AnaaySampat/jarvis-windows/actions/workflows/ci.yml)
 ![Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078d4)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/AnaaySampat/jarvis-windows)](https://github.com/AnaaySampat/jarvis-windows/releases/latest)
 
-![The JARVIS HUD: live system, power and agenda panels on the left, the reactor core in the centre, weather and network on the right](docs/hud.png)
+![The JARVIS home screen: system, power and agenda cards on the left; the time, JARVIS's orb, its last reply and an ask box in the centre; weather and network on the right](docs/hud.png)
 
 <sub>Screenshot shows demo data.</sub>
 

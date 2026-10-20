@@ -64,3 +64,18 @@ export function splitMarkdownTables(text) {
   flush();
   return out.length ? out : [{ kind: "text", content: text ?? "" }];
 }
+
+/** A reply as one plain line, for the home screen's preview card: no code blocks,
+ *  table rows, list/heading/quote markers, link targets or emphasis marks. Single
+ *  asterisks and underscores (2*3, my_file.txt) are text and stay. */
+export function plainPreview(text) {
+  const flat = (text ?? "")
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .split("\n")
+    .filter((line) => !/^\s*\|/.test(line))
+    .map((line) => line.replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+/, ""))
+    .join(" ")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/`([^`]*)`/g, "$1");
+  return inlineMarkdownSegments(flat).map((s) => s.content).join("").replace(/\s+/g, " ").trim();
+}

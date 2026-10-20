@@ -25,7 +25,8 @@ WebSocket also serves a cryptographically paired phone over Tailscale. See
 | Wake-on-LAN (TV from off; the PC's adapters sent to the phone in `auth.ready`) | `jarvis-studio-backend/actions/wol.py`, `tv.wake`, `websocket_server.set_ready_info` |
 | Transport, auth, remote allowlist | `jarvis-studio-backend/server/websocket_server.py` |
 | Phone pairing crypto + registry | `jarvis-studio-backend/autonomy/device_identity.py` |
-| HUD windows/components | `jarvis-studio-gui/src/` (`hud/`, `components/`) |
+| Home screen (header, orb + ask box, the cards) | `jarvis-studio-gui/src/hud/HudApp.jsx`, `widgets.jsx`, `Orb.jsx`, `home.css` |
+| Panels over it (chat, Skills, Memory…), Settings, palette | `jarvis-studio-gui/src/hud/HudPanels.jsx`, `src/components/` |
 
 ## Knowledge graph (graphify)
 

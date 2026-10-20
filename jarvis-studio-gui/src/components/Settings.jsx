@@ -882,7 +882,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
            ref={panelRef}>
 
         <nav className="sx-nav" aria-label="Settings sections">
-          <div className="sx-brand"><span className="hud-dot" /> SETTINGS</div>
+          <div className="sx-brand">Settings</div>
           <div className="sx-search-wrap">
             <Icon name="search" size={14} />
             <input className="sx-search" type="search" value={query} placeholder="Search settings…"

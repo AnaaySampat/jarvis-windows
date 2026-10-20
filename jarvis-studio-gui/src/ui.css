@@ -322,7 +322,7 @@ label.sx-row:hover { background: color-mix(in oklab, var(--accent) 3%, transpare
 .cmdk-foot kbd + kbd { margin-left: 3px; }
 
 /* ── Top-right toolbar: grouped, with instant tooltips ───────────────────── */
-.hud-fixed-controls { gap: 10px; align-items: center; }
+.tb { display: flex; gap: 10px; align-items: center; }
 .tb-group { display: flex; gap: 6px; padding: 4px; border-radius: 10px;
   background: rgba(5,10,17,.55); border: 1px solid var(--border-soft); backdrop-filter: blur(8px); }
 .hud-fixed-btn { position: relative; }

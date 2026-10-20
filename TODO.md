@@ -14,6 +14,10 @@ server), not in the Tauri window on Windows. GUI `npm test` 12, `npm run lint`
 - [ ] **Theme**: pick amber in Customize; Settings, Customize and the dialogs follow it.
 - [ ] **Agenda add/edit** inline (the time field is a native time input in WebView2).
 - [ ] **Skills ▸ QR code / Screenshot / List folder** open the chat with the result.
+- [ ] **The new home screen** at the default 1100×720 window and maximised: the orb
+  follows listening / thinking / speaking; clicking it talks when idle and stops
+  otherwise; the ask box (or `/`) sends and the reply shows under the orb; "hide the
+  weather panel", "collapse all the panels" and Customize's left/right order still apply.
 
 ## 0. 2026-10-19 catch-up with the phone — built, unit-tested, not yet run live
 

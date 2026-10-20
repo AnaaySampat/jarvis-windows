@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
-import ViewportScale from "./hud/ViewportScale";
 import { JarvisHUD, DIRECTIONS } from "./hud/HudApp";
 import Settings from "./components/Settings";
 import Onboarding from "./components/Onboarding";
@@ -45,7 +44,7 @@ function ClarifyPrompt({ request, onRespond }) {
     <div className="perm-overlay">
       <div className="perm-dialog perm-dialog--ask" role="alertdialog" aria-modal="true" aria-label="JARVIS needs your input">
         <div className="perm-icon"><Icon name="caps" size={34} stroke={1.4} /></div>
-        <div className="perm-kicker">JARVIS NEEDS YOUR INPUT</div>
+        <div className="perm-kicker">JARVIS has a question</div>
         <div className="perm-desc">{request.question}</div>
         <input
           className="clarify-input"
@@ -56,8 +55,8 @@ function ClarifyPrompt({ request, onRespond }) {
           placeholder="Type your answer…"
         />
         <div className="perm-actions">
-          <button className="perm-deny" onClick={() => onRespond(request.id, "")}>SKIP</button>
-          <button className="perm-approve" disabled={!answer.trim()} onClick={submit}>SEND</button>
+          <button className="perm-deny" onClick={() => onRespond(request.id, "")}>Skip</button>
+          <button className="perm-approve" disabled={!answer.trim()} onClick={submit}>Send</button>
         </div>
       </div>
     </div>
@@ -360,128 +359,129 @@ export default function App() {
       alwaysOn, setAlwaysOnMode, conversationMode, setConversationModeOn, browserState.available, browserState.open,
       setBrowserOpen, setAllPanels, panels.terminal, togglePanel, memory?.routines, runRoutine, notify]);
 
+  // Quick controls, shown in the home screen's header.
+  const toolbar = (
+    <div className="tb" role="toolbar" aria-label="Quick controls">
+      <div className="tb-group" role="group" aria-label="Voice">
+        {/* Tap-to-cut: stop whatever JARVIS is saying right now (only while speaking) */}
+        {status === "speaking" && (
+          <button className="hud-fixed-btn hud-fixed-btn--silence" data-tip="Stop speaking now"
+                  aria-label="Stop speaking now" onClick={stopSpeech}>
+            <Icon name="stop" size={16} />
+          </button>
+        )}
+        {/* Persistent mute toggle: keeps speech off (text still shows) until untoggled */}
+        <button
+          className={`hud-fixed-btn ${muted ? "hud-fixed-btn--muted" : ""}`}
+          data-tip={muted ? "Muted — replies show as text. Click to unmute" : "Mute JARVIS (text only)"}
+          aria-label={muted ? "Unmute JARVIS" : "Mute JARVIS"}
+          aria-pressed={muted}
+          onClick={() => setMute(!muted)}
+        >
+          <Icon name={muted ? "mute" : "volume"} />
+        </button>
+        {/* Always-on continuous voice (no wake word) */}
+        <button
+          className={`hud-fixed-btn ${alwaysOn ? "hud-fixed-btn--listening" : ""}`}
+          data-tip={alwaysOn
+            ? "Always listening — click for wake-word mode"
+            : "Listen without the wake word"}
+          aria-label="Always-on listening"
+          aria-pressed={alwaysOn}
+          onClick={() => setAlwaysOnMode(!alwaysOn)}
+        >
+          <Icon name={alwaysOn ? "mic" : "wake"} />
+        </button>
+        {/* Natural conversation mode (shorter, chattier replies) */}
+        <button
+          className={`hud-fixed-btn ${conversationMode ? "hud-fixed-btn--listening" : ""}`}
+          data-tip={conversationMode ? "Conversation mode is on — click to turn off" : "Conversation mode: short, natural replies"}
+          aria-label="Conversation mode"
+          aria-pressed={conversationMode}
+          onClick={() => setConversationModeOn(!conversationMode)}
+        >
+          <Icon name="talk" />
+        </button>
+      </div>
+      <div className="tb-group" role="group" aria-label="Agents">
+        {/* JARVIS's own web browser: open / close */}
+        {browserState.available && (
+          <button
+            className={`hud-fixed-btn ${browserState.open ? "hud-fixed-btn--armed" : ""}`}
+            data-tip={browserState.open ? "JARVIS's browser is open — click to close it" : "Open JARVIS's web browser"}
+            aria-label="JARVIS's web browser"
+            aria-pressed={browserState.open}
+            onClick={() => setBrowserOpen(!browserState.open)}
+          >
+            <Icon name="globe" />
+          </button>
+        )}
+        {/* Agent Activity — JARVIS's autopilot steps + the screenshots it saw */}
+        <button
+          className={`hud-fixed-btn ${running ? "hud-fixed-btn--busy" : ""}`}
+          data-tip={running ? "A task is running — see its steps" : "Agent activity: steps and screenshots"}
+          aria-label="Agent activity"
+          aria-pressed={activityOpen}
+          onClick={() => setActivityOpen(true)}
+        >
+          <Icon name="activity" />
+        </button>
+      </div>
+      <div className="tb-group" role="group" aria-label="App">
+        <button className="hud-fixed-btn" data-tip="Command palette  (Ctrl+K)" aria-label="Command palette"
+                onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
+        <button className="hud-fixed-btn" data-tip="Customize the home screen" aria-label="Customize the home screen"
+                onClick={() => setCustomizeOpen(true)}><Icon name="palette" /></button>
+        <button className="hud-fixed-btn" data-tip="Settings  (Ctrl+,)" aria-label="Settings"
+                onClick={() => openSettings()}><Icon name="settings" /></button>
+        <button className="hud-fixed-btn" data-tip="Power: lock, sleep, restart…" aria-label="Power options"
+                onClick={() => setPowerOpen(true)}><Icon name="power" /></button>
+      </div>
+    </div>
+  );
+
   return (
     <>
-      <ViewportScale>
-        <JarvisHUD
-          config={hudConfig}
-          screen={screen}
-          status={status}
-          telemetry={telemetry}
-          weather={weather}
-          netInfo={netInfo}
-          schedule={schedule}
-          messages={messages}
-          commands={commands}
-          recordings={recordings}
-          isConnected={isConnected}
-          allowedDirs={sysInfo.allowed_dirs || []}
-          panels={panels} onTogglePanel={togglePanel}
-          chatOpen={chatOpen} setChatOpen={setChatOpen}
-          skillsOpen={skillsOpen} setSkillsOpen={setSkillsOpen}
-          capsOpen={capsOpen} setCapsOpen={setCapsOpen}
-          powerOpen={powerOpen} setPowerOpen={setPowerOpen}
-          memoryOpen={memoryOpen} setMemoryOpen={setMemoryOpen}
-          memory={memory} onRemember={rememberFact} onForget={forgetMemory}
-          onSaveRoutine={saveRoutine} onRunRoutine={runRoutine} routineResult={routineResult}
-          onSend={sendMessage}
-          onAsk={askInChat}
-          onStop={stopSpeech}
-          onReset={resetConversation}
-          onUpload={sendUpload}
-          onNotify={notify}
-          taskModelTiers={sysInfo.task_model_tiers || []}
-          runAction={runAction}
-          onSaveDirs={saveDirs}
-          conversations={conversations}
-          onNewChat={newConversation}
-          onOpenConversation={openConversation}
-          onDeleteConversation={deleteConversation}
-          onRefreshConversations={listConversations}
-          onClearConversations={clearConversations}
-        />
-      </ViewportScale>
-
-      {/* Fixed controls layered above the scaled stage. Hidden while a panel that
-          covers the top-right (chat, memory, skills) is open — they're
-          window-fixed (z 200) and would otherwise draw on top of its header. */}
-      {!chatOpen && !memoryOpen && !skillsOpen && (
-      <div className="hud-fixed-controls" role="toolbar" aria-label="Quick controls">
-        <div className="tb-group" role="group" aria-label="Voice">
-          {/* Tap-to-cut: stop whatever JARVIS is saying right now (only while speaking) */}
-          {status === "speaking" && (
-            <button className="hud-fixed-btn hud-fixed-btn--silence" data-tip="Stop speaking now"
-                    aria-label="Stop speaking now" onClick={stopSpeech}>
-              <Icon name="stop" size={16} />
-            </button>
-          )}
-          {/* Persistent mute toggle: keeps speech off (text still shows) until untoggled */}
-          <button
-            className={`hud-fixed-btn ${muted ? "hud-fixed-btn--muted" : ""}`}
-            data-tip={muted ? "Muted — replies show as text. Click to unmute" : "Mute JARVIS (text only)"}
-            aria-label={muted ? "Unmute JARVIS" : "Mute JARVIS"}
-            aria-pressed={muted}
-            onClick={() => setMute(!muted)}
-          >
-            <Icon name={muted ? "mute" : "volume"} />
-          </button>
-          {/* Always-on continuous voice (no wake word) */}
-          <button
-            className={`hud-fixed-btn ${alwaysOn ? "hud-fixed-btn--listening" : ""}`}
-            data-tip={alwaysOn
-              ? "Always listening — click for wake-word mode"
-              : "Listen without the wake word"}
-            aria-label="Always-on listening"
-            aria-pressed={alwaysOn}
-            onClick={() => setAlwaysOnMode(!alwaysOn)}
-          >
-            <Icon name={alwaysOn ? "mic" : "wake"} />
-          </button>
-          {/* Natural conversation mode (shorter, chattier replies) */}
-          <button
-            className={`hud-fixed-btn ${conversationMode ? "hud-fixed-btn--listening" : ""}`}
-            data-tip={conversationMode ? "Conversation mode is on — click to turn off" : "Conversation mode: short, natural replies"}
-            aria-label="Conversation mode"
-            aria-pressed={conversationMode}
-            onClick={() => setConversationModeOn(!conversationMode)}
-          >
-            <Icon name="talk" />
-          </button>
-        </div>
-        <div className="tb-group" role="group" aria-label="Agents">
-          {/* JARVIS's own web browser: open / close */}
-          {browserState.available && (
-            <button
-              className={`hud-fixed-btn ${browserState.open ? "hud-fixed-btn--armed" : ""}`}
-              data-tip={browserState.open ? "JARVIS's browser is open — click to close it" : "Open JARVIS's web browser"}
-              aria-label="JARVIS's web browser"
-              aria-pressed={browserState.open}
-              onClick={() => setBrowserOpen(!browserState.open)}
-            >
-              <Icon name="globe" />
-            </button>
-          )}
-          {/* Agent Activity — JARVIS's autopilot steps + the screenshots it saw */}
-          <button
-            className={`hud-fixed-btn ${running ? "hud-fixed-btn--busy" : ""}`}
-            data-tip={running ? "A task is running — see its steps" : "Agent activity: steps and screenshots"}
-            aria-label="Agent activity"
-            aria-pressed={activityOpen}
-            onClick={() => setActivityOpen(true)}
-          >
-            <Icon name="activity" />
-          </button>
-        </div>
-        <div className="tb-group" role="group" aria-label="App">
-          <button className="hud-fixed-btn" data-tip="Command palette  (Ctrl+K)" aria-label="Command palette"
-                  onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
-          <button className="hud-fixed-btn" data-tip="Customize the home screen" aria-label="Customize the home screen"
-                  onClick={() => setCustomizeOpen(true)}><Icon name="palette" /></button>
-          <button className="hud-fixed-btn" data-tip="Settings  (Ctrl+,)" aria-label="Settings"
-                  onClick={() => openSettings()}><Icon name="settings" /></button>
-        </div>
-      </div>
-      )}
+      <JarvisHUD
+        config={hudConfig}
+        toolbar={toolbar}
+        activeTask={(agentTasks.find((t) => t.status === "running") || {}).goal}
+        screen={screen}
+        status={status}
+        telemetry={telemetry}
+        weather={weather}
+        netInfo={netInfo}
+        schedule={schedule}
+        messages={messages}
+        commands={commands}
+        recordings={recordings}
+        isConnected={isConnected}
+        allowedDirs={sysInfo.allowed_dirs || []}
+        panels={panels} onTogglePanel={togglePanel}
+        chatOpen={chatOpen} setChatOpen={setChatOpen}
+        skillsOpen={skillsOpen} setSkillsOpen={setSkillsOpen}
+        capsOpen={capsOpen} setCapsOpen={setCapsOpen}
+        powerOpen={powerOpen} setPowerOpen={setPowerOpen}
+        memoryOpen={memoryOpen} setMemoryOpen={setMemoryOpen}
+        memory={memory} onRemember={rememberFact} onForget={forgetMemory}
+        onSaveRoutine={saveRoutine} onRunRoutine={runRoutine} routineResult={routineResult}
+        onSend={sendMessage}
+        onAsk={askInChat}
+        onStop={stopSpeech}
+        onListen={triggerListen}
+        onReset={resetConversation}
+        onUpload={sendUpload}
+        onNotify={notify}
+        taskModelTiers={sysInfo.task_model_tiers || []}
+        runAction={runAction}
+        onSaveDirs={saveDirs}
+        conversations={conversations}
+        onNewChat={newConversation}
+        onOpenConversation={openConversation}
+        onDeleteConversation={deleteConversation}
+        onRefreshConversations={listConversations}
+        onClearConversations={clearConversations}
+      />
 
       {/* Top status stack — banners share one column so they never sit on top of each other */}
       {(browserState.open || controlState.armed || !isConnected) && (
@@ -489,20 +489,20 @@ export default function App() {
           {controlState.armed && (
             <div className="hud-armed-banner hud-armed-banner--control">
               <span className="hud-armed-dot" />
-              <span><Icon name="keyboard" size={14} /> JARVIS IS CONTROLLING YOUR MOUSE &amp; KEYBOARD</span>
-              <button className="hud-armed-disarm hud-armed-disarm--stop" onClick={stopControl}>STOP</button>
+              <span><Icon name="keyboard" size={15} /> JARVIS is controlling your mouse and keyboard</span>
+              <button className="hud-armed-disarm hud-armed-disarm--stop" onClick={stopControl}>Stop</button>
             </div>
           )}
           {browserState.open && (
             <div className="hud-armed-banner">
               <span className="hud-armed-dot" />
-              <span>BROWSER · {browserState.title || browserState.url || "ready"} · panel on the right</span>
-              <button className="hud-armed-disarm" onClick={() => setBrowserOpen(false)}>CLOSE</button>
+              <span><Icon name="globe" size={15} /> JARVIS&apos;s browser{browserState.title || browserState.url ? `: ${browserState.title || browserState.url}` : " is open"}</span>
+              <button className="hud-armed-disarm" onClick={() => setBrowserOpen(false)}>Close</button>
             </div>
           )}
           {!isConnected && (
             <div className="hud-offline">
-              <Icon name="warning" size={14} /> CORE OFFLINE — start <code>python main.py</code> in <code>jarvis-studio-backend/</code>
+              <Icon name="warning" size={15} /> Can&apos;t reach JARVIS — start <code>python main.py</code> in <code>jarvis-studio-backend/</code>
             </div>
           )}
         </div>
@@ -595,17 +595,17 @@ export default function App() {
         <div className="perm-overlay">
           <div className="perm-dialog" role="alertdialog" aria-modal="true" aria-label="Permission required">
             <div className="perm-icon"><Icon name="warning" size={34} stroke={1.4} /></div>
-            <div className="perm-kicker">AUTHORISATION REQUIRED</div>
+            <div className="perm-kicker">Your approval is needed</div>
             <div className="perm-desc">
               JARVIS wants to <strong>{permissionRequest.description}</strong>.
             </div>
             <div className="perm-sub">This action needs your explicit approval.</div>
             <div className="perm-actions">
               <button className="perm-deny" onClick={() => respondPermission(permissionRequest.id, false)}>
-                DENY
+                Deny
               </button>
               <button className="perm-approve" onClick={() => respondPermission(permissionRequest.id, true)}>
-                APPROVE
+                Allow
               </button>
             </div>
           </div>

@@ -29,8 +29,8 @@ export default function Onboarding({ sysInfo, onSave }) {
     <div className="onboard-overlay">
       <div className="onboard-panel" role="dialog" aria-label="Welcome to JARVIS">
         <div className="onboard-hd">
-          <span className="onboard-kicker">FIRST-RUN SETUP</span>
-          <h2>Welcome to J.A.R.V.I.S</h2>
+          <span className="onboard-kicker">First-run setup</span>
+          <h2>Welcome to JARVIS</h2>
           <p className="onboard-sub">
             Add at least one AI provider key and choose where JARVIS should keep the files it
             creates. You can change all of this later in Settings.
