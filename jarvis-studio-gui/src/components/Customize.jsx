@@ -30,9 +30,9 @@ const DENSITIES = [
   { id: "normal", label: "Comfortable" },
   { id: "compact", label: "Compact" },
 ];
-const CORES = [
-  { id: "orb", label: "Orb" },
-  { id: "reactor", label: "Arc reactor" },
+const STYLES = [
+  { id: "modern", label: "Modern" },
+  { id: "ironman", label: "Iron Man" },
 ];
 const PANEL_LABELS = {
   system: "System", power: "Power", agenda: "Agenda",
@@ -46,7 +46,7 @@ export default function Customize({ screen, onClose, onPatch }) {
   const accent = (s.accent || "#00e5ff").toLowerCase();
   const background = s.background || "grid";
   const density = s.density || "normal";
-  const core = s.core || "orb";
+  const style = s.style || "modern";
   const move = (panel, direction) => onPatch({ move: { panel, direction } });
 
   return (
@@ -62,6 +62,20 @@ export default function Customize({ screen, onClose, onPatch }) {
         </div>
 
         <div className="cz-body">
+          <section className="cz-sec">
+            <h3>Style</h3>
+            <p className="cz-note">Modern is calm and minimal; Iron Man is the heads-up display with the arc reactor.</p>
+            <div className="seg" role="radiogroup" aria-label="Style">
+              {STYLES.map((o) => (
+                <button key={o.id} role="radio" aria-checked={style === o.id}
+                        className={`seg-btn${style === o.id ? " is-on" : ""}`}
+                        onClick={() => onPatch({ style: o.id })}>
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </section>
+
           <section className="cz-sec">
             <h3>Accent colour</h3>
             <div className="cz-swatches" role="radiogroup" aria-label="Accent colour">
@@ -105,19 +119,6 @@ export default function Customize({ screen, onClose, onPatch }) {
               </div>
             </section>
           </div>
-
-          <section className="cz-sec">
-            <h3>Core</h3>
-            <div className="seg" role="radiogroup" aria-label="Core">
-              {CORES.map((o) => (
-                <button key={o.id} role="radio" aria-checked={core === o.id}
-                        className={`seg-btn${core === o.id ? " is-on" : ""}`}
-                        onClick={() => onPatch({ core: o.id })}>
-                  {o.label}
-                </button>
-              ))}
-            </div>
-          </section>
 
           <section className="cz-sec">
             <h3>Panels</h3>

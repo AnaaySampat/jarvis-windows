@@ -9,7 +9,8 @@ import { useState, useEffect, useRef } from "react";
 import "./hud.css";
 import "./home.css";
 import Orb from "./Orb";
-import Reactor from "./Reactor";
+import Reactor, { Waveform } from "./Reactor";
+import "./ironman.css";
 import { plainPreview as plain } from "../utils/markdown";
 import { Icon } from "./icons";
 import {
@@ -150,7 +151,8 @@ export function JarvisHUD({
   const order = sc.order || { left: ["system", "power", "agenda"], right: ["weather", "network", "terminal"] };
   const background = sc.background || "grid";
   const density = sc.density || "normal";
-  const Core = sc.core === "reactor" ? Reactor : Orb;
+  const ironman = sc.style === "ironman";
+  const Core = ironman ? Reactor : Orb;
   const shown = (key) => vis[key] !== false;
 
   // "/" puts the cursor in the ask box (when nothing is open over the home screen).
@@ -169,8 +171,8 @@ export function JarvisHUD({
   }, [overlayOpen]);
 
   const CARDS = {
-    system: <SystemWidget key="system" d={d} live={!!telemetry} open={p("system")} onToggle={tog("system")} />,
-    power: <PowerWidget key="power" d={d} open={p("power")} onToggle={tog("power")} />,
+    system: <SystemWidget key="system" d={d} live={!!telemetry} open={p("system")} onToggle={tog("system")} hud={ironman} />,
+    power: <PowerWidget key="power" d={d} open={p("power")} onToggle={tog("power")} hud={ironman} />,
     agenda: <AgendaWidget key="agenda" items={schedule} open={p("agenda")} onToggle={tog("agenda")} runAction={runAction} />,
     weather: <WeatherWidget key="weather" weather={weather} open={p("weather")} onToggle={tog("weather")} />,
     network: <NetworkWidget key="network" d={d} live={!!telemetry} netInfo={netInfo} open={p("network")} onToggle={tog("network")} />,
@@ -179,7 +181,7 @@ export function JarvisHUD({
   const column = (side) => (order[side] || []).filter(shown).map((k) => CARDS[k]).filter(Boolean);
 
   const [title, orbHint] = STATUS_TEXT[status] || STATUS_TEXT.idle;
-  const hint = sc.core === "reactor" ? orbHint.replace("the orb", "the reactor") : orbHint;
+  const hint = ironman ? orbHint.replace("the orb", "the reactor") : orbHint;
   const busy = status !== "idle";
   const lastReplyAt = messages.map((m) => m.role !== "user").lastIndexOf(true);
   const lastReply = lastReplyAt >= 0 ? messages[lastReplyAt] : null;
@@ -195,9 +197,10 @@ export function JarvisHUD({
   };
 
   return (
-    <div className={`hud home home--bg-${background} home--${density}`}
+    <div className={`hud home home--bg-${background} home--${density}${ironman ? " home--ironman" : ""}`}
          style={{ "--ac": c.accent, "--ac2": c.accent2 }}>
       <div className="home-bg" aria-hidden="true" />
+      {ironman && <div className="im-frame" aria-hidden="true" />}
 
       <header className="home-top">
         <div className="home-brand">
@@ -224,6 +227,7 @@ export function JarvisHUD({
           <Core status={status} rgb={c.rgb} onClick={busy ? onStop : onListen}
                 label={busy ? "Stop" : "Talk to JARVIS"} />
           <div className="hero-status" role="status">
+            {ironman && <Waveform status={status} />}
             <div className={`hero-title hero-title--${status}`}><span className="hero-dot" />{title}</div>
             <div className="hero-hint">{status === "working" && activeTask ? activeTask : hint}</div>
           </div>
@@ -250,6 +254,7 @@ export function JarvisHUD({
               ))}
             </div>
           )}
+          {ironman && <div className="im-tag" aria-hidden="true">Just A Rather Very Intelligent System</div>}
         </section>
 
         <aside className="home-col home-col--right" aria-label="Right cards">{column("right")}</aside>

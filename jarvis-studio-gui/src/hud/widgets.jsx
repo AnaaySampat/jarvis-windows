@@ -81,6 +81,41 @@ function Spark({ data, height = 34 }) {
   );
 }
 
+/* Iron Man style: a 270° ring gauge with tick marks and the value in the middle. */
+function Ring({ value, label, sub, size = 104, stroke = 7 }) {
+  const v = Math.max(0, Math.min(100, n0(value)));
+  const r = size / 2 - stroke - 5, c = 2 * Math.PI * r, arc = c * 0.75, mid = size / 2;
+  return (
+    <div className="ring" style={{ width: size }}>
+      <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} aria-hidden="true">
+        <g transform={`rotate(135 ${mid} ${mid})`}>
+          <circle cx={mid} cy={mid} r={r} className="ring-track" strokeWidth={stroke}
+                  strokeDasharray={`${arc} ${c}`} />
+          <circle cx={mid} cy={mid} r={r} className="ring-fill" strokeWidth={stroke}
+                  strokeDasharray={`${(v / 100) * arc} ${c}`} />
+        </g>
+        {Array.from({ length: 11 }).map((_, i) => {
+          const a = ((135 + i * 27) * Math.PI) / 180, r1 = r + stroke / 2 + 2, r2 = r1 + (i % 5 ? 3 : 5);
+          return <line key={i} className="ring-tick" x1={mid + Math.cos(a) * r1} y1={mid + Math.sin(a) * r1}
+                       x2={mid + Math.cos(a) * r2} y2={mid + Math.sin(a) * r2} />;
+        })}
+      </svg>
+      <div className="ring-c"><b>{Math.round(v)}<small>%</small></b>{sub && <span>{sub}</span>}</div>
+      {label && <div className="ring-l">{label}</div>}
+    </div>
+  );
+}
+
+/* Iron Man style: an LED segment strip. */
+function Leds({ value, segs = 20 }) {
+  const lit = Math.round((Math.max(0, Math.min(100, n0(value))) / 100) * segs);
+  return (
+    <div className="leds" aria-hidden="true">
+      {Array.from({ length: segs }).map((_, i) => <span key={i} className={i < lit ? "on" : ""} />)}
+    </div>
+  );
+}
+
 function Stat({ label, value, sub, bar, tone, title }) {
   return (
     <div className="stat" title={title}>
@@ -102,7 +137,7 @@ function KV({ k, v, mono }) {
 }
 
 /* ───────── System ───────── */
-export function SystemWidget({ d, live, open, onToggle }) {
+export function SystemWidget({ d, live, open, onToggle, hud }) {
   const cpuHist = useHistory(live ? n0(d.cpu) : null);
   const total = n0(d.ramTotalGb);
   const used = (n0(d.ram) / 100) * total;
@@ -110,6 +145,17 @@ export function SystemWidget({ d, live, open, onToggle }) {
     <Widget id="system" icon="cpu" title="System" open={open} onToggle={onToggle}
             meta={d.temp != null ? `${Math.round(n0(d.temp))}°C` : null}
             summary={`CPU ${pct(d.cpu)} · RAM ${pct(d.ram)}`}>
+      {hud ? (<>
+        <div className="rings">
+          <Ring value={d.cpu} label="CPU" sub={d.temp != null ? `${Math.round(n0(d.temp))}°C` : null} />
+          <Ring value={d.ram} label="Memory" sub={total ? `${Math.round(total)} GB` : null} />
+        </div>
+        <div className="rings rings--mini">
+          <Ring value={d.gpu} label="GPU" size={70} stroke={5} />
+          <Ring value={d.diskActivity} label="Disk I/O" size={70} stroke={5} />
+          <Ring value={d.disk} label="Storage" size={70} stroke={5} />
+        </div>
+      </>) : (<>
       <div className="stat-pair">
         <Stat label="CPU" value={pct(d.cpu)} bar={d.cpu} tone={loadTone(d.cpu)}
               sub={d.temp != null ? `${Math.round(n0(d.temp))}°C` : "Processor load"} />
@@ -124,12 +170,13 @@ export function SystemWidget({ d, live, open, onToggle }) {
           <span>Storage</span><b>{pct(d.disk)}</b>
         </div>
       </div>
+      </>)}
     </Widget>
   );
 }
 
 /* ───────── Power ───────── */
-export function PowerWidget({ d, open, onToggle }) {
+export function PowerWidget({ d, open, onToggle, hud }) {
   const level = d.batteryPct;
   const has = level != null;
   const state = !has ? "Plugged in" : d.charging ? "Charging" : "On battery";
@@ -141,10 +188,11 @@ export function PowerWidget({ d, open, onToggle }) {
     <Widget id="power" icon={d.charging || !has ? "charging" : "battery"} title="Power" open={open} onToggle={onToggle}
             meta={state} summary={has ? `${Math.round(level)}% · ${state.toLowerCase()}` : "Plugged in"}>
       <div className="pwr2">
-        <span className="pwr2-v">{has ? `${Math.round(level)}%` : "AC"}</span>
+        {hud && has ? <Ring value={level} size={88} stroke={6} />
+          : <span className="pwr2-v">{has ? `${Math.round(level)}%` : "AC"}</span>}
         <span className="pwr2-txt"><b>{state}</b><span>{sub}</span></span>
       </div>
-      {has && <Bar value={level} tone={tone} />}
+      {has && (hud ? <Leds value={level} /> : <Bar value={level} tone={tone} />)}
     </Widget>
   );
 }

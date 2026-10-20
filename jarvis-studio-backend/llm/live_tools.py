@@ -336,13 +336,13 @@ def function_declarations(places_ok: "bool | None" = None,
             "minimize/expand ALL the panels', use show_all or hide_all (no panel "
             "needed). For one panel, use show_panel/hide_panel with `panel`.",
             {"action": _str("What to change.",
-                            ["set_theme", "set_background", "set_density", "set_core",
+                            ["set_theme", "set_background", "set_density", "set_style",
                              "show_panel", "hide_panel", "show_all", "hide_all",
                              "toggle_panel", "move_panel", "reset"]),
              "value": _str("The new value: a colour (cyan/amber/red/green/purple/…/hex) "
                            "for set_theme; grid/solid/aurora/minimal for set_background; "
-                           "normal/compact for set_density; orb or reactor (the Iron Man "
-                           "helmet in the arc reactor) for set_core."),
+                           "normal/compact for set_density; ironman (the heads-up display "
+                           "with the arc reactor) or modern for set_style."),
              "panel": _str("Panel name for show/hide/toggle/move (system, power, agenda, "
                            "weather, network, terminal — or 'all' to show/hide every panel)."),
              "direction": _str("up/down/left/right for move_panel.")},
@@ -512,7 +512,7 @@ _CUES = {
                r"daily|weekdays?|weekends?|teach|recipe)\b",
     "hud": r"\b(theme|colou?r|background|panels?|hud|layout|density|compact|interface|"
            r"camera|clear|reset|minimi[sz]e|maximi[sz]e|expand|collapse|terminal|"
-           r"activity|memory view|skills panel|settings|orb|reactor|iron ?man|helmet)\b",
+           r"activity|memory view|skills panel|settings|style|orb|reactor|iron ?man|helmet|modern)\b",
     "manual": r"\b(scroll|press|click|type|go back|ctrl|alt|shift|hotkey|shortcut|"
               r"disarm|this page|current page|close (?:the )?browser|tab)\b",
     "system": r"\b(shut ?down|restart|reboot|hibernate|log ?off|sign out|ip|speed ?test|"

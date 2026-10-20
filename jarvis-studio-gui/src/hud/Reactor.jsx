@@ -1,7 +1,7 @@
-/* Reactor.jsx — the "Arc reactor" core style (Customize ▸ Core): the helmet inside
-   counter-rotating reactor rings, from the original HUD. Same props as Orb, so the
-   home screen swaps one for the other. The rings are drawn on a canvas in a fixed
-   522-unit space and scaled by CSS; their speed and brightness follow the status. */
+/* Reactor.jsx — the centre of the Iron Man style (Customize ▸ Style): the helmet
+   inside counter-rotating reactor rings, from the original HUD. Same props as Orb,
+   so the home screen swaps one for the other. The rings are drawn on a canvas in a
+   fixed 522-unit space and scaled by CSS; their speed follows the status. */
 
 import { useRef, useEffect } from "react";
 
@@ -94,6 +94,18 @@ function Rings({ status, rgb, layer }) {
   }, [status, layer, rgb[0], rgb[1], rgb[2]]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return <canvas ref={cvs} className={`reactor-rings reactor-rings--${layer}`} aria-hidden />;
+}
+
+/* A row of bars that moves with what JARVIS is doing (pure CSS, see home.css). */
+export function Waveform({ status = "idle", bars = 36 }) {
+  return (
+    <div className={`im-wave im-wave--${status}`} aria-hidden="true">
+      {Array.from({ length: bars }).map((_, i) => (
+        <span key={i} style={{ "--h": Math.sin(((i + 0.5) / bars) * Math.PI).toFixed(3),
+                               animationDelay: `${-((i * 137) % 900)}ms` }} />
+      ))}
+    </div>
+  );
 }
 
 export default function Reactor({ status = "idle", label, onClick, rgb = [0, 229, 255] }) {

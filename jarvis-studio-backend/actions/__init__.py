@@ -332,12 +332,12 @@ def _match_panel(*vals) -> str:
     return ""
 
 
-def _match_core(val) -> str:
+def _match_style(val) -> str:
     v = str(val or "").lower().strip()
-    if re.search(r"\b(reactor|iron ?man|helmet|arc|classic|original)\b", v):
-        return "reactor"
-    if re.search(r"\b(orb|sphere|ball|modern|simple)\b", v):
-        return "orb"
+    if re.search(r"\b(iron ?man|reactor|helmet|arc|hud|classic|original|stark)\b", v):
+        return "ironman"
+    if re.search(r"\b(modern|orb|simple|clean|calm|default|normal)\b", v):
+        return "modern"
     return ""
 
 
@@ -416,11 +416,12 @@ def _screen_patch(do: str, spec: dict) -> "Tuple[dict | None, str]":
             return None, "Density can be normal or compact, sir."
         return {"density": opt}, f"Display set to {opt} density, sir."
 
-    if do in ("set_core", "core"):
-        opt = _match_core(val) or _match_core(spec.get("core"))
+    if do in ("set_style", "style"):
+        opt = _match_style(val) or _match_style(spec.get("style"))
         if not opt:
-            return None, "The core can be the orb or the arc reactor, sir."
-        return {"core": opt}, f"Switched to the {'arc reactor' if opt == 'reactor' else 'orb'}, sir."
+            return None, "The style can be modern or Iron Man, sir."
+        return {"style": opt}, ("Iron Man display online, sir." if opt == "ironman"
+                                else "Switched to the modern display, sir.")
 
     if do in ("show_panel", "show", "unhide", "show_all", "hide_panel", "hide",
               "hide_all", "toggle_panel", "toggle"):
