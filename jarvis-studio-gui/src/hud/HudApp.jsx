@@ -9,6 +9,7 @@ import { useState, useEffect, useRef } from "react";
 import "./hud.css";
 import "./home.css";
 import Orb from "./Orb";
+import Reactor from "./Reactor";
 import { plainPreview as plain } from "../utils/markdown";
 import { Icon } from "./icons";
 import {
@@ -149,6 +150,7 @@ export function JarvisHUD({
   const order = sc.order || { left: ["system", "power", "agenda"], right: ["weather", "network", "terminal"] };
   const background = sc.background || "grid";
   const density = sc.density || "normal";
+  const Core = sc.core === "reactor" ? Reactor : Orb;
   const shown = (key) => vis[key] !== false;
 
   // "/" puts the cursor in the ask box (when nothing is open over the home screen).
@@ -176,7 +178,8 @@ export function JarvisHUD({
   };
   const column = (side) => (order[side] || []).filter(shown).map((k) => CARDS[k]).filter(Boolean);
 
-  const [title, hint] = STATUS_TEXT[status] || STATUS_TEXT.idle;
+  const [title, orbHint] = STATUS_TEXT[status] || STATUS_TEXT.idle;
+  const hint = sc.core === "reactor" ? orbHint.replace("the orb", "the reactor") : orbHint;
   const busy = status !== "idle";
   const lastReplyAt = messages.map((m) => m.role !== "user").lastIndexOf(true);
   const lastReply = lastReplyAt >= 0 ? messages[lastReplyAt] : null;
@@ -218,8 +221,8 @@ export function JarvisHUD({
 
         <section className="home-hero" aria-label="JARVIS">
           <HeroClock />
-          <Orb status={status} onClick={busy ? onStop : onListen}
-               label={busy ? "Stop" : "Talk to JARVIS"} />
+          <Core status={status} rgb={c.rgb} onClick={busy ? onStop : onListen}
+                label={busy ? "Stop" : "Talk to JARVIS"} />
           <div className="hero-status" role="status">
             <div className={`hero-title hero-title--${status}`}><span className="hero-dot" />{title}</div>
             <div className="hero-hint">{status === "working" && activeTask ? activeTask : hint}</div>

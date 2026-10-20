@@ -332,6 +332,15 @@ def _match_panel(*vals) -> str:
     return ""
 
 
+def _match_core(val) -> str:
+    v = str(val or "").lower().strip()
+    if re.search(r"\b(reactor|iron ?man|helmet|arc|classic|original)\b", v):
+        return "reactor"
+    if re.search(r"\b(orb|sphere|ball|modern|simple)\b", v):
+        return "orb"
+    return ""
+
+
 def _match_background(val) -> str:
     v = str(val or "").lower().strip()
     return next((b for b in _SCREEN_BACKGROUNDS if b in v), "")
@@ -406,6 +415,12 @@ def _screen_patch(do: str, spec: dict) -> "Tuple[dict | None, str]":
         if opt not in ("normal", "compact"):
             return None, "Density can be normal or compact, sir."
         return {"density": opt}, f"Display set to {opt} density, sir."
+
+    if do in ("set_core", "core"):
+        opt = _match_core(val) or _match_core(spec.get("core"))
+        if not opt:
+            return None, "The core can be the orb or the arc reactor, sir."
+        return {"core": opt}, f"Switched to the {'arc reactor' if opt == 'reactor' else 'orb'}, sir."
 
     if do in ("show_panel", "show", "unhide", "show_all", "hide_panel", "hide",
               "hide_all", "toggle_panel", "toggle"):

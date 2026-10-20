@@ -30,6 +30,10 @@ const DENSITIES = [
   { id: "normal", label: "Comfortable" },
   { id: "compact", label: "Compact" },
 ];
+const CORES = [
+  { id: "orb", label: "Orb" },
+  { id: "reactor", label: "Arc reactor" },
+];
 const PANEL_LABELS = {
   system: "System", power: "Power", agenda: "Agenda",
   weather: "Weather", network: "Network", terminal: "Terminal",
@@ -42,6 +46,7 @@ export default function Customize({ screen, onClose, onPatch }) {
   const accent = (s.accent || "#00e5ff").toLowerCase();
   const background = s.background || "grid";
   const density = s.density || "normal";
+  const core = s.core || "orb";
   const move = (panel, direction) => onPatch({ move: { panel, direction } });
 
   return (
@@ -100,6 +105,19 @@ export default function Customize({ screen, onClose, onPatch }) {
               </div>
             </section>
           </div>
+
+          <section className="cz-sec">
+            <h3>Core</h3>
+            <div className="seg" role="radiogroup" aria-label="Core">
+              {CORES.map((o) => (
+                <button key={o.id} role="radio" aria-checked={core === o.id}
+                        className={`seg-btn${core === o.id ? " is-on" : ""}`}
+                        onClick={() => onPatch({ core: o.id })}>
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </section>
 
           <section className="cz-sec">
             <h3>Panels</h3>

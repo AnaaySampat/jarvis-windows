@@ -319,8 +319,8 @@ ACTION_CATALOG = (
     '{"type":"reminder","do":"list"} · {"type":"reminder","do":"remove","text":"call mum"}\n'
     '{"type":"playbook","do":"add","name":"movie night","triggers":["movie night"],"steps":"..."}\n'
     '{"type":"playbook","do":"list"} · {"type":"playbook","do":"remove","name":"movie night"}\n'
-    '{"type":"screen","do":"set_theme|set_background|set_density|hide_panel|show_panel|'
-    'toggle_panel|move_panel|set|reset","value":"amber|aurora|compact","panel":"weather",'
+    '{"type":"screen","do":"set_theme|set_background|set_density|set_core|hide_panel|show_panel|'
+    'toggle_panel|move_panel|set|reset","value":"amber|aurora|compact|orb|reactor","panel":"weather",'
     '"direction":"up","theme":"red","background":"minimal","density":"compact"}\n'
     '{"type":"ui","do":"open_camera|close_camera|open_chat|close_chat|open_settings|'
     'close_settings|listen|stop_speaking|clear_chat|open_skills|close_skills|open_capabilities|'
@@ -536,7 +536,7 @@ def set_skill_context(text: str) -> None:
 # restart. `panels` is a visibility map; `order` is the per-rail arrangement.
 DEFAULT_SCREEN = {
     "accent": "#00e5ff", "accent2": "#6fe9ff", "rgb": [0, 229, 255],
-    "background": "grid", "density": "normal",
+    "background": "grid", "density": "normal", "core": "orb",
     "panels": {"system": True, "power": True, "agenda": True,
                "weather": True, "network": True, "terminal": True},
     "order": {"left": ["system", "power", "agenda"],
@@ -790,6 +790,8 @@ def set_screen(patch: dict) -> dict:
     for k in ("accent", "accent2", "rgb", "background", "density"):
         if k in patch:
             scr[k] = patch[k]
+    if patch.get("core") in ("orb", "reactor"):
+        scr["core"] = patch["core"]
     if isinstance(patch.get("panels"), dict):
         cur = dict(scr.get("panels", {}))
         for name, v in patch["panels"].items():

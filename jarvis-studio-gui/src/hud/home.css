@@ -438,6 +438,26 @@
   .home-col { min-height: auto; overflow: visible; }
   .home-conn { display: none; }
 }
+/* ── the arc reactor (Customize ▸ Core) ── */
+.reactor {
+  --reactor: clamp(170px, 34vh, 340px);
+  position: relative; flex-shrink: 0; width: var(--reactor); height: var(--reactor);
+  padding: 0; border: none; border-radius: 50%; background: none; cursor: pointer; outline: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.reactor:focus-visible { box-shadow: 0 0 0 3px var(--h-bg), 0 0 0 5px var(--ac); }
+.reactor-glow {
+  position: absolute; inset: -8%; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, color-mix(in oklab, var(--ac) 22%, transparent) 0%, transparent 62%);
+  animation: orb-breathe 4s ease-in-out infinite;
+}
+.reactor-rings { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.reactor-helmet {
+  position: relative; height: 82%; width: auto; pointer-events: none; user-select: none;
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.reactor:hover .reactor-helmet { transform: scale(1.03); }
+
 @media (max-width: 640px) {
   .home-main { grid-template-columns: minmax(0, 1fr); }
   .home-name { display: none; }
@@ -445,9 +465,10 @@
 @media (max-height: 640px) {
   .hero-greet, .hero-date { display: none; }
   .orb { --orb: clamp(92px, 19vh, 140px); }
+  .reactor { --reactor: clamp(120px, 28vh, 180px); }
   .home-hero { gap: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .orb *, .home-bg::after, .home { animation: none !important; }
+  .orb *, .reactor *, .home-bg::after, .home { animation: none !important; }
 }

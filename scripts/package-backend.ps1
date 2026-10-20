@@ -50,6 +50,13 @@ try {
     & $python -m pip install -q -r $req pyinstaller
     if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)." }
 
+    # winrt-runtime ships its own old msvcp140.dll (14.29). Loaded first, it makes
+    # onnxruntime (Piper, wake word) crash with an access violation, which kills
+    # PyInstaller's import scan and the frozen app alike. Drop it so everything
+    # shares the system's newer runtime, which PyInstaller then bundles.
+    $oldCrt = Join-Path $Venv "Lib\site-packages\winrt\msvcp140.dll"
+    if (Test-Path $oldCrt) { Remove-Item -Force $oldCrt }
+
     # Pre-fetch openWakeWord's ONNX feature models so PyInstaller can bundle them.
     # Without this the frozen app's wake word silently never fires.
     Write-Host "Fetching wake-word models..." -ForegroundColor DarkGray
