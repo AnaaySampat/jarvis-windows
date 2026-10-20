@@ -1,5 +1,20 @@
 # Windows version — to-do
 
+## 0. 2026-10-20 menu overhaul — checked in Chromium against a mock backend, not in the app
+
+Every menu was rebuilt and screenshotted in a browser (Vite + a stand-in WebSocket
+server), not in the Tauri window on Windows. GUI `npm test` 12, `npm run lint`
+0 errors / 30 warnings.
+
+- [ ] **Ctrl+K** opens the command palette inside the WebView2 window (and isn't
+  swallowed by it), Esc closes the topmost panel, Ctrl+, still opens Settings.
+- [ ] **Settings** saves exactly as before: change a key, the voice, the heartbeat
+  times and the floating-pill apps, Save, reopen. Closing with unsaved edits (Esc, ✕
+  or a click outside) asks once before discarding.
+- [ ] **Theme**: pick amber in Customize; Settings, Customize and the dialogs follow it.
+- [ ] **Agenda add/edit** inline (the time field is a native time input in WebView2).
+- [ ] **Skills ▸ QR code / Screenshot / List folder** open the chat with the result.
+
 ## 0. 2026-10-19 catch-up with the phone — built, unit-tested, not yet run live
 
 Baseline after it: `python -m unittest` → **370** (one Windows-only path test can only

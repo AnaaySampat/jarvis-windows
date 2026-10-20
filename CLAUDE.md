@@ -61,6 +61,10 @@ does something surprising, record it and keep it.
 - Optional dependencies are lazy-imported and fail soft: a missing package disables
   exactly one feature and says what to `pip install`. Keep that pattern.
 - Secrets live in `%APPDATA%\Jarvis\`, never in the tree (`app_secrets.py`).
+- GUI menus are built from `components/controls.jsx` (Card, Row, Switch, Guide, Note,
+  ConfirmButton for anything destructive) and the classes in `src/ui.css`. Colour with
+  `var(--accent)` / `color-mix(…)`, never a literal cyan: App sets `--accent` from the
+  user's theme. New menu actions also belong in App's command-palette list (Ctrl+K).
 - A remote (phone) client is confined to the allowlist in `main.py`'s
   `set_remote_allowed({...})`. Adding a handler does **not** expose it remotely —
   and anything host-configuring must stay off that list.

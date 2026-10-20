@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import QRCode from "qrcode";
+import { Icon } from "../hud/icons";
+import { Card, Row, Switch, Guide, Note, ConfirmButton, ChipList, AddField } from "./controls";
 
 /**
  * Free-tier route health (backend: llm/quota.py, surfaced via get_sysinfo).
@@ -14,7 +16,6 @@ function QuotaSection({ sysInfo, onSave }) {
   const quota = sysInfo.quota || {};
   const benched = quota.benched || [];
   const counts = LLM_PROVIDERS.map((p) => [p.name, sysInfo[p.count]]).filter(([, n]) => n > 0);
-  const keys = counts.length;
 
   const eta = (s) => {
     if (s < 60) return `${s}s`;
@@ -24,17 +25,20 @@ function QuotaSection({ sysInfo, onSave }) {
   };
 
   return (
-    <div className="settings-sec">
-      <label>Free-tier routes</label>
-      <div className="settings-hint">
-        {keys
-          ? `Keys in rotation: ${counts.map(([p, n]) => `${n} ${p}`).join(" · ")}.`
-          : "No API keys configured yet."}
-      </div>
-      {benched.length === 0 ? (
-        <div className="settings-hint">All routes available.</div>
-      ) : (
-        <>
+    <Card title="Free-tier routes"
+          status={benched.length
+            ? <span className="tag tag--warn">{benched.length} benched</span>
+            : <span className="tag tag--ok">All available</span>}
+          sub={counts.length
+            ? `Keys in rotation: ${counts.map(([p, n]) => `${n} ${p}`).join(" · ")}.`
+            : "No API keys configured yet."}
+          actions={benched.length > 0 && (
+            <button className="btn btn--sm" onClick={() => onSave({ clear_quota_benches: true })}>
+              Clear benches
+            </button>
+          )}>
+      {benched.length > 0 && (
+        <div className="sx-card-body">
           <div className="quota-list">
             {benched.map((b) => (
               <div className="quota-row" key={`${b.provider}/${b.model}#${b.key}`}>
@@ -45,17 +49,13 @@ function QuotaSection({ sysInfo, onSave }) {
               </div>
             ))}
           </div>
-          <button className="dirlist-addbtn" style={{ marginTop: 8 }}
-                  onClick={() => onSave({ clear_quota_benches: true })}>
-            Clear benches
-          </button>
-        </>
+        </div>
       )}
-      <div className="settings-hint">
+      <Guide summary="What is a route?">
         A route is one model on one key. After a rate limit JARVIS benches it and uses the
-        next one instead of failing — clearing is only needed if you've fixed the cause.
-      </div>
-    </div>
+        next one instead of failing — clearing is only needed if you&apos;ve fixed the cause.
+      </Guide>
+    </Card>
   );
 }
 
@@ -93,85 +93,81 @@ function RemotePairingSection({ devicePairing, devices, onCreatePairing,
   const pin = (devicePairing && devicePairing.pin) || "";
   const tsReady = !devicePairing || devicePairing.tailscale_ready;
 
-  return (
-    <div className="settings-sec">
-      <label>Remote Access (Phone Pairing)</label>
-      <div className="settings-hint">
-        Control this PC from your phone over Tailscale (same or different network).
-        On the phone's Remote PC screen, scan this two-minute code, then type the PIN
-        below into the phone once to finish pairing.
-      </div>
-      <button className="dirlist-addbtn" style={{ marginTop: 8 }}
-        onClick={() => onCreatePairing && onCreatePairing("Aura phone")}>
-        {qr ? "Regenerate QR" : "Generate pairing QR"}
-      </button>
-
-      {devicePairing && !devicePairing.ok && (
-        <div className="settings-warn" style={{ marginTop: 8 }}>
-          Couldn't create a pairing code: {devicePairing.reason || "unknown error"}.
-        </div>
-      )}
-      {devicePairing && devicePairing.ok && !tsReady && (
-        <div className="settings-warn" style={{ marginTop: 8 }}>
-          Tailscale isn't connected on this PC, so the phone can't reach it. Start
-          Tailscale, then regenerate the code.
-        </div>
-      )}
-      {qr && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10, alignItems: "center" }}>
-          <img src={qr} alt="JARVIS pairing QR code"
-            style={{
-              width: "100%", maxWidth: 320, aspectRatio: "1 / 1",
-              borderRadius: 8, background: "#fff", padding: 10,
-            }} />
-          <div className="settings-hint" style={{ margin: 0, textAlign: "center" }}>
-            {pin && (
-              <div style={{ marginBottom: 6 }}>
-                PIN (type into phone): <b style={{ fontSize: 22, letterSpacing: 4 }}>{pin}</b>
-              </div>
-            )}
-            <div>Address: <b>{devicePairing.host || "—"}:8765</b></div>
-            {fp && <div style={{ wordBreak: "break-all" }}>Host fingerprint: {fp.slice(0, 24)}…</div>}
-            <div>Expires in ~2 minutes.</div>
-          </div>
-        </div>
-      )}
-
-      {paired.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div className="settings-hint" style={{ marginBottom: 4 }}>Paired devices:</div>
-          {paired.map((d) => (
-            <div key={d.device_id} className="sysinfo-row" style={{ alignItems: "center" }}>
-              <span title={d.fingerprint}>
-                {d.connected && (
-                  <span style={{ color: "#2fd670", marginRight: 6 }} title="Connected right now">●</span>
-                )}
-                {d.name} ({d.device_id.slice(0, 14)}…)
-                <span className="settings-hint" style={{ display: "block", margin: 0 }}>
-                  {d.connected ? "connected now" : `last seen ${timeAgo(d.last_seen)}`}
-                  {" · paired "}{timeAgo(d.paired_at)}
-                </span>
-              </span>
-              <button className="dir-rm" title="Disconnect and remove this device; it can pair again with a new QR + PIN"
-                onClick={() => onRevokeDevice && onRevokeDevice(d.device_id)}>Remove</button>
+  return (<>
+    <Card title="Pair a phone"
+          sub="Control this PC from your phone over Tailscale — on the same network or a different one."
+          actions={(
+            <button className="btn btn--sm btn--primary"
+                    onClick={() => onCreatePairing && onCreatePairing("Aura phone")}>
+              <Icon name="qr" size={14} />{qr ? "New code" : "Generate pairing code"}
+            </button>
+          )}>
+      <div className="sx-card-body">
+        {devicePairing && !devicePairing.ok && (
+          <Note tone="err">Couldn&apos;t create a pairing code: {devicePairing.reason || "unknown error"}.</Note>
+        )}
+        {devicePairing && devicePairing.ok && !tsReady && (
+          <Note tone="warn">
+            Tailscale isn&apos;t connected on this PC, so the phone can&apos;t reach it. Start
+            Tailscale, then generate a new code.
+          </Note>
+        )}
+        {qr ? (
+          <div className="qr-block">
+            <img className="qr-img" src={qr} alt="JARVIS pairing QR code" />
+            <div className="qr-meta">
+              <span>On the phone&apos;s <b>Remote PC</b> screen, scan the code, then type this PIN once:</span>
+              {pin && <span className="qr-pin" aria-label={`PIN ${pin.split("").join(" ")}`}>{pin}</span>}
+              <span>Address <b>{devicePairing.host || "—"}:8765</b></span>
+              {fp && <span style={{ wordBreak: "break-all" }}>Host fingerprint <code>{fp.slice(0, 24)}…</code></span>}
+              <span><span className="tag tag--busy">Expires in about 2 minutes</span></span>
             </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+          </div>
+        ) : (
+          <ol className="steps">
+            <li>Install Tailscale on this PC and the phone, signed in to the same account.</li>
+            <li>Press <b>Generate pairing code</b> and scan it from the phone&apos;s Remote PC screen.</li>
+            <li>Type the PIN shown here into the phone. The PIN is the approval: a code alone can&apos;t pair.</li>
+          </ol>
+        )}
+      </div>
+    </Card>
+
+    <Card title="Paired phones" status={<span className="tag tag--plain tag--off">{paired.length}</span>}>
+      {paired.length === 0 && <div className="empty-line">No phones paired yet.</div>}
+      {paired.map((d) => (
+        <Row key={d.device_id}
+             title={<>
+               <Icon name="phone" size={15} />{d.name}
+               {d.connected
+                 ? <span className="tag tag--ok">Connected</span>
+                 : <span className="tag tag--off">Offline</span>}
+             </>}
+             desc={<>
+               {d.connected ? "Connected now" : `Last seen ${timeAgo(d.last_seen)}`}
+               {" · paired "}{timeAgo(d.paired_at)}
+               {" · "}<code title={d.fingerprint}>{d.device_id.slice(0, 14)}…</code>
+             </>}>
+          <ConfirmButton title="Disconnect and remove this phone; it can pair again with a new code + PIN"
+                         onConfirm={() => onRevokeDevice && onRevokeDevice(d.device_id)}>
+            Remove
+          </ConfirmButton>
+        </Row>
+      ))}
+    </Card>
+  </>);
 }
 
 // WhatsApp channel (backend whatsapp_channel.py): JARVIS as a linked device of the user's
 // WhatsApp, by QR. Commands come from the account's own "Message yourself" chat (starting
 // with "Jarvis") or from numbers listed here; replies and approvals go back there.
 const WA_STATUS = {
-  off: "Off",
-  connecting: "Connecting…",
-  linking: "Scan the code to link",
-  connected: "Linked",
-  logged_out: "Unlinked from the phone",
-  error: "Not connected",
+  off: ["Off", "off"],
+  connecting: ["Connecting…", "busy"],
+  linking: ["Scan the code to link", "busy"],
+  connected: ["Linked", "ok"],
+  logged_out: ["Unlinked from the phone", "warn"],
+  error: ["Not connected", "err"],
 };
 
 /**
@@ -180,8 +176,8 @@ const WA_STATUS = {
  * Secret values (env vars, headers) are write-only here: the backend never sends
  * them back, and leaving one blank keeps what's saved.
  */
-const MCP_STATUS = { ready: "Connected", starting: "Connecting…", failed: "Failed",
-                     stopped: "Stopped", disabled: "Off" };
+const MCP_STATUS = { ready: ["Connected", "ok"], starting: ["Connecting…", "busy"], failed: ["Failed", "err"],
+                     stopped: ["Stopped", "off"], disabled: ["Off", "off"] };
 
 function splitCommand(line) {
   return [...(line || "").matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
@@ -194,6 +190,55 @@ function parseSecrets(text) {
     if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
   }
   return out;
+}
+
+const TOOLS_SHOWN = 10;
+
+function McpServer({ srv, send, onMcp }) {
+  const [allTools, setAllTools] = useState(false);
+  const tools = srv.tools || [];
+  const [label, tone] = MCP_STATUS[srv.status] || [srv.status, "off"];
+  const shown = allTools ? tools : tools.slice(0, TOOLS_SHOWN);
+  return (
+    <Card title={<><Icon name="plug" size={15} />{srv.name}</>}
+          status={<span className={`tag tag--${tone}`}>
+            {label}{srv.status === "ready" ? ` · ${tools.length} tool${tools.length === 1 ? "" : "s"}` : ""}
+          </span>}
+          sub={<code className="mono-line">{srv.url || [srv.command, ...(srv.args || [])].join(" ")}</code>}
+          actions={<>
+            <button className="btn btn--sm btn--ghost" onClick={() => onMcp && onMcp("mcp.restart", { name: srv.name })}>
+              <Icon name="restart" size={14} />Reconnect
+            </button>
+            <ConfirmButton onConfirm={() => onMcp && onMcp("mcp.remove", { name: srv.name })}>Remove</ConfirmButton>
+          </>}>
+      {(srv.error || tools.length > 0 || (srv.secrets || []).length > 0) && (
+        <div className="sx-card-body">
+          {srv.error && <Note tone="err">{srv.error}</Note>}
+          {srv.status === "ready" && tools.length > 0 && (
+            <div className="chips">
+              {shown.map((t) => <span key={t} className="chip chip--static"><span>{t}</span></span>)}
+              {tools.length > TOOLS_SHOWN && (
+                <button className="btn btn--sm btn--ghost" onClick={() => setAllTools(!allTools)}>
+                  {allTools ? "Show fewer" : `+${tools.length - TOOLS_SHOWN} more`}
+                </button>
+              )}
+            </div>
+          )}
+          {(srv.secrets || []).length > 0 && (
+            <div className="sx-row-d">Saved secrets: {srv.secrets.join(", ")} — never shown here.</div>
+          )}
+        </div>
+      )}
+      <Row label title="Enabled" desc="Off stops the server and hides its tools from JARVIS.">
+        <Switch checked={!srv.disabled} label={`${srv.name} enabled`}
+                onChange={(on) => send(srv, { disabled: !on })} />
+      </Row>
+      <Row label title="Trusted" desc="Run its tools that change things without asking you first.">
+        <Switch checked={!!srv.trusted} label={`Trust ${srv.name}`}
+                onChange={(on) => send(srv, { trusted: on })} />
+      </Row>
+    </Card>
+  );
 }
 
 function McpSection({ mcpState, onMcp }) {
@@ -212,7 +257,9 @@ function McpSection({ mcpState, onMcp }) {
     onMcp && onMcp("mcp.save", { name: srv.name, config: { ...config, trusted: srv.trusted,
                                                          disabled: srv.disabled, ...patch } });
   };
-  const add = () => {
+  const add = (e) => {
+    e.preventDefault();
+    if (!name.trim() || !target.trim()) return;
     const isUrl = /^https?:\/\//i.test(target.trim());
     const parts = splitCommand(target.trim());
     const config = isUrl
@@ -222,81 +269,61 @@ function McpSection({ mcpState, onMcp }) {
     setName(""); setTarget(""); setSecrets(""); setTrusted(false);
   };
 
-  return (
-    <div className="settings-sec">
-      <label>MCP servers</label>
-      <div className="settings-hint">
-        Give JARVIS more tools with <b>MCP servers</b> — the same ones Claude Desktop and other
-        apps use (GitHub, Notion, databases, your smart home…). Their tools are loaded when you
-        mention the server by name. A tool that changes something asks you first, unless you
-        trust the server. Only add servers you trust: each one is a program running on this PC.
+  return (<>
+    {!st.available && (
+      <Note tone="warn">
+        MCP needs the <b>mcp</b> Python package: <code>pip install mcp</code>, then restart JARVIS.
+      </Note>
+    )}
+    {(st.servers || []).map((srv) => <McpServer key={srv.name} srv={srv} send={send} onMcp={onMcp} />)}
+    {(st.servers || []).length === 0 && st.available && (
+      <div className="sx-empty">
+        <Icon name="plug" size={22} />
+        <div>No MCP servers yet. Add one below and its tools become JARVIS tools.</div>
       </div>
-      {!st.available && (
-        <div className="settings-warn" style={{ marginTop: 6 }}>
-          MCP needs the <b>mcp</b> Python package: <code>pip install mcp</code>, then restart JARVIS.
-        </div>
-      )}
-      {(st.servers || []).map((srv) => (
-        <div key={srv.name} className="mcp-row" style={{ marginTop: 10 }}>
+    )}
+
+    <Card title="Add a server"
+          sub="Tools load when you mention the server by name. Only add servers you trust: each one is a program running on this PC.">
+      <form className="sx-card-body" onSubmit={add}>
+        <div className="form-grid">
           <div>
-            <b>{srv.name}</b> · {MCP_STATUS[srv.status] || srv.status}
-            {srv.status === "ready" ? ` — ${srv.tools.length} tool${srv.tools.length === 1 ? "" : "s"}` : ""}
+            <label className="field-label" htmlFor="mcp-name">Name</label>
+            <input id="mcp-name" type="text" className="field" placeholder="github" value={name}
+                   onChange={(e) => setName(e.target.value)} />
           </div>
-          <div className="settings-hint" style={{ wordBreak: "break-all" }}>
-            {srv.url || [srv.command, ...(srv.args || [])].join(" ")}
-            {srv.secrets && srv.secrets.length ? ` · secrets: ${srv.secrets.join(", ")}` : ""}
+          <div>
+            <label className="field-label" htmlFor="mcp-target">Command or URL</label>
+            <input id="mcp-target" type="text" className="field field--mono" spellCheck={false}
+                   placeholder="npx -y @modelcontextprotocol/server-github"
+                   value={target} onChange={(e) => setTarget(e.target.value)} />
           </div>
-          {srv.status === "ready" && srv.tools.length > 0 && (
-            <div className="settings-hint">{srv.tools.join(", ")}</div>
-          )}
-          {srv.error && <div className="settings-warn">{srv.error}</div>}
-          <label className="settings-check">
-            <input type="checkbox" className="sw" checked={!srv.disabled}
-                   onChange={(e) => send(srv, { disabled: !e.target.checked })} />
-            <span>On</span>
-          </label>
-          <label className="settings-check">
-            <input type="checkbox" className="sw" checked={!!srv.trusted}
-                   onChange={(e) => send(srv, { trusted: e.target.checked })} />
+        </div>
+        <div>
+          <label className="field-label" htmlFor="mcp-secrets">Secrets <span className="muted">— optional, one per line</span></label>
+          <textarea id="mcp-secrets" rows={2} className="field field--mono" spellCheck={false}
+                    placeholder={"GITHUB_TOKEN=…     (or a header for a URL — Authorization: Bearer …)"}
+                    value={secrets} onChange={(e) => setSecrets(e.target.value)} />
+        </div>
+        <div className="form-foot">
+          <label className="inline-switch">
+            <Switch checked={trusted} onChange={setTrusted} label="Trusted" />
             <span>Trusted — run its tools without asking</span>
           </label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="dirlist-addbtn" onClick={() => onMcp && onMcp("mcp.restart", { name: srv.name })}>
-              Reconnect
-            </button>
-            <button className="dir-rm" onClick={() => onMcp && onMcp("mcp.remove", { name: srv.name })}>
-              Remove
-            </button>
-          </div>
+          <button type="submit" className="btn btn--primary" disabled={!name.trim() || !target.trim()}>
+            <Icon name="plus" size={14} />Add server
+          </button>
         </div>
-      ))}
-      <div className="settings-hint" style={{ marginTop: 12 }}><b>Add a server</b></div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
-        <input type="text" placeholder="Name, e.g. github" value={name}
-               onChange={(e) => setName(e.target.value)} />
-        <input type="text" placeholder="Command (npx -y @modelcontextprotocol/server-github) or URL"
-               value={target} onChange={(e) => setTarget(e.target.value)} />
-        <textarea rows={2} placeholder={"Secrets, one per line: GITHUB_TOKEN=… (or a header for a URL: Authorization: Bearer …)"}
-                  value={secrets} onChange={(e) => setSecrets(e.target.value)} />
-        <label className="settings-check">
-          <input type="checkbox" className="sw" checked={trusted} onChange={(e) => setTrusted(e.target.checked)} />
-          <span>Trusted — run its tools without asking</span>
-        </label>
-        <button className="dirlist-addbtn" disabled={!name.trim() || !target.trim()} onClick={add}>
-          Add server
-        </button>
-      </div>
-      {st.result && (
-        <div className={st.result.ok ? "settings-hint" : "settings-warn"} style={{ marginTop: 6 }}>
-          {st.result.summary}
-        </div>
-      )}
-      <div className="settings-hint" style={{ marginTop: 8 }}>
-        Or paste Claude Desktop&apos;s <code>mcpServers</code> into <code>{st.config || "%APPDATA%\\Jarvis\\mcp.json"}</code>,
-        then Reconnect. Servers started with <code>npx</code> or <code>uvx</code> need Node.js or uv installed.
-      </div>
-    </div>
-  );
+        {st.result && <Note tone={st.result.ok ? "ok" : "err"}>{st.result.summary}</Note>}
+      </form>
+      <Guide summary="Already set up in Claude Desktop?">
+        <span>
+          Paste its <code>mcpServers</code> into <code>{st.config || "%APPDATA%\\Jarvis\\mcp.json"}</code>,
+          then Reconnect. Servers started with <code>npx</code> or <code>uvx</code> need Node.js or uv installed.
+        </span>
+      </Guide>
+    </Card>
+  </>);
 }
 
 function WhatsAppSection({ waState, onWhatsApp }) {
@@ -317,57 +344,58 @@ function WhatsAppSection({ waState, onWhatsApp }) {
     return () => { dead = true; };
   }, [st.qr]);
   const set = (patch) => onWhatsApp && onWhatsApp("whatsapp.set", patch);
+  const [label, tone] = WA_STATUS[st.status] || [st.status, "off"];
 
   return (
-    <div className="settings-sec">
-      <label>WhatsApp</label>
-      <div className="settings-hint">
-        Message JARVIS from anywhere. Link it like WhatsApp Web, then write to yourself in
-        WhatsApp&apos;s <b>Message yourself</b> chat, starting with its name: “Jarvis, what&apos;s on my
-        agenda?”, “Jarvis, send me a screenshot”. Voice notes work too. Replies come back in that
-        chat and the PC stays quiet; anything that needs your approval asks you there (reply
-        yes or no). Notes to yourself that don&apos;t start with “Jarvis” are left alone.
-      </div>
-      <div className="settings-warn" style={{ marginTop: 6 }}>
-        This uses an unofficial WhatsApp client (the WhatsApp Web protocol). It isn&apos;t covered
-        by WhatsApp&apos;s terms, and WhatsApp can restrict accounts that use one. Linking a second
-        number for JARVIS is the cautious option.
-      </div>
-      <label className="settings-check" style={{ marginTop: 8 }}>
-        <input type="checkbox" className="sw" checked={!!st.enabled}
-               onChange={(e) => set({ enabled: e.target.checked })} />
-        <span>Use WhatsApp · <b>{WA_STATUS[st.status] || st.status}</b>
-          {st.status === "connected" && st.number ? ` as +${st.number}` : ""}</span>
-      </label>
-      {st.error && <div className="settings-warn" style={{ marginTop: 6 }}>{st.error}</div>}
-      {qr && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10, alignItems: "center" }}>
-          <img src={qr} alt="WhatsApp link QR code"
-               style={{ width: "100%", maxWidth: 300, aspectRatio: "1 / 1", borderRadius: 8,
-                        background: "#fff", padding: 10 }} />
-          <div className="settings-hint" style={{ margin: 0, textAlign: "center" }}>
-            On your phone: WhatsApp → Settings → Linked devices → Link a device, then scan this.
-            The code refreshes every few seconds.
-          </div>
+    <Card title="WhatsApp" status={<span className={`tag tag--${tone}`}>{label}</span>}
+          sub={<>Message JARVIS from anywhere: write to yourself in WhatsApp&apos;s <b>Message yourself</b> chat,
+            starting with its name — “Jarvis, what&apos;s on my agenda?”</>}>
+      <Row label title="Use WhatsApp"
+           desc={st.status === "connected" && st.number ? `Linked as +${st.number}.` : "Links JARVIS like WhatsApp Web."}>
+        <Switch checked={!!st.enabled} label="Use WhatsApp" onChange={(on) => set({ enabled: on })} />
+      </Row>
+      {(st.error || qr) && (
+        <div className="sx-card-body">
+          {st.error && <Note tone="err">{st.error}</Note>}
+          {qr && (
+            <div className="qr-block">
+              <img className="qr-img" src={qr} alt="WhatsApp link QR code" />
+              <div className="qr-meta">
+                <span>On your phone: WhatsApp → Settings → <b>Linked devices</b> → <b>Link a device</b>, then scan this.</span>
+                <span><span className="tag tag--busy">The code refreshes every few seconds</span></span>
+              </div>
+            </div>
+          )}
         </div>
       )}
-      <div className="settings-hint" style={{ marginTop: 10 }}>
-        Other numbers that may command JARVIS (optional, e.g. your own number if JARVIS is
-        linked to a second one). Everyone else, and every group, is ignored.
-      </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-        <input type="text" placeholder="+91 98765 43210, …" value={allowText}
-               onChange={(e) => setAllow(e.target.value)} />
-        <button className="dirlist-addbtn" disabled={allow === null}
-                onClick={() => { set({ allow: allowText }); setAllow(null); }}>Save</button>
+      <Row stack title="Other numbers that may command JARVIS"
+           desc="Optional — e.g. your own number if JARVIS is linked to a second one. Everyone else, and every group, is ignored.">
+        <form className="field-row" onSubmit={(e) => { e.preventDefault(); set({ allow: allowText }); setAllow(null); }}>
+          <input type="text" className="field field--mono" placeholder="+91 98765 43210, …" value={allowText}
+                 aria-label="Allowed numbers" onChange={(e) => setAllow(e.target.value)} />
+          <button type="submit" className="btn" disabled={allow === null}>Save</button>
+        </form>
+      </Row>
+      <Guide summary="How it works">
+        <span>
+          Replies come back in that chat and the PC stays quiet; anything that needs your approval
+          asks you there (reply yes or no). Voice notes work too. Notes to yourself that don&apos;t start
+          with “Jarvis” are left alone.
+        </span>
+      </Guide>
+      <div className="sx-card-body">
+        <Note tone="warn">
+          This uses an unofficial WhatsApp client (the WhatsApp Web protocol). It isn&apos;t covered by
+          WhatsApp&apos;s terms, and WhatsApp can restrict accounts that use one. Linking a second number for
+          JARVIS is the cautious option.
+        </Note>
       </div>
       {(st.status === "connected" || st.number) && (
-        <button className="dir-rm" style={{ marginTop: 8 }}
-                onClick={() => onWhatsApp && onWhatsApp("whatsapp.unlink")}>
-          Unlink and forget this WhatsApp
-        </button>
+        <Row title="Unlink this WhatsApp" desc="Signs JARVIS out of the linked device and forgets it.">
+          <ConfirmButton onConfirm={() => onWhatsApp && onWhatsApp("whatsapp.unlink")}>Unlink</ConfirmButton>
+        </Row>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -386,63 +414,118 @@ function TvSection({ tvState, onTv }) {
   const busy = sentWith !== undefined && sentWith === tvState;
   useEffect(() => { onTv && onTv("tv.state"); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  return (
-    <div className="settings-sec">
-      <label>{config ? `TV — ${config.model || "connected"}` : "TV (Android TV)"}</label>
-      <div className="settings-hint">
-        Control an Android TV on this network by voice — “play Stranger Things on the TV”.
-        On the TV: Settings → Device Preferences → About → press <b>Build</b> 7 times, then
-        Developer options → <b>USB debugging</b>. Enter the TV&apos;s IP (Settings → Network)
-        and Connect.
-      </div>
-      <div className="settings-hint">
-        More than one router at home? A second router in router mode gives its Wi-Fi its own
-        network, and the TV can&apos;t be reached across it. Set that router to <b>Access
-        Point</b> mode, or install Tailscale on the TV and add its 100.x address after a comma
-        (192.168.1.50, 100.64.1.2): JARVIS uses whichever answers.
-      </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <input type="text" placeholder="192.168.1.50 (, Tailscale address)" value={host}
-          onChange={(e) => setHost(e.target.value.trim())} />
-        <button className="dirlist-addbtn" disabled={busy || !host}
-          onClick={() => { setSentWith(tvState); onTv && onTv("tv.pair", { host }); }}>
-          {busy ? "Waiting for the TV…" : config ? "Reconnect" : "Connect"}
+  const connect = (e) => {
+    e.preventDefault();
+    if (busy || !host) return;
+    setSentWith(tvState); onTv && onTv("tv.pair", { host });
+  };
+  const saveMac = (e) => {
+    e.preventDefault();
+    if (busy || mac === (config.mac || "")) return;
+    setSentWith(tvState); setMac(null); onTv && onTv("tv.set_mac", { mac });
+  };
+
+  return (<>
+    <Card title={<><Icon name="tv" size={15} />{config ? config.model || "Android TV" : "Android TV"}</>}
+          status={busy ? <span className="tag tag--busy">Waiting for the TV…</span>
+            : config ? <span className="tag tag--ok">Connected</span>
+            : <span className="tag tag--off">Not set up</span>}
+          sub="Control an Android TV on this network by voice — “play Stranger Things on the TV”. Nothing is installed on the TV.">
+      <Row stack title="TV address"
+           desc="The TV's IP (on the TV: Settings → Network). Behind a second router? Add its Tailscale address after a comma.">
+        <form className="field-row" onSubmit={connect}>
+          <input type="text" className="field field--mono" placeholder="192.168.1.50, 100.64.1.2" value={host}
+                 aria-label="TV address" onChange={(e) => setHost(e.target.value.trim())} />
+          <button type="submit" className="btn" disabled={busy || !host}>
+            {busy ? "Waiting…" : config ? "Reconnect" : "Connect"}
+          </button>
+        </form>
+      </Row>
+      {(busy || result) && (
+        <div className="sx-card-body">
+          {busy && <Note>If the TV asks “Allow USB debugging?”, tick <b>Always allow</b> and press OK.</Note>}
+          {!busy && result && <Note tone={result.ok ? "ok" : "err"}>{result.summary}</Note>}
+        </div>
+      )}
+      <Guide summary="First-time setup on the TV">
+        <ol>
+          <li>On the TV: Settings → Device Preferences → About → press <b>Build</b> 7 times.</li>
+          <li>Back in Device Preferences → Developer options → turn on <b>USB debugging</b>.</li>
+          <li>Enter the TV&apos;s IP above and press Connect, then accept the prompt on the TV.</li>
+        </ol>
+      </Guide>
+      <Guide summary="More than one router at home?">
+        <span>
+          A second router in router mode gives its Wi-Fi its own network, and the TV can&apos;t be reached
+          across it. Set that router to <b>Access Point</b> mode, or install Tailscale on the TV and add its
+          100.x address after a comma (192.168.1.50, 100.64.1.2): JARVIS uses whichever answers.
+        </span>
+      </Guide>
+    </Card>
+
+    {config && (
+      <Card title="Switching it on from off"
+            status={config.mac ? <span className="tag tag--ok">Ready</span> : <span className="tag tag--warn">Needs its MAC</span>}
+            sub="Wake-on-LAN. Works only when this PC is on the same network as the TV.">
+        <Row stack title="TV network card (MAC address)"
+             desc={config.mac
+               ? <>JARVIS wakes the TV through <b>{config.mac}</b>.</>
+               : "Learned the next time the TV answers — or type it (on the TV: Settings → Network → About)."}>
+          <form className="field-row" onSubmit={saveMac}>
+            <input type="text" className="field field--mono" placeholder="12:34:56:78:9A:BC" value={mac}
+                   aria-label="TV MAC address" onChange={(e) => setMac(e.target.value.trim())} />
+            <button type="submit" className="btn" disabled={busy || mac === (config.mac || "")}>Save</button>
+          </form>
+        </Row>
+        <div className="sx-card-body">
+          <Note>On the TV, turn on Settings → Network → <b>Remote start</b>.</Note>
+        </div>
+      </Card>
+    )}
+
+    {config && (
+      <Card title="Forget this TV" sub="Removes the saved address. You can connect it again any time."
+            actions={(
+              <ConfirmButton onConfirm={() => { setHost(null); setMac(null); onTv && onTv("tv.unpair"); }}>
+                Forget TV
+              </ConfirmButton>
+            )} />
+    )}
+  </>);
+}
+
+const DEVICE_TABS = [
+  { id: "phone", label: "Phone", icon: "phone" },
+  { id: "tv", label: "TV", icon: "tv" },
+  { id: "whatsapp", label: "WhatsApp", icon: "message" },
+];
+function DevicesSection(props) {
+  const [tab, pick] = useState("phone");
+  const phoneOn = (props.devices || []).some((d) => !d.revoked && d.connected);
+  const dot = {
+    phone: phoneOn ? "ok" : "",
+    tv: props.tvState?.config ? "ok" : "",
+    whatsapp: props.waState?.status === "connected" ? "ok"
+      : ["logged_out", "error"].includes(props.waState?.status) ? "warn" : "",
+  };
+  return (<>
+    <div className="seg" role="tablist" aria-label="Devices">
+      {DEVICE_TABS.map((t) => (
+        <button key={t.id} role="tab" aria-selected={tab === t.id}
+                className={`seg-btn${tab === t.id ? " is-on" : ""}`} onClick={() => pick(t.id)}>
+          <Icon name={t.icon} size={15} />{t.label}
+          <span className={`seg-dot${dot[t.id] ? ` seg-dot--${dot[t.id]}` : ""}`} aria-hidden />
         </button>
-      </div>
-      {busy && (
-        <div className="settings-hint" style={{ marginTop: 6 }}>
-          If the TV asks “Allow USB debugging?”, tick <b>Always allow</b> and press OK.
-        </div>
-      )}
-      {!busy && result && (
-        <div className={result.ok ? "settings-hint" : "settings-warn"} style={{ marginTop: 6 }}>
-          {result.summary}
-        </div>
-      )}
-      {config && (
-        <>
-          <div className="settings-hint" style={{ marginTop: 10 }}>
-            <b>Switching it on from off</b> (Wake-on-LAN): {config.mac
-              ? <>JARVIS wakes it through its network card, <b>{config.mac}</b>.</>
-              : <>JARVIS learns the TV&apos;s network card the next time the TV answers, or type
-                its MAC address (TV: Settings → Network → About).</>}{" "}
-            On the TV, turn on Settings → Network → <b>Remote start</b>. Works only when this PC
-            is on the same network as the TV.
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-            <input type="text" placeholder="MAC address, e.g. 12:34:56:78:9A:BC" value={mac}
-              onChange={(e) => setMac(e.target.value.trim())} />
-            <button className="dirlist-addbtn" disabled={busy || mac === (config.mac || "")}
-              onClick={() => { setSentWith(tvState); setMac(null); onTv && onTv("tv.set_mac", { mac }); }}>
-              Save
-            </button>
-          </div>
-          <button className="dir-rm" style={{ marginTop: 8 }}
-            onClick={() => { setHost(null); setMac(null); onTv && onTv("tv.unpair"); }}>Forget this TV</button>
-        </>
-      )}
+      ))}
     </div>
-  );
+    {tab === "phone" && (
+      <RemotePairingSection devicePairing={props.devicePairing} devices={props.devices}
+                            onCreatePairing={props.onCreatePairing} onListDevices={props.onListDevices}
+                            onRevokeDevice={props.onRevokeDevice} />
+    )}
+    {tab === "tv" && <TvSection tvState={props.tvState} onTv={props.onTv} />}
+    {tab === "whatsapp" && <WhatsAppSection waState={props.waState} onWhatsApp={props.onTv} />}
+  </>);
 }
 
 /**
@@ -458,66 +541,49 @@ function RoutingSection({ sysInfo, onRerank }) {
   const c = r.counts || {};
   const SOURCE = { benchmark: "Benchmark", llm: "Estimated", guess: "Unscored" };
   return (
-    <div className="settings-sec">
-      <label>Smart routing</label>
-      {models.length === 0 && !r.in_progress ? (
-        <div className="settings-hint">
-          Not ranked yet — JARVIS ranks your models automatically once it can see them.
-          Until then it uses its built-in Gemini/Groq tiers.
-        </div>
-      ) : (
-        <div className="settings-hint">
-          Scores are the Artificial Analysis Intelligence Index ({r.catalog || "benchmark"} snapshot)
-          for {c.benchmark || 0} of your {models.length} models
-          {c.llm ? <>; {c.llm} newer model{c.llm === 1 ? "" : "s"} estimated by <b>{r.estimated_by || "an LLM"}</b> with Google Search</> : null}
-          {c.guess ? <>; {c.guess} not scored yet (placed last in their tier)</> : null}.
-          Updates on its own when you add or remove a key.
-        </div>
-      )}
-      {onRerank && (
-        <div className="route-actions">
-          <button className="dirlist-addbtn" disabled={!!r.in_progress} onClick={onRerank}
-                  title="Look up the models without benchmark data again">
-            {r.in_progress ? "Ranking…" : "Re-rank now"}
-          </button>
-          {!r.in_progress && r.last_result && <span className="route-result">{r.last_result}</span>}
-        </div>
-      )}
-      {models.length > 0 && (
-        <div className="route-list">
-          {models.map((m, i) => (
-            <div className="route-row" key={m.id} title={m.basis || ""}>
-              <span className="route-n">{i + 1}</span>
-              <span className="route-id">{m.id}</span>
-              <span className={`route-tier route-tier--${m.tier}`}>{TIER_LABEL[m.tier] || m.tier}</span>
-              <span className="route-score">{m.score}</span>
-              <span className={`route-note route-src--${m.source}`}>
-                {SOURCE[m.source] || m.source}{m.basis ? ` · ${m.basis}` : ""}
-                {!m.tools ? " · chat only (no tool calling)" : ""}
-              </span>
+    <Card title="Smart routing"
+          status={r.in_progress ? <span className="tag tag--busy">Ranking…</span>
+            : models.length ? <span className="tag tag--plain tag--off">{models.length} models</span> : null}
+          sub={models.length === 0 && !r.in_progress
+            ? "Not ranked yet — JARVIS ranks your models automatically once it can see them. Until then it uses its built-in Gemini/Groq tiers."
+            : <>Scores are the Artificial Analysis Intelligence Index ({r.catalog || "benchmark"} snapshot)
+              for {c.benchmark || 0} of your {models.length} models
+              {c.llm ? <>; {c.llm} newer model{c.llm === 1 ? "" : "s"} estimated by <b>{r.estimated_by || "an LLM"}</b> with Google Search</> : null}
+              {c.guess ? <>; {c.guess} not scored yet (placed last in their tier)</> : null}.
+              Updates on its own when you add or remove a key.</>}
+          actions={onRerank && (
+            <button className="btn btn--sm" disabled={!!r.in_progress} onClick={onRerank}
+                    title="Look up the models without benchmark data again">
+              <Icon name="restart" size={14} />{r.in_progress ? "Ranking…" : "Re-rank now"}
+            </button>
+          )}>
+      {((!r.in_progress && r.last_result) || models.length > 0) && (
+        <div className="sx-card-body">
+          {!r.in_progress && r.last_result && <Note>{r.last_result}</Note>}
+          {models.length > 0 && (
+            <div className="route-list">
+              {models.map((m, i) => (
+                <div className="route-row" key={m.id} title={m.basis || ""}>
+                  <span className="route-n">{i + 1}</span>
+                  <span className="route-id">{m.id}</span>
+                  <span className={`route-tier route-tier--${m.tier}`}>{TIER_LABEL[m.tier] || m.tier}</span>
+                  <span className="route-score">{m.score}</span>
+                  <span className={`route-note route-src--${m.source}`}>
+                    {SOURCE[m.source] || m.source}{m.basis ? ` · ${m.basis}` : ""}
+                    {!m.tools ? " · chat only (no tool calling)" : ""}
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
-      <div className="settings-hint">
+      <Guide summary="How a request picks its model">
         Each request gets the weakest tier that can handle it (quick chat → Fast, everyday
-        commands → Everyday, hard reasoning → Flagship). If that model's API fails or is
+        commands → Everyday, hard reasoning → Flagship). If that model&apos;s API fails or is
         rate-limited, the next one in line takes over — then stronger tiers, then weaker.
-      </div>
-    </div>
-  );
-}
-
-/** Two-click Remove for a saved key (the first click arms, the second deletes). */
-function RemoveKey({ name, configured, onSave }) {
-  const [armed, setArmed] = useState(false);
-  if (!configured) return null;
-  return (
-    <button type="button" className={`key-remove ${armed ? "key-remove--armed" : ""}`}
-            onClick={() => { if (armed) { onSave({ remove_keys: [name] }); setArmed(false); } else setArmed(true); }}
-            onBlur={() => setArmed(false)} title="Delete this saved key">
-      {armed ? "Confirm" : "Remove"}
-    </button>
+      </Guide>
+    </Card>
   );
 }
 
@@ -545,12 +611,15 @@ const FALLBACK_GROUPS = [
 ];
 
 const TTS_OPTS = [
-  { value: "piper",      label: "Piper (offline neural, British — free & unlimited)" },
-  { value: "elevenlabs", label: "ElevenLabs (premium cloud — needs API key)" },
-  { value: "chirp",      label: "Google Chirp 3 HD (premium British — on your GCP credits)" },
-  { value: "edge-tts",   label: "Edge TTS (online, British male)" },
-  { value: "pyttsx3",    label: "pyttsx3 (offline, robotic)" },
-  { value: "off",        label: "Off" },
+  { value: "piper",      label: "Piper — offline neural, British",
+    desc: "Free, unlimited and private. The voice model (~60 MB) downloads the first time JARVIS speaks." },
+  { value: "elevenlabs", label: "ElevenLabs — premium cloud",
+    desc: "The most natural voice, but the free tier is ~10k characters a month — best kept for special use." },
+  { value: "chirp",      label: "Google Chirp 3 HD — premium British",
+    desc: "Runs on your Google Cloud credits." },
+  { value: "edge-tts",   label: "Edge TTS — online, British male", desc: "Free online voice from Microsoft Edge." },
+  { value: "pyttsx3",    label: "pyttsx3 — offline, robotic", desc: "Windows' built-in voice. Works anywhere, sounds dated." },
+  { value: "off",        label: "Off", desc: "Replies show as text only." },
 ];
 
 const isGemini = (m) => /^(gemini|gemma)/i.test(m || "");
@@ -593,7 +662,7 @@ function KeyCard({ p, sysInfo, value, onChange, onSave }) {
   const fieldProps = {
     value, spellCheck: false, autoComplete: "off",
     onChange: (e) => onChange(e.target.value),
-    placeholder: configured ? "Saved — paste to replace" : p.ph,
+    placeholder: configured ? "Paste to replace" : p.ph,
     "aria-label": `${p.name} API key`,
   };
   return (
@@ -611,11 +680,16 @@ function KeyCard({ p, sysInfo, value, onChange, onSave }) {
         ) : (
           <input {...fieldProps} type={show ? "text" : "password"} />
         )}
-        <button type="button" className="kc-eye" onClick={() => setShow(!show)}
-                title={show ? "Hide what you typed" : "Show what you typed"}>
-          {show ? "Hide" : "Show"}
+        <button type="button" className="btn btn--ghost btn--icon" onClick={() => setShow(!show)}
+                title={show ? "Hide what you typed" : "Show what you typed"} aria-pressed={show}>
+          <Icon name={show ? "eyeOff" : "eye"} size={15} />
         </button>
-        <RemoveKey name={p.key} configured={configured} onSave={onSave} />
+        {configured && (
+          <ConfirmButton className="btn btn--danger" title="Delete this saved key"
+                         onConfirm={() => onSave({ remove_keys: [p.key] })}>
+            Remove
+          </ConfirmButton>
+        )}
       </div>
       <div className="kc-foot">
         {p.note ? <span>{p.note}</span> : <span>Get a key at <b>{p.where}</b></span>}
@@ -624,24 +698,56 @@ function KeyCard({ p, sysInfo, value, onChange, onSave }) {
   );
 }
 
+const PROVIDER_MODES = [
+  { id: "vertex", title: "Vertex AI", icon: "spark", desc: "Gemini on your Google Cloud credits, through your gcloud login." },
+  { id: "gemini", title: "API keys", icon: "key", desc: "Gemini, Groq and every provider you've added a key for." },
+  { id: "offline", title: "Offline", icon: "monitor", desc: "A local Ollama model only — no internet, no cloud." },
+];
+
 // Sidebar sections. `words` feed the search box so "voice" finds TTS, "phone"
-// finds pairing, etc.
+// finds pairing, etc. Section labels are what the README and the backend's spoken
+// hints call them ("Settings → Devices → TV"), so keep them in step.
 const SECTIONS = [
-  { id: "ai", label: "Intelligence", icon: "◈", words: "provider model llm vertex gemini offline ollama auto image" },
-  { id: "keys", label: "API Keys", icon: "⚿", words: "api keys groq gemini nvidia openrouter mistral claude anthropic openai gpt grok xai meta llama elevenlabs maps tavily web search credentials" },
-  { id: "routing", label: "Routing & Quota", icon: "⇄", words: "smart routing rank tiers quota rate limit benched free" },
-  { id: "voice", label: "Voice", icon: "◉", words: "voice speech tts piper elevenlabs chirp wake word alerts" },
-  { id: "autopilot", label: "Autopilot", icon: "⌖", words: "autopilot browser desktop operator reasoning vision screenshot" },
-  { id: "interface", label: "Interface", icon: "▣", words: "overlay pill floating interface apps hide" },
-  { id: "files", label: "Files & Location", icon: "⌂", words: "storage folder directories files read location weather pin" },
-  { id: "mcp", label: "MCP Servers", icon: "⧉", words: "mcp model context protocol servers tools plugins integrations connectors github notion" },
-  { id: "devices", label: "Devices", icon: "⌁", words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix whatsapp message chat" },
-  { id: "system", label: "System", icon: "⚙", words: "system ram resources repair components" },
+  { id: "ai", label: "Intelligence", icon: "spark", desc: "Where JARVIS thinks, and with which model.",
+    words: "provider model llm vertex gemini offline ollama auto image" },
+  { id: "keys", label: "API Keys", icon: "key", desc: "Credentials for model providers and services. Stored on this PC only.",
+    words: "api keys groq gemini nvidia openrouter mistral claude anthropic openai gpt grok xai meta llama elevenlabs maps tavily web search credentials" },
+  { id: "routing", label: "Routing & Quota", icon: "route", desc: "How requests are spread across your models and keys.",
+    words: "smart routing rank tiers quota rate limit benched free" },
+  { id: "autopilot", label: "Autopilot", icon: "cursor", desc: "The operator that drives the browser and desktop for multi-step tasks.",
+    words: "autopilot browser desktop operator reasoning vision screenshot" },
+  { id: "voice", label: "Voice", icon: "volume", desc: "How JARVIS sounds, wakes up and speaks up on its own.",
+    words: "voice speech tts piper elevenlabs chirp wake word alerts heartbeat checklist digest nightly proactive" },
+  { id: "interface", label: "Interface", icon: "layout", desc: "The floating pill, the home screen and keyboard shortcuts.",
+    words: "overlay pill floating interface apps hide keyboard shortcuts customize theme" },
+  { id: "files", label: "Files & Location", icon: "folder", desc: "Where JARVIS saves things, what it may read, and where you are.",
+    words: "storage folder directories files read location weather pin skills terminal" },
+  { id: "devices", label: "Devices", icon: "phone", desc: "Your phone, Android TV and WhatsApp.",
+    words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix whatsapp message chat wake lan" },
+  { id: "mcp", label: "MCP Servers", icon: "plug", desc: "Extra tools from Model Context Protocol servers.",
+    words: "mcp model context protocol servers tools plugins integrations connectors github notion" },
+  { id: "system", label: "System", icon: "wrench", desc: "Resources and the components JARVIS ships with.",
+    words: "system ram resources repair components" },
+];
+const NAV_GROUPS = [
+  { label: "Intelligence", ids: ["ai", "keys", "routing", "autopilot"] },
+  { label: "Experience", ids: ["voice", "interface", "files"] },
+  { label: "Connections", ids: ["devices", "mcp"] },
+  { label: "System", ids: ["system"] },
 ];
 let lastSection = "ai";   // reopen where the user left off (per app session)
 
+const SHORTCUTS = [
+  [["Ctrl", "Space"], "Hold to talk, from any app"],
+  [["Ctrl", "K"], "Command palette — open any menu or action"],
+  [["Ctrl", ","], "Settings"],
+  [["Ctrl", "S"], "Save, inside Settings"],
+  [["Esc"], "Close the open panel"],
+];
+
 export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocation, onRefreshModels, onRerankModels, onRepairSetup,
-  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState, mcpState }) {
+  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState, mcpState,
+  onOpenCustomize, initialSection }) {
   // Re-discover models when the panel opens so the dropdown is current (e.g. a
   // local Ollama model pulled since launch, or a key just added in another client).
   // Cheap — the backend skips the network when credentials are unchanged.
@@ -653,22 +759,16 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   const allValues = modelGroups.flatMap((g) => g.opts.map((o) => o.value));
   // Local (Ollama) models discovered by the backend — the offline-mode picker.
   const localOpts = (modelGroups.find((g) => /ollama|local/i.test(g.label))?.opts) ?? [];
-  const [section, setSection] = useState(lastSection);
+  const [section, setSection] = useState(initialSection || lastSection);
   const [query, setQuery] = useState("");
   const [model, setModel] = useState(sysInfo.model_override ?? sysInfo.model ?? "auto");
   // Provider EDITION (Phase 4): vertex | gemini | offline.
   const [providerMode, setProviderMode] = useState(sysInfo.provider_mode || "vertex");
   const [offlineModel, setOfflineModel] = useState(sysInfo.offline_model ?? "");
   const [ollamaUrl, setOllamaUrl] = useState(sysInfo.ollama_url ?? "http://localhost:11434");
-  const [locInput, setLocInput] = useState("");
   const pinnedLoc = sysInfo.manual_location;   // {lat,lon,label} or null = automatic
-  const pinLocation = () => {
-    const p = locInput.trim();
-    if (p && onSetLocation) { onSetLocation({ place: p }); setLocInput(""); }
-  };
   const [tts,   setTts]   = useState(sysInfo.tts ?? "piper");
   const [dirs, setDirs]   = useState(sysInfo.allowed_dirs ?? []);
-  const [newDir, setNewDir] = useState("");
   const [storageDir, setStorageDir] = useState(sysInfo.storage_dir ?? "");
   const [keys, setKeys] = useState({});   // key name -> text typed this session
   const [sysAlerts, setSysAlerts] = useState(!!sysInfo.system_alerts);
@@ -688,25 +788,19 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   // Preserve whatever mode is in effect (it can be changed by voice via
   // set_overlay) so saving Settings doesn't silently reset it to "except".
   const [ovlMode] = useState(sysInfo.overlay?.mode ?? "except");
-  const [newApp, setNewApp] = useState("");
-  const [escArmed, setEscArmed] = useState(false);
+  const [closeArmed, setCloseArmed] = useState(false);
   // Focus the dialog so Ctrl+S / Esc work before anything inside is clicked.
   const panelRef = useRef(null);
   useEffect(() => { panelRef.current && panelRef.current.focus(); }, []);
 
-  const addApp = () => {
-    const a = newApp.trim().toLowerCase().replace(/\.exe$/, "");
+  const addApp = (v) => {
+    const a = v.trim().toLowerCase().replace(/\.exe$/, "");
     if (a && !ovlApps.includes(a)) setOvlApps([...ovlApps, a]);
-    setNewApp("");
   };
-  const removeApp = (a) => setOvlApps(ovlApps.filter((x) => x !== a));
-
-  const addDir = () => {
-    const d = newDir.trim().replace(/^["']|["']$/g, "");
+  const addDir = (v) => {
+    const d = v.trim().replace(/^["']|["']$/g, "");
     if (d && !dirs.includes(d)) setDirs([...dirs, d]);
-    setNewDir("");
   };
-  const removeDir = (d) => setDirs(dirs.filter((x) => x !== d));
 
   const cfg = {
     model_override: model, tts, allowed_dirs: dirs, system_alerts: sysAlerts, heartbeat: hb, digest,
@@ -737,17 +831,21 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
     onSaved && onSaved(pendingKeys ? `Saved · ${pendingKeys} key${pendingKeys === 1 ? "" : "s"} added` : "Settings saved");
     onClose();
   };
+  // With unsaved edits the first close (Esc, ✕ or a click outside) only warns, so a
+  // stray keypress or click can't throw away a pasted key.
+  const requestClose = () => {
+    if (dirty && !closeArmed) setCloseArmed(true);
+    else onClose();
+  };
 
-  // Ctrl+S saves; Esc closes — but with unsaved edits the first Esc only warns,
-  // so a stray keypress can't throw away a pasted key.
   const onKey = (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
       if (dirty) handleSave();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      if (dirty && !escArmed) setEscArmed(true);
-      else onClose();
+      e.stopPropagation();
+      requestClose();
     }
   };
 
@@ -761,31 +859,57 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   const nativeAudio = /native-audio/.test(model);
   const llmConnected = LLM_PROVIDERS.filter((p) => sysInfo[p.has]).length + (sysInfo.vertex ? 1 : 0);
   const benched = (sysInfo.quota?.benched || []).length;
-  const badge = { keys: llmConnected || null, routing: benched ? `${benched}` : null };
+  const mcpServers = mcpState?.servers || [];
+  const mcpFailed = mcpServers.filter((s) => s.status === "failed").length;
+  const mcpReady = mcpServers.filter((s) => s.status === "ready").length;
+  const badge = {
+    keys: llmConnected ? [llmConnected] : null,
+    routing: benched ? [benched, "warn"] : null,
+    mcp: mcpFailed ? [mcpFailed, "warn"] : mcpReady ? [mcpReady] : null,
+  };
   const current = SECTIONS.find((s) => s.id === section) || SECTIONS[0];
+  const ttsOpt = TTS_OPTS.find((o) => o.value === tts);
+  const providerStatus = {
+    vertex: sysInfo.vertex ? ["ADC detected", "ok"] : ["Not signed in", "warn"],
+    gemini: [`${LLM_PROVIDERS.filter((p) => sysInfo[p.has]).length} providers`, LLM_PROVIDERS.some((p) => sysInfo[p.has]) ? "ok" : "warn"],
+    offline: localOpts.length ? [`${localOpts.length} local model${localOpts.length === 1 ? "" : "s"}`, "ok"] : ["No local models", "off"],
+  };
 
   return (
-    <div className="settings-overlay" onClick={onClose}>
-      <div className="settings-panel sx" role="dialog" aria-label="Settings" tabIndex={-1}
+    <div className="settings-overlay" onClick={requestClose}>
+      <div className="settings-panel sx" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1}
            onKeyDown={onKey} onClick={e => e.stopPropagation()}
            ref={panelRef}>
 
-        <nav className="sx-nav">
+        <nav className="sx-nav" aria-label="Settings sections">
           <div className="sx-brand"><span className="hud-dot" /> SETTINGS</div>
-          <input className="sx-search" type="search" value={query} placeholder="Search settings…"
-                 onChange={(e) => setQuery(e.target.value)}
-                 onKeyDown={(e) => { if (e.key === "Enter" && visible[0]) go(visible[0].id); }} />
+          <div className="sx-search-wrap">
+            <Icon name="search" size={14} />
+            <input className="sx-search" type="search" value={query} placeholder="Search settings…"
+                   aria-label="Search settings"
+                   onChange={(e) => setQuery(e.target.value)}
+                   onKeyDown={(e) => { if (e.key === "Enter" && visible[0]) go(visible[0].id); }} />
+          </div>
           <div className="sx-links">
-            {visible.map((s) => (
-              <button key={s.id} className={`sx-link${s.id === current.id ? " sx-link--on" : ""}`}
-                      onClick={() => go(s.id)} aria-current={s.id === current.id ? "page" : undefined}>
-                <span className="sx-ico" aria-hidden>{s.icon}</span>
-                <span className="sx-lbl">{s.label}</span>
-                {badge[s.id] && (
-                  <span className={`sx-badge${s.id === "routing" ? " sx-badge--warn" : ""}`}>{badge[s.id]}</span>
-                )}
-              </button>
-            ))}
+            {NAV_GROUPS.map((g) => {
+              const items = visible.filter((s) => g.ids.includes(s.id));
+              if (!items.length) return null;
+              return (
+                <div key={g.label} className="sx-navgroup">
+                  <div className="sx-navgroup-l">{g.label}</div>
+                  {items.map((s) => (
+                    <button key={s.id} className={`sx-link${s.id === current.id ? " sx-link--on" : ""}`}
+                            onClick={() => go(s.id)} aria-current={s.id === current.id ? "page" : undefined}>
+                      <span className="sx-ico" aria-hidden><Icon name={s.icon} size={16} /></span>
+                      <span className="sx-lbl">{s.label}</span>
+                      {badge[s.id] && (
+                        <span className={`sx-badge${badge[s.id][1] === "warn" ? " sx-badge--warn" : ""}`}>{badge[s.id][0]}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
             {visible.length === 0 && <div className="sx-none">No settings match “{query}”.</div>}
           </div>
           <div className="sx-kbd"><kbd>Ctrl</kbd>+<kbd>S</kbd> save · <kbd>Esc</kbd> close</div>
@@ -793,112 +917,126 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
 
         <div className="sx-main">
           <div className="sx-hdr">
-            <h2>{current.label}</h2>
-            <button className="settings-x" onClick={onClose} aria-label="Close settings">✕</button>
+            <div className="sx-hdr-txt">
+              <h2>{current.label}</h2>
+              <p>{current.desc}</p>
+            </div>
+            <button className="x-btn" onClick={requestClose} aria-label="Close settings"><Icon name="close" size={16} /></button>
           </div>
 
           <div className="sx-body" key={current.id}>
             {current.id === "ai" && (<>
-              <div className="settings-sec">
-                <label>Provider</label>
-                <select value={providerMode} onChange={e => setProviderMode(e.target.value)}>
-                  <option value="vertex">Vertex AI — Gemini on your Google Cloud credits (ADC)</option>
-                  <option value="gemini">API keys — Gemini, Groq and every provider you've added</option>
-                  <option value="offline">Offline — a local model only (Ollama, no cloud)</option>
-                </select>
-                {providerMode === "vertex" && (
-                  <div className="settings-hint">
-                    Gemini runs through your gcloud ADC login — billed to your Google Cloud
-                    project/credits, no API key. {sysInfo.vertex
-                      ? "✓ ADC detected."
-                      : "⚠ ADC not detected — run `gcloud auth application-default login`."}
+              <Card title="Provider" sub="Choose where JARVIS's language model runs.">
+                <div className="sx-card-body">
+                  <div className="opt-grid" role="radiogroup" aria-label="Provider">
+                    {PROVIDER_MODES.map((p) => {
+                      const [sLabel, sTone] = providerStatus[p.id];
+                      return (
+                        <button key={p.id} type="button" role="radio" aria-checked={providerMode === p.id}
+                                className={`opt${providerMode === p.id ? " is-on" : ""}`}
+                                onClick={() => setProviderMode(p.id)}>
+                          <span className="opt-hd"><Icon name={p.icon} size={16} /><b>{p.title}</b><span className="opt-radio" /></span>
+                          <span className="opt-d">{p.desc}</span>
+                          <span className={`tag tag--${sTone}`}>{sLabel}</span>
+                        </button>
+                      );
+                    })}
                   </div>
-                )}
-                {providerMode === "gemini" && (
-                  <div className="settings-hint">
-                    Runs on the keys in <button className="settings-link" onClick={() => go("keys")}>API Keys</button>.
-                    Vertex stays off.
-                    {!sysInfo.has_gemini_key && " ⚠ No Gemini key yet — image generation needs one."}
-                  </div>
-                )}
-                {providerMode === "offline" && (
-                  <>
-                    <div className="settings-hint">
-                      Runs entirely on a local Ollama model — no internet, no cloud keys.
-                      Commands still work via the [ACTION] path; it's slower and less capable
-                      than the cloud tiers.
-                    </div>
-                    <label>Local model</label>
-                    <select value={offlineModel} onChange={e => setOfflineModel(e.target.value)}>
+                  {providerMode === "vertex" && !sysInfo.vertex && (
+                    <Note tone="warn">
+                      Application Default Credentials weren&apos;t found. Run <code>gcloud auth application-default login</code>,
+                      then reopen Settings.
+                    </Note>
+                  )}
+                  {providerMode === "gemini" && (
+                    <Note tone={sysInfo.has_gemini_key ? "info" : "warn"}>
+                      Runs on the keys in <button className="settings-link" onClick={() => go("keys")}>API Keys</button>; Vertex stays off.
+                      {!sysInfo.has_gemini_key && " No Gemini key yet — image generation needs one."}
+                    </Note>
+                  )}
+                </div>
+                {providerMode === "offline" && (<>
+                  <Row title="Local model" desc="Commands still work; it's slower and less capable than the cloud tiers.">
+                    <select className="field" value={offlineModel} onChange={e => setOfflineModel(e.target.value)}
+                            aria-label="Local model">
                       <option value="">Auto — first installed model</option>
                       {localOpts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
-                    {localOpts.length === 0 && (
-                      <div className="settings-warn">
-                        ⚠ No local models found at {ollamaUrl}. Install Ollama, then pull one
-                        (e.g. `ollama pull llama3.1`).
-                      </div>
-                    )}
-                    <input type="text" className="settings-model-id" value={ollamaUrl}
+                  </Row>
+                  <Row stack title="Ollama address"
+                       extra={localOpts.length === 0 && (
+                         <Note tone="warn">
+                           No local models found at {ollamaUrl}. Install Ollama, then pull one (e.g. <code>ollama pull llama3.1</code>).
+                         </Note>
+                       )}>
+                    <input type="text" className="field field--mono" value={ollamaUrl} aria-label="Ollama address"
                            onChange={(e) => setOllamaUrl(e.target.value)} placeholder="http://localhost:11434" />
-                  </>
-                )}
-              </div>
+                  </Row>
+                </>)}
+              </Card>
 
-              <div className="settings-sec">
-                <label>LLM Model</label>
-                <select value={allValues.includes(model) ? model : "__custom"}
-                        onChange={e => { if (e.target.value !== "__custom") setModel(e.target.value); }}>
-                  {modelGroups.map((g) => (
-                    <optgroup key={g.label} label={g.label}>
-                      {g.opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                    </optgroup>
-                  ))}
-                  {!allValues.includes(model) && <option value="__custom">Custom: {model}</option>}
-                </select>
-                <input type="text" className="settings-model-id" value={model}
-                       onChange={(e) => setModel(e.target.value)} placeholder="exact model id (override)" />
-                {geminiSelected && sysInfo.vertex && (
-                  <div className="settings-hint">✓ Served via Vertex AI on your Google Cloud credits — no API key needed.</div>
-                )}
-                {geminiSelected && !sysInfo.vertex && !sysInfo.has_gemini_key && (
-                  <div className="settings-warn">⚠ This is a Gemini model — add your Gemini API key, or sign in with Vertex (gcloud ADC).</div>
-                )}
-                {model === "auto" && (
-                  <div className="settings-hint">
-                    Auto sends each request to the weakest ranked model that can handle it, across every
-                    provider you have a key for, and falls through to the next if one fails — see{" "}
-                    <button className="settings-link" onClick={() => go("routing")}>Routing</button>.
+              <Card title="Chat model" sub="Auto is recommended: it picks a model per request and falls back when one fails.">
+                <Row title="Model" desc={allValues.includes(model) ? null : `Custom model id: ${model}`}>
+                  <select className="field" value={allValues.includes(model) ? model : "__custom"} aria-label="LLM model"
+                          onChange={e => { if (e.target.value !== "__custom") setModel(e.target.value); }}>
+                    {modelGroups.map((g) => (
+                      <optgroup key={g.label} label={g.label}>
+                        {g.opts.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </optgroup>
+                    ))}
+                    {!allValues.includes(model) && <option value="__custom">Custom: {model}</option>}
+                  </select>
+                </Row>
+                <Row stack title="Exact model id" desc="Override with any model id your keys can reach.">
+                  <input type="text" className="field field--mono" value={model} aria-label="Exact model id"
+                         onChange={(e) => setModel(e.target.value)} placeholder="auto" spellCheck={false} />
+                </Row>
+                <div className="sx-card-body">
+                  {geminiSelected && sysInfo.vertex && (
+                    <Note tone="ok">Served via Vertex AI on your Google Cloud credits — no API key needed.</Note>
+                  )}
+                  {geminiSelected && !sysInfo.vertex && !sysInfo.has_gemini_key && (
+                    <Note tone="warn">This is a Gemini model — add your Gemini API key, or sign in with Vertex (gcloud ADC).</Note>
+                  )}
+                  {model === "auto" && (
+                    <Note>
+                      Auto sends each request to the weakest ranked model that can handle it, across every
+                      provider you have a key for, and falls through to the next if one fails — see{" "}
+                      <button className="settings-link" onClick={() => go("routing")}>Routing</button>.
+                    </Note>
+                  )}
+                  {nativeAudio && (
+                    <Note>
+                      Native-audio dialogue uses Google&apos;s Live API — full-duplex mic-in / voice-out with the
+                      model&apos;s own voice (no Whisper, no TTS), with barge-in. Typed messages fall back to a Gemini
+                      text model. Needs Gemini access (Vertex credits or a Gemini API key).
+                    </Note>
+                  )}
+                  <div className="sx-row-d">
+                    Image generation uses Gemini 2.5 Flash image with any model here — just ask
+                    JARVIS to “make an image of…” (needs Gemini access).
                   </div>
-                )}
-                {nativeAudio && (
-                  <div className="settings-hint">
-                    Native-audio dialogue uses Google's Live API — full-duplex mic-in / voice-out with the
-                    model's own voice (no Whisper, no TTS), with barge-in. Spoken turns use the Live API;
-                    typed messages fall back to a Gemini text model. Needs Gemini access (Vertex credits or a Gemini API key).
-                  </div>
-                )}
-                <div className="settings-hint">
-                  Image generation uses Gemini 2.5 Flash image and works on any model here — just ask
-                  JARVIS to "make an image of…" (needs Gemini access — Vertex or a Gemini key).
                 </div>
-              </div>
+              </Card>
             </>)}
 
             {current.id === "keys" && (<>
-              <div className="settings-hint">
-                Stored locally in app data, outside the project folder — never shown again after saving.
-                Leave a field blank to keep its key. Free-tier limits are per key, so paste several
-                (one per line) and JARVIS rotates through them instead of stopping at a rate limit.
-              </div>
+              <Note>
+                Stored locally in app data, outside the project folder, and never shown again after saving.
+                Leave a field blank to keep its key. Free-tier limits are per key, so paste several (one per
+                line) and JARVIS rotates through them instead of stopping at a rate limit.
+              </Note>
               {LLM_PROVIDERS.some((p) => p.tag === "paid" && sysInfo[p.has]) && model === "auto" && (
-                <div className="settings-warn">
+                <Note tone="warn">
                   A paid provider is connected and the model is Auto, so smart routing may send
-                  requests to it — each one is billed to that account. Pick a specific model in
-                  Intelligence, or remove the key, to keep it off.
-                </div>
+                  requests to it — each one is billed to that account. Pick a specific model in{" "}
+                  <button className="settings-link" onClick={() => go("ai")}>Intelligence</button>, or remove the key, to keep it off.
+                </Note>
               )}
-              <div className="sx-group">Language models</div>
+              <div className="sx-group">
+                Language models
+                <span>{LLM_PROVIDERS.filter((p) => sysInfo[p.has]).length} of {LLM_PROVIDERS.length} connected</span>
+              </div>
               <div className="kc-grid">
                 {LLM_PROVIDERS.map((p) => (
                   <KeyCard key={p.id} p={p} sysInfo={sysInfo} value={keys[p.key] || ""} onSave={onSave}
@@ -912,7 +1050,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                            onChange={(v) => setKeys((k) => ({ ...k, [p.key]: v }))} />
                 ))}
               </div>
-              <div className="settings-hint">
+              <div className="sx-row-d">
                 Google Places (New) gives accurate nearby places &amp; brand distances (vs the free
                 OpenStreetMap fallback). {sysInfo.places_source === "google"
                   ? "Active — using Google."
@@ -926,304 +1064,226 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
             </>)}
 
             {current.id === "voice" && (<>
-              <div className="settings-sec">
-                <label>Text-to-Speech</label>
-                <select value={tts} onChange={e => setTts(e.target.value)}>
-                  {TTS_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-                {tts === "piper" && (
-                  <div className="settings-hint">
-                    Offline neural British voice — free, unlimited, private. The voice model
-                    (~60 MB) downloads automatically the first time JARVIS speaks.
-                  </div>
-                )}
+              <Card title="Speech">
+                <Row title="Text-to-speech" desc={ttsOpt?.desc}>
+                  <select className="field" value={tts} onChange={e => setTts(e.target.value)} aria-label="Text-to-speech">
+                    {TTS_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </Row>
                 {tts === "elevenlabs" && !sysInfo.has_elevenlabs_key && (
-                  <div className="settings-warn">
-                    ⚠ ElevenLabs needs an API key — add it in{" "}
-                    <button className="settings-link" onClick={() => go("keys")}>API Keys</button>.
+                  <div className="sx-card-body">
+                    <Note tone="warn">
+                      ElevenLabs needs an API key — add it in{" "}
+                      <button className="settings-link" onClick={() => go("keys")}>API Keys</button>.
+                    </Note>
                   </div>
                 )}
-                {tts === "elevenlabs" && (
-                  <div className="settings-hint">
-                    The most natural voice, but the free tier is ~10k characters/month — best kept
-                    for special use; Piper is the better everyday driver.
-                  </div>
-                )}
-              </div>
-              <div className="settings-sec">
-                <label>Wake Word</label>
-                <div className="settings-ro">{sysInfo.wakeWord || "hey_jarvis"}</div>
-              </div>
-              <div className="settings-sec">
-                <label>Proactive Alerts</label>
-                <label className="settings-check">
-                  <input type="checkbox" className="sw" checked={sysAlerts}
-                         onChange={(e) => setSysAlerts(e.target.checked)} />
-                  <span>Spoken system alerts (high CPU / RAM / low battery)</span>
-                </label>
-                <div className="settings-hint">
-                  Off by default. When on, JARVIS will occasionally speak up if the CPU or memory
-                  is maxed out or the battery is low. Agenda reminders and timers are unaffected.
-                </div>
-              </div>
+                <Row title="Wake word" desc={<>Say it to start talking. You can also hold <kbd>Ctrl</kbd>+<kbd>Space</kbd> from any app.</>}>
+                  <span className="sx-value">{sysInfo.wakeWord || "hey_jarvis"}</span>
+                </Row>
+              </Card>
 
-              <div className="settings-sec">
-                <label>Heartbeat</label>
-                <label className="settings-check">
-                  <input type="checkbox" className="sw" checked={hb.enabled}
-                         onChange={(e) => setHb({ ...hb, enabled: e.target.checked })} />
-                  <span>Check in on my own, from a checklist you write</span>
-                </label>
-                <div className="settings-hint">
-                  Every so often JARVIS reads your checklist (HEARTBEAT.md) against what the HUD
-                  knows — the time, agenda, battery, CPU, weather — and speaks only when something
-                  on it needs you: “tell me 10 minutes before a meeting”, “say if the battery is low
-                  and unplugged”. It can only speak, never act. Each check is one call from your
-                  model quota; an empty checklist costs nothing.
-                  {sysInfo.heartbeat?.enabled && !sysInfo.heartbeat?.has_items &&
-                    " Your checklist is empty, so nothing runs yet."}
-                </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <select value={hb.every_min} disabled={!hb.enabled}
+              <Card title="Speaking up on its own" sub="Everything here can only speak — none of it can act.">
+                <Row label title="Spoken system alerts"
+                     desc="Speak up when the CPU or memory is maxed out or the battery is low. Agenda reminders and timers work either way.">
+                  <Switch checked={sysAlerts} onChange={setSysAlerts} label="Spoken system alerts" />
+                </Row>
+                <Row label title="Heartbeat check-ins"
+                     desc={<>Every so often JARVIS reads your checklist (<code>HEARTBEAT.md</code>) against the time,
+                       agenda, battery, CPU and weather, and speaks only when something on it needs you.
+                       {sysInfo.heartbeat?.enabled && !sysInfo.heartbeat?.has_items &&
+                         " Your checklist is empty, so nothing runs yet."}</>}>
+                  <Switch checked={hb.enabled} onChange={(on) => setHb({ ...hb, enabled: on })} label="Heartbeat check-ins" />
+                </Row>
+                <Row title="Check-in schedule" desc="Each check is one call from your model quota; an empty checklist costs nothing.">
+                  <select className="field" value={hb.every_min} disabled={!hb.enabled} aria-label="How often"
                           onChange={(e) => setHb({ ...hb, every_min: Number(e.target.value) })}>
                     {[15, 30, 60, 120].map((m) => <option key={m} value={m}>Every {m} minutes</option>)}
                   </select>
-                  <span className="settings-hint">between</span>
-                  <input type="time" value={hb.start} disabled={!hb.enabled}
+                  <span className="sx-row-d sx-inline">from</span>
+                  <input type="time" className="field" value={hb.start} disabled={!hb.enabled} aria-label="Start time"
                          onChange={(e) => setHb({ ...hb, start: e.target.value })} />
-                  <span className="settings-hint">and</span>
-                  <input type="time" value={hb.end} disabled={!hb.enabled}
+                  <span className="sx-row-d sx-inline">to</span>
+                  <input type="time" className="field" value={hb.end} disabled={!hb.enabled} aria-label="End time"
                          onChange={(e) => setHb({ ...hb, end: e.target.value })} />
-                  <button className="dirlist-addbtn" onClick={() => onSave({ heartbeat_open: true })}>
-                    Edit checklist
+                </Row>
+                <Row title="Checklist" desc="“Tell me 10 minutes before a meeting”, “say if the battery is low and unplugged”…">
+                  <button className="btn btn--sm" onClick={() => onSave({ heartbeat_open: true })}>
+                    <Icon name="edit" size={14} />Edit checklist
                   </button>
-                </div>
-              </div>
-
-              <div className="settings-sec">
-                <label>Nightly memory digest</label>
-                <label className="settings-check">
-                  <input type="checkbox" className="sw" checked={digest.enabled}
-                         onChange={(e) => setDigest({ enabled: e.target.checked })} />
-                  <span>Each night, keep what&apos;s worth remembering from the day</span>
-                </label>
-                <div className="settings-hint">
-                  After 3 am JARVIS reads what you said to it that day — only your own words — and
-                  saves up to five new facts about you to Memory (Forget removes any), plus a short
-                  note of the day in your journal folder. One call from your model quota a night,
-                  none when there was nothing new.
-                  {sysInfo.digest?.learned?.length
-                    ? ` Lately learned: ${sysInfo.digest.learned.map((l) => `“${l.text}”`).join(", ")}.`
-                    : ""}
-                </div>
-              </div>
+                </Row>
+                <Row title="Nightly memory digest"
+                     desc="After 3 am JARVIS reads what you said to it that day — only your own words — and saves up to five new facts to Memory, plus a short journal note. One model call a night."
+                     extra={sysInfo.digest?.learned?.length > 0 && (
+                       <div className="chips">
+                         <span className="sx-row-d sx-inline">Lately learned</span>
+                         {sysInfo.digest.learned.map((l) => (
+                           <span key={l.text} className="chip chip--static"><span>{l.text}</span></span>
+                         ))}
+                       </div>
+                     )}>
+                  <Switch checked={digest.enabled} onChange={(on) => setDigest({ enabled: on })} label="Nightly memory digest" />
+                </Row>
+              </Card>
             </>)}
 
             {current.id === "autopilot" && (
-              <div className="settings-sec">
-                <label>Operator model</label>
-                <input type="text" className="settings-model-id" value={autopilotModel}
-                       onChange={(e) => setAutopilotModel(e.target.value)}
-                       placeholder='blank = auto · model id · "ollama:llama3.1" for local' />
-                <div className="settings-hint">
-                  The model that silently drives multi-step browser/desktop tasks (it picks each
-                  click/type internally — you only hear the outcome). Leave blank for auto.
-                  Use <b>ollama:&lt;model&gt;</b> to run it fully offline via a local Ollama server.
-                  {sysInfo.autopilot_model_active ? <> Currently: <b>{sysInfo.autopilot_model_active}</b></> : null}
-                </div>
-
-                <label>Step reasoning</label>
-                <select value={autopilotThinking} onChange={(e) => setAutopilotThinking(e.target.value)}>
-                  <option value="dynamic">Dynamic — think as hard as each step needs</option>
-                  <option value="off">Off — fastest, weaker on complex steps</option>
-                </select>
-                <div className="settings-hint">
-                  Dynamic lets the operator reason more on tricky steps and less on obvious ones
-                  (recommended). Off is quickest but measurably picks worse moves on hard pages.
-                </div>
-
-                <label className="settings-check">
-                  <input type="checkbox" className="sw" checked={autopilotVision}
-                         onChange={(e) => setAutopilotVision(e.target.checked)} />
-                  <span>Let the DOM operator glance at page screenshots when stuck</span>
-                </label>
-              </div>
+              <Card title="Operator" sub="The model that silently drives multi-step browser and desktop tasks. It picks every click internally — you only hear the outcome.">
+                <Row stack title="Operator model"
+                     desc={<>Leave blank for automatic. Use <code>ollama:&lt;model&gt;</code> to run it fully offline.
+                       {sysInfo.autopilot_model_active ? <> Currently <b>{sysInfo.autopilot_model_active}</b>.</> : null}</>}>
+                  <input type="text" className="field field--mono" value={autopilotModel} aria-label="Operator model"
+                         onChange={(e) => setAutopilotModel(e.target.value)} spellCheck={false}
+                         placeholder='auto · a model id · "ollama:llama3.1"' />
+                </Row>
+                <Row title="Step reasoning"
+                     desc={autopilotThinking === "dynamic"
+                       ? "Thinks harder on tricky steps and less on obvious ones (recommended)."
+                       : "Quickest, but measurably picks worse moves on hard pages."}>
+                  <select className="field" value={autopilotThinking} aria-label="Step reasoning"
+                          onChange={(e) => setAutopilotThinking(e.target.value)}>
+                    <option value="dynamic">Dynamic</option>
+                    <option value="off">Off — fastest</option>
+                  </select>
+                </Row>
+                <Row label title="Look at screenshots when stuck"
+                     desc="Let the page operator glance at a screenshot when the page's structure isn't enough.">
+                  <Switch checked={autopilotVision} onChange={setAutopilotVision} label="Look at screenshots when stuck" />
+                </Row>
+              </Card>
             )}
 
-            {current.id === "interface" && (
-              <div className="settings-sec">
-                <label>Floating Overlay</label>
-                <label className="settings-check">
-                  <input type="checkbox" className="sw" checked={ovlEnabled}
-                         onChange={(e) => setOvlEnabled(e.target.checked)} />
-                  <span>Show a small status pill when I'm in other apps</span>
-                </label>
-                <div className="settings-hint">
-                  A tiny pill floats above the taskbar when you're working in another app, showing whether
-                  JARVIS is listening, processing or responding (with a stop button). It never shows on the
-                  JARVIS window itself. Add apps below to <strong>hide</strong> it on them
-                  (use the app's process name, e.g. <code>chrome</code>, <code>code</code>, <code>discord</code>).
-                </div>
+            {current.id === "interface" && (<>
+              <Card title="Floating status pill">
+                <Row label title="Show the pill in other apps"
+                     desc="A small pill above the taskbar shows whether JARVIS is listening, thinking or speaking, with a stop button. It never shows on the JARVIS window itself.">
+                  <Switch checked={ovlEnabled} onChange={setOvlEnabled} label="Show the floating pill" />
+                </Row>
                 {ovlEnabled && (
-                  <>
-                    <div className="dirlist">
-                      {ovlApps.length === 0 && (
-                        <div className="dirlist-empty">Shown on every app. Add apps to hide it on them.</div>
-                      )}
-                      {ovlApps.map((a) => (
-                        <div key={a} className="dirlist-row">
-                          <span className="dirlist-path" title={a}>{a}</span>
-                          <button className="dirlist-rm" title="Remove" onClick={() => removeApp(a)}>✕</button>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="dirlist-add">
-                      <input type="text" value={newApp} placeholder="app name to hide on, e.g. chrome"
-                             onChange={(e) => setNewApp(e.target.value)}
-                             onKeyDown={(e) => { if (e.key === "Enter") addApp(); }} />
-                      <button className="dirlist-addbtn" onClick={addApp}>HIDE</button>
-                    </div>
-                  </>
+                  <Row stack title="Hide it on these apps" desc={<>Use the app&apos;s process name, e.g. <code>chrome</code>, <code>code</code>, <code>discord</code>.</>}
+                       extra={<AddField placeholder="App name, e.g. chrome" button="Hide on it" onAdd={addApp} label="App to hide the pill on" />}>
+                    <ChipList items={ovlApps} onRemove={(a) => setOvlApps(ovlApps.filter((x) => x !== a))}
+                              empty="Shown on every app." removeLabel="Show it again on" />
+                  </Row>
                 )}
-                <div className="settings-hint">
-                  Colours, layout and which panels show live in <b>Customize</b> (the palette button
-                  on the home screen).
-                </div>
-              </div>
-            )}
-
-            {current.id === "files" && (<>
-              <div className="settings-sec">
-                <label>Storage Location</label>
-                <div className="settings-hint">
-                  Everything JARVIS creates (images, QR codes, screenshots, recordings, PDFs) is saved
-                  here, in <code>images/</code>, <code>recordings/</code> and <code>documents/</code>.
-                </div>
-                <input type="text" className="settings-model-id" value={storageDir}
-                       onChange={(e) => setStorageDir(e.target.value)} placeholder="C:\Users\you\Jarvis" />
-              </div>
-
-              <div className="settings-sec">
-                <label>Skill files</label>
-                <div className="settings-hint">
-                  Teach JARVIS a procedure by writing it down: a Markdown file in the{" "}
-                  <code>skills/</code> folder (OpenClaw-style <code>SKILL.md</code> folders work too),
-                  with a <code>name:</code> and <code>description:</code> at the top. JARVIS sees only
-                  the names and descriptions, and reads a skill in full when a request needs it, so
-                  long notes cost nothing until they&apos;re used.
-                  {sysInfo.skills_count ? ` ${sysInfo.skills_count} skill${sysInfo.skills_count === 1 ? "" : "s"} found.` : ""}
-                </div>
-                <button className="dirlist-addbtn" style={{ marginTop: 8 }}
-                        onClick={() => onSave({ skills_open: true })}>
-                  Open skills folder
-                </button>
-              </div>
-
-              <div className="settings-sec">
-                <label>Read-only Terminal — Allowed Directories</label>
-                <div className="settings-hint">
-                  JARVIS may <strong>list</strong> these folders and <strong>read</strong> files inside them
-                  (every file read asks for your approval). It can never run, write, move, or delete anything.
-                </div>
-                <div className="dirlist">
-                  {dirs.length === 0 && (
-                    <div className="dirlist-empty">No folders approved — JARVIS can't see any files yet.</div>
-                  )}
-                  {dirs.map((d) => (
-                    <div key={d} className="dirlist-row">
-                      <span className="dirlist-path" title={d}>{d}</span>
-                      <button className="dirlist-rm" title="Remove" onClick={() => removeDir(d)}>✕</button>
+              </Card>
+              <Card title="Home screen" sub="Colours, background, density, and which panels show where."
+                    actions={onOpenCustomize && (
+                      <button className="btn btn--sm" onClick={onOpenCustomize}>
+                        <Icon name="palette" size={14} />Open Customize
+                      </button>
+                    )} />
+              <Card title="Keyboard shortcuts">
+                <div className="keys-list">
+                  {SHORTCUTS.map(([combo, what]) => (
+                    <div key={what} className="keys-row">
+                      <span>{what}</span>
+                      <span>{combo.map((k) => <kbd key={k}>{k}</kbd>)}</span>
                     </div>
                   ))}
                 </div>
-                <div className="dirlist-add">
-                  <input type="text" value={newDir} placeholder="C:\Users\you\Documents"
-                         onChange={(e) => setNewDir(e.target.value)}
-                         onKeyDown={(e) => { if (e.key === "Enter") addDir(); }} />
-                  <button className="dirlist-addbtn" onClick={addDir}>ADD</button>
-                </div>
-              </div>
+              </Card>
+            </>)}
 
-              <div className="settings-sec">
-                <label>My Location</label>
-                <div className="dirlist-add">
-                  <input type="text" value={locInput} placeholder="e.g. Powai, Mumbai — pin if auto-detect is off"
-                         onChange={(e) => setLocInput(e.target.value)}
-                         onKeyDown={(e) => { if (e.key === "Enter") pinLocation(); }} />
-                  <button className="dirlist-addbtn" onClick={pinLocation}>PIN</button>
+            {current.id === "files" && (<>
+              <Card title="Storage location"
+                    sub={<>Everything JARVIS creates — images, QR codes, screenshots, recordings, PDFs — is saved here,
+                      in <code>images/</code>, <code>recordings/</code> and <code>documents/</code>.</>}>
+                <div className="sx-card-body">
+                  <input type="text" className="field field--mono" value={storageDir} aria-label="Storage location"
+                         onChange={(e) => setStorageDir(e.target.value)} placeholder="C:\Users\you\Jarvis" />
                 </div>
-                {pinnedLoc?.label ? (
-                  <div className="settings-hint">
-                    📍 Pinned to <b>{pinnedLoc.label.split(",")[0]}</b> — used for weather,
-                    nearby places &amp; directions.{" "}
-                    <button className="settings-link" onClick={() => onSetLocation && onSetLocation({ clear: true })}>
-                      Use automatic instead
-                    </button>
-                  </div>
-                ) : (
-                  <div className="settings-hint">
-                    On automatic (browser GPS / IP). If weather or distances are off, pin your
-                    exact area here — it overrides auto-detection everywhere. You can also say
-                    "set my location to …".
-                  </div>
-                )}
-              </div>
+              </Card>
+
+              <Card title="Skill files"
+                    status={sysInfo.skills_count
+                      ? <span className="tag tag--plain tag--off">{sysInfo.skills_count} found</span> : null}
+                    sub="Teach JARVIS a procedure by writing it down as a Markdown file in the skills/ folder."
+                    actions={(
+                      <button className="btn btn--sm" onClick={() => onSave({ skills_open: true })}>
+                        <Icon name="folder" size={14} />Open skills folder
+                      </button>
+                    )}>
+                <Guide summary="How skill files work">
+                  <span>
+                    Put a <code>name:</code> and <code>description:</code> at the top (OpenClaw-style <code>SKILL.md</code>
+                    folders work too). JARVIS sees only the names and descriptions, and reads a skill in full when a
+                    request needs it, so long notes cost nothing until they&apos;re used.
+                  </span>
+                </Guide>
+              </Card>
+
+              <Card title="Read-only Terminal — allowed folders"
+                    status={<span className="tag tag--ok tag--plain">Read-only</span>}
+                    sub={<>JARVIS may <b>list</b> these folders and <b>read</b> files inside them — every file read asks
+                      for your approval. It can never run, write, move, or delete anything.</>}>
+                <div className="sx-card-body">
+                  <ChipList items={dirs} onRemove={(d) => setDirs(dirs.filter((x) => x !== d))}
+                            empty="No folders approved — JARVIS can't see any files yet." removeLabel="Disallow" />
+                  <AddField placeholder="C:\Users\you\Documents" button="Allow" onAdd={addDir} label="Folder to allow" />
+                </div>
+              </Card>
+
+              <Card title="My location"
+                    status={pinnedLoc?.label
+                      ? <span className="tag tag--ok">Pinned</span>
+                      : <span className="tag tag--off">Automatic</span>}
+                    sub="Used for weather, nearby places and directions. You can also say “set my location to …”.">
+                <div className="sx-card-body">
+                  {pinnedLoc?.label ? (
+                    <div className="field-row">
+                      <Note tone="ok">Pinned to <b>{pinnedLoc.label.split(",")[0]}</b>.</Note>
+                      <button className="btn btn--sm btn--ghost" onClick={() => onSetLocation && onSetLocation({ clear: true })}>
+                        Use automatic
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="sx-row-d">
+                      On automatic (browser GPS / IP). If weather or distances are off, pin your exact area — it
+                      overrides auto-detection everywhere.
+                    </div>
+                  )}
+                  <AddField placeholder="e.g. Powai, Mumbai" button={<><Icon name="pin" size={14} />Pin</>} mono={false}
+                            onAdd={(p) => onSetLocation && onSetLocation({ place: p })} label="Place to pin" />
+                </div>
+              </Card>
             </>)}
 
             {current.id === "devices" && (
-              <RemotePairingSection
-                devicePairing={devicePairing}
-                devices={devices}
-                onCreatePairing={onCreatePairing}
-                onListDevices={onListDevices}
-                onRevokeDevice={onRevokeDevice}
-              />
+              <DevicesSection devicePairing={devicePairing} devices={devices} onCreatePairing={onCreatePairing}
+                              onListDevices={onListDevices} onRevokeDevice={onRevokeDevice}
+                              tvState={tvState} waState={waState} onTv={onTv} />
             )}
             {current.id === "mcp" && <McpSection mcpState={mcpState} onMcp={onTv} />}
-            {current.id === "devices" && <TvSection tvState={tvState} onTv={onTv} />}
-            {current.id === "devices" && <WhatsAppSection waState={waState} onWhatsApp={onTv} />}
 
             {current.id === "system" && (<>
-              <div className="settings-sec">
-                <label>System Resources</label>
-                <div className="sysinfo-box">
-                  <div className="sysinfo-row">
-                    <span>RAM available</span>
-                    <span>{sysInfo.ram != null ? `${sysInfo.ram} GB` : "—"}</span>
-                  </div>
-                  <div className="sysinfo-row">
-                    <span>Active provider</span>
-                    <span>{sysInfo.provider || "—"}</span>
-                  </div>
-                  <div className="sysinfo-row">
-                    <span>Model providers connected</span>
-                    <span>{llmConnected}</span>
-                  </div>
+              <Card title="Resources">
+                <div className="kv">
+                  <div className="kv-row"><span>RAM available</span><span>{sysInfo.ram != null ? `${sysInfo.ram} GB` : "—"}</span></div>
+                  <div className="kv-row"><span>Active provider</span><span>{sysInfo.provider || "—"}</span></div>
+                  <div className="kv-row"><span>Model providers connected</span><span>{llmConnected}</span></div>
                 </div>
-              </div>
-              <div className="settings-sec">
-                <label>Runtime Components</label>
-                <div className="settings-hint">
-                  Browser engine, offline speech model and the neural voice ship with JARVIS.
-                  If a feature reports it "needs setup", re-fetch any missing one here — progress
-                  shows on the main screen.
-                </div>
-                <button className="dirlist-addbtn sx-btn" onClick={() => { if (onRepairSetup) onRepairSetup(); onClose(); }}
-                        disabled={!onRepairSetup}>
-                  Repair components
-                </button>
-              </div>
+              </Card>
+              <Card title="Runtime components">
+                <Row title="Repair components"
+                     desc="The browser engine, offline speech model and neural voice ship with JARVIS. If a feature says it “needs setup”, re-fetch what's missing — progress shows on the main screen.">
+                  <button className="btn" onClick={() => { if (onRepairSetup) onRepairSetup(); onClose(); }}
+                          disabled={!onRepairSetup}>
+                    <Icon name="wrench" size={14} />Repair
+                  </button>
+                </Row>
+              </Card>
             </>)}
           </div>
 
-          <div className={`sx-foot${dirty ? " sx-foot--dirty" : ""}${escArmed ? " sx-foot--nudge" : ""}`}>
-            <span className="sx-state">
-              {escArmed ? "Unsaved changes — press Esc again to discard"
+          <div className={`sx-foot${dirty ? " sx-foot--dirty" : ""}${closeArmed ? " sx-foot--nudge" : ""}`}>
+            <span className="sx-state" role="status">
+              {closeArmed ? "Unsaved changes — close again to discard them, or save"
                 : dirty ? `Unsaved changes${pendingKeys ? ` · ${pendingKeys} new key${pendingKeys === 1 ? "" : "s"}` : ""}`
                 : "All changes saved"}
             </span>
-            <button className="sx-cancel" onClick={onClose}>{dirty ? "Discard" : "Close"}</button>
-            <button className="settings-save" onClick={handleSave} disabled={!dirty}>Save changes</button>
+            <button className="btn btn--ghost" onClick={onClose}>{dirty ? "Discard" : "Close"}</button>
+            <button className="btn btn--primary" onClick={handleSave} disabled={!dirty}>Save changes</button>
           </div>
         </div>
       </div>

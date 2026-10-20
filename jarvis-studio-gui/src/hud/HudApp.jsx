@@ -49,12 +49,13 @@ export function JarvisHUD({
   memoryOpen, setMemoryOpen,
   // handlers
   onSend,
+  onAsk,                        // send a message and show the chat (Capabilities "Try")
+  onNotify,                     // brief confirmation toast
   onStop,
   onReset,
   onUpload,
   taskModelTiers = [],
   runAction,
-  onCommand,
   onSaveDirs,
   // conversation history ("Recents")
   conversations = [],
@@ -141,10 +142,11 @@ export function JarvisHUD({
       {/* ── overlays ── */}
       <SkillsOverlay
         open={skillsOpen} onClose={() => setSkillsOpen(false)}
-        recordings={recordings} runAction={runAction} onCommand={onCommand}
+        recordings={recordings} runAction={runAction}
         allowedDirs={allowedDirs} onSaveDirs={onSaveDirs}
+        onShowResult={() => { setSkillsOpen(false); setChatOpen(true); }}
       />
-      <CapabilitiesOverlay open={capsOpen} onClose={() => setCapsOpen(false)} onCommand={onCommand} />
+      <CapabilitiesOverlay open={capsOpen} onClose={() => setCapsOpen(false)} onAsk={onAsk} />
       <PowerOverlay open={powerOpen} onClose={() => setPowerOpen(false)} runAction={runAction} />
       <MemoryOverlay
         open={memoryOpen} onClose={closeMemory} memory={memory}
@@ -156,7 +158,7 @@ export function JarvisHUD({
       <ChatOverlay
         open={chatOpen} onClose={() => setChatOpen(false)}
         status={status} messages={messages} onSend={onSend} onStop={onStop} onReset={onReset}
-        onUpload={onUpload} taskModelTiers={taskModelTiers} runAction={runAction}
+        onUpload={onUpload} taskModelTiers={taskModelTiers} runAction={runAction} onNotify={onNotify}
         conversations={conversations} onNewChat={onNewChat}
         onOpenConversation={onOpenConversation} onDeleteConversation={onDeleteConversation}
         onRefreshConversations={onRefreshConversations} onClearConversations={onClearConversations}

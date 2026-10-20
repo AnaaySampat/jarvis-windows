@@ -8,6 +8,7 @@ import SetupProgress from "./components/SetupProgress";
 import BootOverlay from "./components/BootOverlay";
 import Customize from "./components/Customize";
 import AgentActivity from "./components/AgentActivity";
+import CommandPalette from "./components/CommandPalette";
 import { Icon } from "./hud/icons";
 import { syncBrowserPanel } from "./components/browserPanelWindow";
 import { syncControlOverlay } from "./components/controlOverlayWindow";
@@ -19,6 +20,20 @@ const SECTION_KEY = {
   network: "network", agenda: "agenda", schedule: "agenda", terminal: "terminal",
 };
 
+// Settings pages the command palette can open directly (ids from Settings.jsx).
+const SETTINGS_PAGES = [
+  ["ai", "Intelligence", "spark", "provider model llm vertex ollama"],
+  ["keys", "API Keys", "key", "groq gemini openai anthropic credentials"],
+  ["routing", "Routing & Quota", "route", "rate limit benched rank"],
+  ["autopilot", "Autopilot", "cursor", "operator browser desktop"],
+  ["voice", "Voice", "volume", "tts wake word heartbeat digest alerts"],
+  ["interface", "Interface", "layout", "overlay pill shortcuts"],
+  ["files", "Files & Location", "folder", "storage folders location skills"],
+  ["devices", "Devices", "phone", "phone pairing tv whatsapp"],
+  ["mcp", "MCP Servers", "plug", "tools integrations"],
+  ["system", "System", "wrench", "repair components ram"],
+];
+
 // Mid-task clarify dialog: the autopilot hit genuine ambiguity and asked ONE
 // question. Holds its own input state so typing doesn't re-render the whole app.
 function ClarifyPrompt({ request, onRespond }) {
@@ -28,8 +43,8 @@ function ClarifyPrompt({ request, onRespond }) {
   const submit = () => onRespond(request.id, answer.trim());
   return (
     <div className="perm-overlay">
-      <div className="perm-dialog" role="alertdialog" aria-label="JARVIS needs your input">
-        <div className="perm-icon">❓</div>
+      <div className="perm-dialog perm-dialog--ask" role="alertdialog" aria-modal="true" aria-label="JARVIS needs your input">
+        <div className="perm-icon"><Icon name="caps" size={34} stroke={1.4} /></div>
         <div className="perm-kicker">JARVIS NEEDS YOUR INPUT</div>
         <div className="perm-desc">{request.question}</div>
         <input
@@ -51,16 +66,16 @@ function ClarifyPrompt({ request, onRespond }) {
 
 export default function App() {
   const {
-    status, messages, warnings, sysInfo, isConnected, ocrResult,
+    status, messages, warnings, sysInfo, isConnected,
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     overlay, agentTasks, conversations, setupProgress,
     devicePairing, devices, tvState, waState, mcpState,
     createPairing, listDevices, revokeDevice,
-    dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand,
+    dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage,
     resetConversation, newConversation, openConversation, deleteConversation, listConversations, clearConversations,
     memory, listMemory, rememberFact, forgetMemory, saveRoutine, runRoutine, routineResult,
-    sendOcr, sendLocation, sendManualLocation, triggerListen, stopSpeech,
+    sendLocation, sendManualLocation, triggerListen, stopSpeech,
     stopControl, finishListen, pttStart,
     respondPermission, respondClarify, setMute, runAction, setBrowserOpen, sendUpload,
     sendScreen, setAlwaysOnMode, setConversationModeOn, wsSend,
@@ -69,26 +84,49 @@ export default function App() {
   // App owns the overlay state so JARVIS can drive them via ui_action too.
   const [chatOpen, setChatOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsPage, setSettingsPage] = useState(null);   // section to open Settings at
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [capsOpen, setCapsOpen] = useState(false);
   const [powerOpen, setPowerOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [toast, setToast] = useState(null);   // {text, id} — brief confirmation pill
+  const notify = useCallback((text) => setToast({ text, id: Date.now() }), []);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 2200);
     return () => clearTimeout(t);
   }, [toast]);
-  // Ctrl+, opens Settings (the desktop-app convention).
+
+  const openSettings = useCallback((page = null) => {
+    setSettingsPage(page);
+    setShowSettings(true);
+  }, []);
+
+  // Keyboard: Ctrl+, opens Settings (the desktop-app convention), Ctrl+K the command
+  // palette, and Esc closes the topmost panel. Panels that use Esc themselves first
+  // (Settings, the palette, a zoomed screenshot, chat's Recents) call preventDefault.
+  const blocking = !!permissionRequest || !!clarifyRequest;
   useEffect(() => {
     const onKey = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === ",") { e.preventDefault(); setShowSettings(true); }
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key === ",") { e.preventDefault(); openSettings(); return; }
+      if (mod && e.key.toLowerCase() === "k" && !showSettings && !blocking) {
+        e.preventDefault(); setPaletteOpen((o) => !o); return;
+      }
+      if (e.key !== "Escape" || e.defaultPrevented || showSettings || paletteOpen || blocking) return;
+      const open = [
+        [customizeOpen, setCustomizeOpen], [activityOpen, setActivityOpen], [memoryOpen, setMemoryOpen],
+        [powerOpen, setPowerOpen], [chatOpen, setChatOpen], [skillsOpen, setSkillsOpen], [capsOpen, setCapsOpen],
+      ].find(([isOpen]) => isOpen);
+      if (open) { e.preventDefault(); open[1](false); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [openSettings, showSettings, paletteOpen, blocking, customizeOpen, activityOpen, memoryOpen,
+      powerOpen, chatOpen, skillsOpen, capsOpen]);
 
   // Effective HUD config: the base preset recolored by the user/JARVIS screen
   // settings. Memoized so it keeps a stable identity across the many re-renders
@@ -102,12 +140,22 @@ export default function App() {
     rgb: screen?.rgb || DIRECTIONS[0].rgb,
   }), [screen?.accent, screen?.accent2, screen?.rgb]);
 
+  // The menus outside the HUD stage (Settings, Customize, dialogs) take the same
+  // accent, so a theme change recolours the whole app rather than just the HUD.
+  useEffect(() => {
+    const root = document.documentElement.style;
+    root.setProperty("--accent", hudConfig.accent);
+    root.setProperty("--accent-soft", hudConfig.accent2);
+  }, [hudConfig.accent, hudConfig.accent2]);
+
   // Collapsible data panels — expanded by default; terminal starts collapsed.
   const [panels, setPanels] = useState({
     system: true, power: true, weather: true, network: true, agenda: true, terminal: false,
   });
   const togglePanel = useCallback((key, val) =>
     setPanels((p) => ({ ...p, [key]: val === undefined ? !p[key] : val })), []);
+  const setAllPanels = useCallback((open) =>
+    setPanels((p) => Object.fromEntries(Object.keys(p).map((k) => [k, open]))), []);
 
   // Save the read-only-terminal directory allowlist (Skills panel + Settings).
   const saveDirs = useCallback((dirs) => sendConfig({ allowed_dirs: dirs }), [sendConfig]);
@@ -196,9 +244,10 @@ export default function App() {
 
   // Memory view: pull a fresh snapshot on open, and again after any executed
   // action while it's open (a spoken "remember…"/"forget…" changes what it shows).
+  // The palette reads it too, for its "Run routine" entries.
   useEffect(() => {
-    if (memoryOpen) listMemory();
-  }, [memoryOpen, commands, listMemory]);
+    if (memoryOpen || paletteOpen) listMemory();
+  }, [memoryOpen, paletteOpen, commands, listMemory]);
 
   // Re-send coords once the socket (re)connects, in case GPS resolved first.
   useEffect(() => {
@@ -230,7 +279,7 @@ export default function App() {
     switch (cmd) {
       case "open_chat": case "open_conversation": case "conversation": setChatOpen(true); break;
       case "close_chat": setChatOpen(false); break;
-      case "open_settings": case "settings": setShowSettings(true); break;
+      case "open_settings": case "settings": openSettings(); break;
       case "close_settings": setShowSettings(false); break;
       case "open_skills": case "skills": setSkillsOpen(true); break;
       case "close_skills": setSkillsOpen(false); break;
@@ -250,6 +299,66 @@ export default function App() {
       default: break;
     }
   }, [uiCommand?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Send a message as if typed in chat, and show the chat so the reply is seen.
+  const askInChat = useCallback((text) => {
+    sendMessage(text);
+    setChatOpen(true);
+  }, [sendMessage]);
+
+  const running = agentTasks.some((t) => t.status === "running");
+
+  // ── Command palette entries ────────────────────────────────────────────────
+  const paletteCommands = useMemo(() => {
+    const cmd = (id, group, label, icon, run, extra = {}) => ({ id, group, label, icon, run, ...extra });
+    const rec = (media, label) => cmd(`rec-${media}`, "Tools",
+      `${recordings[media] ? "Stop" : "Start"} ${label} recording`, "record",
+      () => runAction({ type: "record", media, do: recordings[media] ? "stop" : "start" }),
+      { keywords: `record capture ${media}`, state: recordings[media] ? "Recording" : null });
+    return [
+      cmd("chat", "Panels", "Open conversation", "chat", () => setChatOpen(true), { keywords: "chat talk messages log" }),
+      cmd("new-chat", "Panels", "New conversation", "plus", () => { newConversation(); setChatOpen(true); },
+        { keywords: "chat reset clear fresh" }),
+      cmd("memory", "Panels", "Memory — what JARVIS knows", "memory", () => setMemoryOpen(true),
+        { keywords: "facts routines playbooks remember forget saved chats" }),
+      cmd("skills", "Panels", "Skills", "skills", () => setSkillsOpen(true), { keywords: "record qr screenshot folders" }),
+      cmd("caps", "Panels", "What can JARVIS do?", "caps", () => setCapsOpen(true), { keywords: "capabilities help features" }),
+      cmd("activity", "Panels", "Agent activity", "activity", () => setActivityOpen(true),
+        { keywords: "autopilot steps screenshots tasks", state: running ? "Running" : null }),
+      cmd("power", "Panels", "Power options", "power", () => setPowerOpen(true), { keywords: "shutdown restart sleep lock" }),
+      cmd("customize", "Panels", "Customize the home screen", "palette", () => setCustomizeOpen(true),
+        { keywords: "theme colour color accent background layout panels" }),
+      cmd("settings", "Panels", "Settings", "settings", () => openSettings(), { keys: ["Ctrl", ","] }),
+
+      cmd("listen", "Voice", "Start listening", "mic", triggerListen, { keywords: "talk speak microphone", keys: ["Ctrl", "Space"] }),
+      cmd("stop", "Voice", "Stop speaking", "stop", stopSpeech, { keywords: "silence quiet interrupt" }),
+      cmd("mute", "Voice", muted ? "Unmute JARVIS" : "Mute JARVIS (text only)", muted ? "volume" : "mute",
+        () => setMute(!muted), { keywords: "sound silence voice", state: muted ? "Muted" : null }),
+      cmd("always-on", "Voice", alwaysOn ? "Turn off always-on listening" : "Turn on always-on listening", "wake",
+        () => setAlwaysOnMode(!alwaysOn), { keywords: "wake word continuous hands free", state: alwaysOn ? "On" : null }),
+      cmd("conv-mode", "Voice", conversationMode ? "Turn off conversation mode" : "Turn on conversation mode", "talk",
+        () => setConversationModeOn(!conversationMode), { keywords: "natural brief chatty", state: conversationMode ? "On" : null }),
+
+      cmd("screenshot", "Tools", "Take a screenshot", "camera", () => runAction({ type: "screenshot" }), { keywords: "capture screen" }),
+      rec("audio", "audio"), rec("video", "webcam"), rec("screen", "screen"),
+      ...(browserState.available ? [cmd("browser", "Tools", browserState.open ? "Close JARVIS's browser" : "Open JARVIS's browser",
+        "globe", () => setBrowserOpen(!browserState.open), { keywords: "web chromium", state: browserState.open ? "Open" : null })] : []),
+      cmd("lock", "Tools", "Lock the screen", "lock", () => runAction({ type: "power", command: "lock" }), { keywords: "power away" }),
+
+      cmd("expand-all", "Home screen", "Expand all panels", "chevDown", () => setAllPanels(true), { keywords: "open show" }),
+      cmd("collapse-all", "Home screen", "Collapse all panels", "chevUp", () => setAllPanels(false), { keywords: "minimize hide close" }),
+      cmd("terminal", "Home screen", panels.terminal ? "Collapse the terminal log" : "Expand the terminal log", "keyboard",
+        () => togglePanel("terminal"), { keywords: "command log" }),
+
+      ...((memory?.routines) || []).map((r) => cmd(`routine-${r.id}`, "Routines", `Run routine: ${r.name}`, "play",
+        () => { runRoutine(r.id); notify(`Running “${r.name}”`); }, { keywords: `routine ${r.when || ""}` })),
+
+      ...SETTINGS_PAGES.map(([id, label, icon, words]) => cmd(`settings-${id}`, "Settings", `Settings: ${label}`, icon,
+        () => openSettings(id), { keywords: `preferences configure ${words}` })),
+    ];
+  }, [recordings, runAction, newConversation, running, openSettings, triggerListen, stopSpeech, muted, setMute,
+      alwaysOn, setAlwaysOnMode, conversationMode, setConversationModeOn, browserState.available, browserState.open,
+      setBrowserOpen, setAllPanels, panels.terminal, togglePanel, memory?.routines, runRoutine, notify]);
 
   return (
     <>
@@ -276,10 +385,11 @@ export default function App() {
           memory={memory} onRemember={rememberFact} onForget={forgetMemory}
           onSaveRoutine={saveRoutine} onRunRoutine={runRoutine} routineResult={routineResult}
           onSend={sendMessage}
+          onAsk={askInChat}
           onStop={stopSpeech}
-          onCommand={sendCommand}
           onReset={resetConversation}
           onUpload={sendUpload}
+          onNotify={notify}
           taskModelTiers={sysInfo.task_model_tiers || []}
           runAction={runAction}
           onSaveDirs={saveDirs}
@@ -296,70 +406,80 @@ export default function App() {
           covers the top-right (chat, memory, skills) is open — they're
           window-fixed (z 200) and would otherwise draw on top of its header. */}
       {!chatOpen && !memoryOpen && !skillsOpen && (
-      <div className="hud-fixed-controls">
-        {/* Tap-to-cut: stop whatever JARVIS is saying right now (only while speaking) */}
-        {status === "speaking" && (
+      <div className="hud-fixed-controls" role="toolbar" aria-label="Quick controls">
+        <div className="tb-group" role="group" aria-label="Voice">
+          {/* Tap-to-cut: stop whatever JARVIS is saying right now (only while speaking) */}
+          {status === "speaking" && (
+            <button className="hud-fixed-btn hud-fixed-btn--silence" data-tip="Stop speaking now"
+                    aria-label="Stop speaking now" onClick={stopSpeech}>
+              <Icon name="stop" size={16} />
+            </button>
+          )}
+          {/* Persistent mute toggle: keeps speech off (text still shows) until untoggled */}
           <button
-            className="hud-fixed-btn hud-fixed-btn--silence"
-            title="Stop speaking now"
-            onClick={stopSpeech}
+            className={`hud-fixed-btn ${muted ? "hud-fixed-btn--muted" : ""}`}
+            data-tip={muted ? "Muted — replies show as text. Click to unmute" : "Mute JARVIS (text only)"}
+            aria-label={muted ? "Unmute JARVIS" : "Mute JARVIS"}
+            aria-pressed={muted}
+            onClick={() => setMute(!muted)}
           >
-            <Icon name="stop" size={16} />
+            <Icon name={muted ? "mute" : "volume"} />
           </button>
-        )}
-        {/* Persistent mute toggle: keeps speech off (text still shows) until untoggled */}
-        <button
-          className={`hud-fixed-btn ${muted ? "hud-fixed-btn--muted" : ""}`}
-          title={muted ? "Unmute Jarvis" : "Mute Jarvis (text only)"}
-          aria-pressed={muted}
-          onClick={() => setMute(!muted)}
-        >
-          <Icon name={muted ? "mute" : "volume"} />
-        </button>
-        {/* Always-on continuous voice (no wake word) */}
-        <button
-          className={`hud-fixed-btn ${alwaysOn ? "hud-fixed-btn--listening" : ""}`}
-          title={alwaysOn
-            ? "Always-on listening is ON — click for wake-word mode"
-            : "Turn on always-on listening (no wake word)"}
-          aria-pressed={alwaysOn}
-          onClick={() => setAlwaysOnMode(!alwaysOn)}
-        >
-          <Icon name={alwaysOn ? "mic" : "wake"} />
-        </button>
-        {/* Natural conversation mode (shorter, chattier replies) */}
-        <button
-          className={`hud-fixed-btn ${conversationMode ? "hud-fixed-btn--listening" : ""}`}
-          title={conversationMode ? "Conversation mode ON" : "Conversation mode (natural, brief replies)"}
-          aria-pressed={conversationMode}
-          onClick={() => setConversationModeOn(!conversationMode)}
-        >
-          <Icon name="talk" />
-        </button>
-        {/* JARVIS's own web browser: open / close */}
-        {browserState.available && (
+          {/* Always-on continuous voice (no wake word) */}
           <button
-            className={`hud-fixed-btn ${browserState.open ? "hud-fixed-btn--armed" : ""}`}
-            title={browserState.open
-              ? "JARVIS's browser is open — click to close it"
-              : "Open JARVIS's web browser"}
-            aria-pressed={browserState.open}
-            onClick={() => setBrowserOpen(!browserState.open)}
+            className={`hud-fixed-btn ${alwaysOn ? "hud-fixed-btn--listening" : ""}`}
+            data-tip={alwaysOn
+              ? "Always listening — click for wake-word mode"
+              : "Listen without the wake word"}
+            aria-label="Always-on listening"
+            aria-pressed={alwaysOn}
+            onClick={() => setAlwaysOnMode(!alwaysOn)}
           >
-            <Icon name="globe" />
+            <Icon name={alwaysOn ? "mic" : "wake"} />
           </button>
-        )}
-        {/* Agent Activity — JARVIS's autopilot steps + the screenshots it saw */}
-        <button
-          className={`hud-fixed-btn ${agentTasks.some((t) => t.status === "running") ? "hud-fixed-btn--armed" : ""}`}
-          title="Agent activity — what JARVIS did, with screenshots"
-          aria-pressed={activityOpen}
-          onClick={() => setActivityOpen(true)}
-        >
-          <Icon name="activity" />
-        </button>
-        <button className="hud-fixed-btn" title="Customize the home screen" onClick={() => setCustomizeOpen(true)}><Icon name="palette" /></button>
-        <button className="hud-fixed-btn" title="Settings" onClick={() => setShowSettings(true)}><Icon name="settings" /></button>
+          {/* Natural conversation mode (shorter, chattier replies) */}
+          <button
+            className={`hud-fixed-btn ${conversationMode ? "hud-fixed-btn--listening" : ""}`}
+            data-tip={conversationMode ? "Conversation mode is on — click to turn off" : "Conversation mode: short, natural replies"}
+            aria-label="Conversation mode"
+            aria-pressed={conversationMode}
+            onClick={() => setConversationModeOn(!conversationMode)}
+          >
+            <Icon name="talk" />
+          </button>
+        </div>
+        <div className="tb-group" role="group" aria-label="Agents">
+          {/* JARVIS's own web browser: open / close */}
+          {browserState.available && (
+            <button
+              className={`hud-fixed-btn ${browserState.open ? "hud-fixed-btn--armed" : ""}`}
+              data-tip={browserState.open ? "JARVIS's browser is open — click to close it" : "Open JARVIS's web browser"}
+              aria-label="JARVIS's web browser"
+              aria-pressed={browserState.open}
+              onClick={() => setBrowserOpen(!browserState.open)}
+            >
+              <Icon name="globe" />
+            </button>
+          )}
+          {/* Agent Activity — JARVIS's autopilot steps + the screenshots it saw */}
+          <button
+            className={`hud-fixed-btn ${running ? "hud-fixed-btn--busy" : ""}`}
+            data-tip={running ? "A task is running — see its steps" : "Agent activity: steps and screenshots"}
+            aria-label="Agent activity"
+            aria-pressed={activityOpen}
+            onClick={() => setActivityOpen(true)}
+          >
+            <Icon name="activity" />
+          </button>
+        </div>
+        <div className="tb-group" role="group" aria-label="App">
+          <button className="hud-fixed-btn" data-tip="Command palette  (Ctrl+K)" aria-label="Command palette"
+                  onClick={() => setPaletteOpen(true)}><Icon name="search" /></button>
+          <button className="hud-fixed-btn" data-tip="Customize the home screen" aria-label="Customize the home screen"
+                  onClick={() => setCustomizeOpen(true)}><Icon name="palette" /></button>
+          <button className="hud-fixed-btn" data-tip="Settings  (Ctrl+,)" aria-label="Settings"
+                  onClick={() => openSettings()}><Icon name="settings" /></button>
+        </div>
       </div>
       )}
 
@@ -369,7 +489,7 @@ export default function App() {
           {controlState.armed && (
             <div className="hud-armed-banner hud-armed-banner--control">
               <span className="hud-armed-dot" />
-              <span>⌨ JARVIS IS CONTROLLING YOUR MOUSE &amp; KEYBOARD</span>
+              <span><Icon name="keyboard" size={14} /> JARVIS IS CONTROLLING YOUR MOUSE &amp; KEYBOARD</span>
               <button className="hud-armed-disarm hud-armed-disarm--stop" onClick={stopControl}>STOP</button>
             </div>
           )}
@@ -382,7 +502,7 @@ export default function App() {
           )}
           {!isConnected && (
             <div className="hud-offline">
-              ⚠ CORE OFFLINE — start <code>python main.py</code> in <code>jarvis-studio-backend/</code>
+              <Icon name="warning" size={14} /> CORE OFFLINE — start <code>python main.py</code> in <code>jarvis-studio-backend/</code>
             </div>
           )}
         </div>
@@ -390,16 +510,19 @@ export default function App() {
 
       {/* Dependency / runtime warnings from the backend */}
       {warnings.length > 0 && (
-        <div className="hud-warns">
+        <div className="hud-warns" role="status">
           {warnings.map((w) => (
             <div key={w.id} className="hud-warn">
-              <span>{w.link ? "⬆" : "⚠"} {w.text}</span>
+              <Icon name={w.link ? "arrowRight" : "warning"} size={15} />
+              <span className="hud-warn-txt">{w.text}</span>
               {w.link && (
-                <button onClick={() => { runAction({ type: "open_url", url: w.link }); dismissWarning(w.id); }}>
+                <button className="hud-warn-act" onClick={() => { runAction({ type: "open_url", url: w.link }); dismissWarning(w.id); }}>
                   Get it
                 </button>
               )}
-              <button onClick={() => dismissWarning(w.id)}>✕</button>
+              <button aria-label="Dismiss" title="Dismiss" onClick={() => dismissWarning(w.id)}>
+                <Icon name="close" size={14} />
+              </button>
             </div>
           ))}
         </div>
@@ -408,13 +531,15 @@ export default function App() {
       {showSettings && (
         <Settings
           sysInfo={sysInfo}
+          initialSection={settingsPage}
           onClose={() => setShowSettings(false)}
           onSave={(cfg) => sendConfig(cfg)}
-          onSaved={(text) => setToast({ text, id: Date.now() })}
+          onSaved={notify}
           onSetLocation={sendManualLocation}
           onRefreshModels={refreshModels}
           onRerankModels={rerankModels}
           onRepairSetup={repairSetup}
+          onOpenCustomize={() => { setShowSettings(false); setCustomizeOpen(true); }}
           devicePairing={devicePairing}
           devices={devices}
           onCreatePairing={createPairing}
@@ -425,6 +550,10 @@ export default function App() {
           mcpState={mcpState}
           onTv={(type, data) => wsSend({ type, data })}
         />
+      )}
+
+      {paletteOpen && (
+        <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} onAsk={askInChat} />
       )}
 
       {toast && <div key={toast.id} className="hud-toast" role="status">{toast.text}</div>}
@@ -464,8 +593,8 @@ export default function App() {
       {/* ── Approve/Deny gate for dangerous actions ── */}
       {permissionRequest && (
         <div className="perm-overlay">
-          <div className="perm-dialog" role="alertdialog" aria-label="Permission required">
-            <div className="perm-icon">⚠</div>
+          <div className="perm-dialog" role="alertdialog" aria-modal="true" aria-label="Permission required">
+            <div className="perm-icon"><Icon name="warning" size={34} stroke={1.4} /></div>
             <div className="perm-kicker">AUTHORISATION REQUIRED</div>
             <div className="perm-desc">
               JARVIS wants to <strong>{permissionRequest.description}</strong>.

@@ -1,4 +1,4 @@
-/* icons.jsx — one hairline icon set for the HUD chrome (replaces the mixed
+/* icons.jsx — one hairline icon set for all of the app's chrome (replaces the mixed
    emoji glyphs, which rendered in a different style/size on every system). */
 
 const P = {
@@ -18,13 +18,66 @@ const P = {
   settings: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7.4-3a7.4 7.4 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.3 7.3 0 0 0-2-1.2L14.5 3h-5l-.4 2.6a7.3 7.3 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7.3 7.3 0 0 0 2 1.2l.4 2.6h5l.4-2.6a7.3 7.3 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2Z",
   stop:     "M7 7h10v10H7z",
   close:    "M6 6l12 12M18 6 6 18",
+  plus:     "M12 5v14M5 12h14",
+  minus:    "M5 12h14",
+  check:    "M5 12.5l4.5 4.5L19 7",
+  history:  "M3 12a9 9 0 1 0 2.6-6.4L3 8.2M3 3.5v4.7h4.7M12 7.5V12l3 2",
+  trash:    "M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3",
+  attach:   "M20 11.5l-8 8a5 5 0 0 1-7.1-7.1l8.4-8.4a3.3 3.3 0 0 1 4.7 4.7l-8.4 8.4a1.7 1.7 0 0 1-2.4-2.4l7.7-7.7",
+  send:     "M21 3 3 10.5l7.2 2.6L12.8 20 21 3Zm-10.8 10.1L15 8.4",
+  search:   "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm9.5 2.5-4.6-4.6",
+  copy:     "M9 9h11v11H9zM5.5 15H4V4h11v1.5",
+  edit:     "M4 20h4L19.5 8.5l-4-4L4 16v4Zm9.5-13.5 4 4",
+  chevDown: "M6 9l6 6 6-6",
+  chevUp:   "M6 15l6-6 6 6",
+  chevRight:"M9 6l6 6-6 6",
+  arrowRight:"M5 12h14m-6-6 6 6-6 6",
+  arrowLeft:"M19 12H5m6-6-6 6 6 6",
+  eye:      "M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Zm10 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+  eyeOff:   "M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-2.7 3.5M6.6 6.6A16.8 16.8 0 0 0 2 12s3.6 7 10 7a9.6 9.6 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2",
+  moon:     "M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z",
+  restart:  "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
+  lock:     "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3",
+  snow:     "M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9M9.5 4.5 12 7l2.5-2.5M9.5 19.5 12 17l2.5 2.5",
+  logout:   "M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10",
+  qr:       "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 14h2M14 18h2v2M18 18h2v2h-2",
+  camera:   "M4 8h3l2-3h6l2 3h3v11H4zM12 16.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z",
+  folder:   "M3 6h6l2 2h10v11H3z",
+  record:   "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-5a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z",
+  video:    "M3 7h12v10H3zM15 10.5l6-3.5v10l-6-3.5",
+  monitor:  "M3 4h18v12H3zM8 20h8M12 16v4",
+  keyboard: "M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10",
+  phone:    "M8 3h8v18H8zM11 18h2",
+  tv:       "M3 6h18v12H3zM8 21h8M8 3l4 3 4-3",
+  message:  "M4 20l1.4-4A8 8 0 1 1 8 19.6L4 20Z",
+  plug:     "M9 3v5m6-5v5M6 8h12v3a6 6 0 0 1-12 0V8Zm6 9v4",
+  key:      "M8 15a4 4 0 1 1 3.5-6H21v3h-2v2h-2v-2h-5.5A4 4 0 0 1 8 15Zm0-4h.01",
+  route:    "M6 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm12-10a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM6 15V9a4 4 0 0 1 4-4h4m4 4v6a4 4 0 0 1-4 4h-4",
+  spark:    "M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Zm7 12 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z",
+  layout:   "M3 4h18v16H3zM9 4v16m0-10h12",
+  cursor:   "M5 3l14 7-6 2-2 6L5 3Z",
+  wrench:   "M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4 2.6-2.6Z",
+  bell:     "M6 16v-5a6 6 0 0 1 12 0v5l2 2H4l2-2Zm4 4a2 2 0 0 0 4 0",
+  command:  "M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6Z",
+  external: "M14 4h6v6m0-6-9 9M18 14v6H4V6h6",
+  info:     "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-10v6m0-9h.01",
+  warning:  "M12 4 2.5 20h19L12 4Zm0 6v4m0 3h.01",
+  pin:      "M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11Zm0-8.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z",
+  play:     "M7 4v16l13-8L7 4Z",
+  calendar: "M4 6h16v14H4zM4 10h16M8 3v5m8-5v5",
+  user:     "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 9a7 7 0 0 1 14 0",
+  undo:     "M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3",
+  hourglass:"M7 3h10M7 21h10M8 3c0 5 8 5 8 9s-8 4-8 9M16 3c0 5-8 5-8 9s8 4 8 9",
+  scroll:   "M12 4v16m-4-4 4 4 4-4M8 8l4-4 4 4",
+  note:     "M5 4h14v16H5zM9 8h6M9 12h6M9 16h3",
 };
 
-export function Icon({ name, size = 18, stroke = 1.5 }) {
+export function Icon({ name, size = 18, stroke = 1.5, className }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d={P[name]} />
+         strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+         className={className}>
+      <path d={P[name] || P.info} />
     </svg>
   );
 }
