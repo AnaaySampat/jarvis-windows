@@ -71,6 +71,16 @@ class DigestTests(unittest.TestCase):
         self.assertFalse(md.due(self.night))
         self.assertFalse(md.due(dt.datetime(2026, 10, 20, 2, 0)))   # and never before 3 am
 
+    def test_a_forgotten_fact_never_comes_back_however_its_voiced(self):
+        # Seen live 2026-10-20: forgotten on the PC, back the next morning from the digest.
+        memory_store.add_fact("The user's favourite colour is teal.")
+        memory_store.forget_fact("teal")
+        self.chat(("remember that my favourite colour is teal", "Noted."))
+        res = self.run_digest('{"facts": ["My favourite colour is teal.", "My name is Sam"]}')
+        self.assertIn("FORGOTTEN (the user deleted these; never add them back):\n"
+                      "- the user's favourite colour is teal", self.asked[0])
+        self.assertEqual(res["added"], ["My name is Sam"])
+
     def test_routine_turns_are_not_the_user_talking(self):
         self.assertEqual(md._user_texts([
             {"role": "user", "content": "Run my routine “bedtime”. Do these now…"},

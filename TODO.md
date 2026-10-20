@@ -22,34 +22,121 @@ pass on Windows); GUI `npm test` 8, `npm run lint` 0 errors / 33 warnings (uncha
 - [ ] **Routines**: Memory ▸ Routines add/edit/run/remove; "movie night" alone runs it.
 - [ ] **TV with two addresses** (home IP + Tailscale IP), and the "different network"
   message from a PC on the other router's Wi-Fi.
+  *2026-10-19:* the "different network" reply fired, but wrongly diagnosed: the TV had
+  moved to a new address on the PC's own Wi-Fi; a changed TV address
+  is never rediscovered. Re-pairing (Settings → Devices) fixed it.
+  *2026-10-20:* three times within an hour this PC couldn't reach the TV for
+  minutes while it was on and the phone could (Windows' own ping failed; the TV's ARP
+  entry here sat at Unreachable/Stale 00-00-00-00-00-00; clearing it once brought it back
+  at once). Each time the cast took it for "off", sent a wake-up packet and told the user
+  to turn on Remote start, which was on. The failed-wake reply now names both causes
+  (off, or on but unreachable from here). Cause of the drops not found yet.
 - [ ] **Update notice**: needs a GitHub release newer than the installed version.
 - [ ] **A false "done" is spoken before the claim check runs** (found by test_replay.py,
   2026-10-19): a streamed reply like "Resumed — back to Arcane." with no tool call is
   spoken while it streams; the recheck then runs the real action. The phone holds such
   a reply back. Fix idea: on an action-like request, hold speech until the step ends and
   it's known whether the model called a tool. Costs latency only on those turns.
+  *2026-10-19:* not run live — the TV was in use.
+  *2026-10-20:* "pause the TV" then "resume the TV" at once: the model called
+  `tv_control resume` with no text before it (nothing streamed or spoken), "YouTube is
+  playing." — not reproduced in one try; the replay fixture still shows the risk.
+  Related, from the phone the same night: "what's on my TV right now?" got "nothing
+  playing on the TV" with no tool call at all. The phone now rechecks a TV question
+  answered without a tool (`answeredTvWithoutLooking`); this backend has no such check,
+  and since it speaks while streaming it would need the same hold-speech fix first.
 - [ ] **Nightly memory digest** (unit-tested with a fake model): leave the PC on
   overnight after a day of use; next morning check `[Digest]` in the log, Memory for new
   facts, and `journal/<date>.md`.
-- [ ] **One memory with the phone** (unit-tested both sides, never run between the
+  *2026-10-19, first start after 03:00:* `[Digest] 2026-10-19: read 1 message(s),
+  learned 0` and `journal/2026-10-19.md` written — but the note is in the third person
+  with commentary ("This is a one-off request and not something to remember long-term"),
+  not the second-person diary the prompt asks for. The phone's digest saved a guess
+  ("My live stream is called Nebula…") from "Put Nebula live on the TV";
+  gemini-2.5-flash-lite did that 6 times in 8 with this prompt, 0 in 8 after one added
+  line (a command says nothing lasting about the user), now in both apps. Overnight
+  run and turning it off: still to do.
+  *2026-10-20:* the phone's morning digest brought back "My favourite colour is teal.",
+  forgotten the night before in the sync test, and the sync carried it here: neither
+  digest looked at what had been forgotten. Both now list the forgotten facts in the
+  prompt and drop a fact whose voice-neutral key ("My X" = "The user's X") is remembered
+  or forgotten (`test_memory_digest.py` fails without it). Real cheap-tier model: old
+  prompt 8/8 brought them back, new 0/8.
+- [x] **One memory with the phone** (unit-tested both sides, never run between the
   real devices): remember something on the phone, see it on the PC within a minute;
   forget it on the PC, gone from the phone; a timed routine made on the phone shows
   "(on your phone)" here and doesn't fire here.
+  *Done 2026-10-19 (SM-E156B over Tailscale):* phone fact → `facts.json` in 6 s; forgotten
+  here → gone from the phone within 30 s and still gone 15 min later; a timed phone
+  routine listed as "Every day at <time> (on your phone)", fired on the phone, not here;
+  removing it on the phone removed it here in 5 s (tombstone).
 - [ ] **MCP servers** (unit-tested, and end to end against a real stdio server with
   mcp 1.30 and 2.2 on Linux; never on Windows): add
   `npx -y @modelcontextprotocol/server-filesystem C:\Users\<you>\Documents` in
   Settings → MCP Servers, check it shows Connected with its tools, then "use the
   filesystem server to list my Documents" (no prompt: read-only), and a write (asks
   first). Also an HTTP server with a header, and the frozen installer build.
+  *2026-10-19 on Windows, mcp 2.3.0:* Connected — 14 tools; list ran with no prompt;
+  a write asked first (deny → nothing written, allow → written); Trusted → no prompt;
+  Remove → tools gone. Fixed on the way: a tool's answer was read aloud raw (label and
+  listing, 16 s) and never given to the model — now silent and fed back, so the model
+  answers in words (seen live); a denied call spoke its JSON arguments; `npx -y` takes
+  ~34 s to answer even when cached, so the 45 s start limit failed twice on a busy PC
+  (now 120 s). A weak model passed a relative path ("Documents") and got ENOENT.
+  Left: an HTTP server with a header, the frozen build.
 - [ ] **Send this to the TV** (built and unit-tested, never run): YouTube in Chrome,
   then Edge, at ~10 minutes in → "send this to the TV" (TV starts there? PC paused?);
   Netflix in Chrome (TV resumes the same episode?); with the video tab not in front
   (should say so, not send another video); Spotify playing (should refuse). Check the
   address bar is readable through UI Automation on the user's browser language.
+  *2026-10-19:* not run — the TV was in use.
+  *2026-10-20 (Chrome, YouTube ~10 min in):* first try started the TV 10:00 into the video while the
+  PC was ~15:40 in, left the PC playing and said "couldn't confirm it started playing".
+  Three causes, all fixed: (1) `start.py` runs the backend in `.venv-build`, which had
+  neither winrt nor mcp (yesterday's run was from a worktree with no `.venv-build`, so
+  system Python) — installed them there; without winrt the cast now says it went by the
+  address bar; (2) YouTube's TV app reports its position only when its state changes
+  (902099 for 95 s while playing), so the moving-position check never confirmed it —
+  now a YouTube session counts once it has reported since the link (`updated=`); (3)
+  "from the start" was claimed when a TV already playing the video just carried on.
+  After: the TV played it and the PC paused ("Paused it on the PC"). In guest mode the
+  TV's YouTube ignored `&t=` (0:02 for 44:39) and the reply said so; signed in it took
+  `&t=600s`. A cold start shows YouTube's "Who's watching?" picker, which swallows the
+  link (reply: couldn't confirm — honest). Tab not in front → "bring its tab to the
+  front", nothing sent ✅. Spotify: not run (the TV dropped off the network first, then
+  the laptop hung with Chrome + Spotify + a build). Netflix in Chrome: not run.
+  **The frozen installer is built from `.venv-build`: check mcp and winrt are in it.**
+  Later: neither app switched a TV in standby (its normal "off" with Remote start on —
+  ADB still up) on before `play`/`open_app`/`cast`: apps opened on a dark screen. Now
+  `Tv.screen_on()` wakes it first (`test_now_playing.py` fails without it). Live on the
+  phone after the fix: the TV woke, then YouTube's "Who's watching?" picker swallowed
+  the link (undetectable over ADB: `uiautomator` sees nothing in YouTube's TV app).
+  The user chose: pick the highlighted account (like Netflix's gate). `youtube_gate`:
+  after a wake or a cold start, if nothing started, one OK then the link/search again
+  (tests fail without it). Live: TV in standby, "play lofi on the TV" → woke and
+  "Playing the top YouTube result for “lofi” on the TV." in 29 s (TV playing it); the
+  phone's shared link the same way played from 2:00.
 - [ ] **Wake-on-LAN** (built and unit-tested, never on real hardware): with Remote
   start on, let the TV go fully off (deep standby), then "turn on the TV"
   (`[TV]` log: packet sent, then answered). Check Settings → Devices → TV shows the
   MAC it learned. From the phone: "turn on my PC" with the PC asleep, then shut down.
+  *2026-10-19:* the TV's MAC was learned on pairing (its Wi-Fi adapter's —
+  the TV isn't on Ethernet); the phone received this PC's adapters on connecting. Deep
+  standby and a sleeping PC: not run yet.
+  *2026-10-20:* with Remote start on the TV never went fully off: 15 minutes after
+  switching off it still answered ping and ADB, so "turn on the TV" took the ADB path ("Turned the TV
+  on.", 6 s; the phone the same). In that state a magic packet does nothing (Android is
+  running): `wol.send`, the phone's `wol_send` and a unicast packet all left and the TV
+  stayed Asleep. Waking a TV that's really unreachable: still untested.
+  PC from the phone, this laptop asleep: no wake; the phone said so honestly (twice, no
+  false claim). This laptop can't be woken over Wi-Fi: Windows doesn't offer the AX201
+  as a wake device (`powercfg /devicequery wake_programmable`), so there's no Power
+  Management tab to tick. Idea: send in `auth.ready` whether any adapter is wake-armed
+  (`powercfg /devicequery wake_armed`), so the phone can say so instead of generic advice.
+- [x] **Words glued together in streamed Gemini replies** (found 2026-10-19: "Ican't",
+  "yourcomputer", "The`C:\…`" on screen, in history and spoken). `gemini_bridge` stripped
+  every streamed chunk before joining them; chunks keep their edges now
+  (`test_gemini_stream.py` fails without the fix).
 - [ ] **WhatsApp channel** (never connected: the build sandbox's network blocks
   web.whatsapp.com, so only a failed dial was seen with the real library). On a PC:
   link by QR; "Jarvis, what time is it?" in Message yourself; a note without the name

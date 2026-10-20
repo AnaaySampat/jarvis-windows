@@ -183,8 +183,9 @@ def _clean_desc(desc: "str | None") -> str:
     """Strip a trailing parenthetical from a permission description. The Approve
     dialog's text carries a disclosure ('(during a task I may glance at a
     screenshot…)') meant for the ASK; left in a refusal it reads oddly ('I won't
-    open and control the browser (during a task…)')."""
-    return re.sub(r"\s*\([^)]*\)\s*$", "", (desc or "").strip()) or "do that"
+    open and control the browser (during a task…)'). An MCP tool's JSON arguments go
+    too: the card shows them, read aloud they took 17 s."""
+    return re.sub(r"\s*(\([^)]*\)|\{.*\})\s*$", "", (desc or "").strip(), flags=re.S) or "do that"
 
 
 def _spoken_refusal(desc: "str | None") -> str:
@@ -194,8 +195,8 @@ def _spoken_refusal(desc: "str | None") -> str:
 
 # Appended to screen-vision questions to curb fabrication: the model must report
 # only what's visible and transcribe text verbatim, rather than inventing a
-# plausible answer (the "You're invited to Anaay's party!" guess when the screen
-# actually read "SWEET SIXTEEN / Anaay / …").
+# plausible answer (the "You're invited to Sam's party!" guess when the screen
+# actually read "BIRTHDAY / Sam / …").
 _SCREEN_READ_GUIDANCE = (
     " Report ONLY what is actually visible in this image. If I asked you to read "
     "text, transcribe it EXACTLY as shown — every word and number — and do not "

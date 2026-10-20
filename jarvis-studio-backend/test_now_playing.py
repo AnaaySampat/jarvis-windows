@@ -129,6 +129,18 @@ class CastTests(unittest.TestCase):
         self.assertIn("Spotify", msg)
         self.assertEqual(t.cast_args, [])
 
+    def test_without_winrt_it_says_it_went_by_the_address_bar(self):
+        # Seen 2026-10-20: the backend's venv had no winrt, so the TV started at the
+        # page's stale &t=600s, 6 minutes behind, and the PC kept playing — unsaid.
+        t = FakeTv()
+        fake, log = fake_np(None, [{**self.WIN[0], "url": self.WIN[0]["url"] + "&t=600s"}],
+                            media=False)
+        ok, msg = tv.cast(t, "", np=fake)
+        self.assertTrue(ok)
+        self.assertEqual(t.cast_args[0][1], 600)
+        self.assertEqual(log, [])
+        self.assertIn("install winrt-Windows.Media.Control", msg)
+
     def test_a_link_goes_straight_to_the_tv(self):
         t = FakeTv()
         fake, log = fake_np(None, [])
@@ -142,7 +154,7 @@ class CastTests(unittest.TestCase):
 class TvCastTests(unittest.TestCase):
     """Tv.cast on a scripted TV: the YouTube deep link, and the start time checked."""
 
-    def tv(self, position_ms):
+    def tv(self, position_ms, step=2000):
         sent = []
         turns = {"n": 0}
 
@@ -152,9 +164,11 @@ class TvCastTests(unittest.TestCase):
                 return True, "mCurrentFocus=Window{1 u0 com.google.android.youtube.tv/x}", ""
             if "media_session" in cmd:
                 turns["n"] += 1
-                pos = position_ms + turns["n"] * 2000
+                pos = position_ms + turns["n"] * step
+                upd = 1 if turns["n"] > 1 else 0      # it reports once the link is sent
                 return True, ("package=com.google.android.youtube.tv\n"
-                              f"  state=PlaybackState {{state=3, position={pos}, buffered"), ""
+                              f"  state=PlaybackState {{state=3, position={pos}, buffered "
+                              f"position=0, speed=1.0, updated={upd}, actions=379"), ""
             return True, "", ""
         return tv.Tv(sh, wait=lambda s: None), sent
 
@@ -162,14 +176,105 @@ class TvCastTests(unittest.TestCase):
         t, sent = self.tv(754_000)
         ok, msg = t.cast({"service": "youtube", "id": "jfKfPfyJRdk"}, 754, "lofi")
         self.assertTrue(ok)
-        self.assertIn("watch?v=jfKfPfyJRdk&t=754s", sent[0])
+        self.assertIn("watch?v=jfKfPfyJRdk&t=754s", next(c for c in sent if "am start" in c))
         self.assertIn("from 12:34", msg)
+
+    def test_youtube_playing_with_a_frozen_position_is_playing(self):
+        # Seen 2026-10-20: YouTube's TV app sat at position=902099 for 95 s while
+        # playing, so "couldn't confirm it started playing" and the PC wasn't paused.
+        t, _ = self.tv(600_503, step=0)
+        ok, msg = t.cast({"service": "youtube", "id": "jfKfPfyJRdk"}, 600, "lofi")
+        self.assertTrue(ok, msg)
+        self.assertIn("from 10:00", msg)
+
+    def test_a_tv_in_standby_is_switched_on_before_the_link(self):
+        # Seen 2026-10-20: with Remote start on, "off" is standby with ADB up; the link
+        # opened YouTube on a dark screen ("couldn't confirm it started playing").
+        sent, awake = [], {"on": False}
+
+        def sh(cmd):
+            sent.append(cmd)
+            if cmd == "input keyevent 224":
+                awake["on"] = True
+            if "mWakefulness" in cmd:
+                return True, f"mWakefulness={'Awake' if awake['on'] else 'Asleep'}", ""
+            if "mCurrentFocus" in cmd:
+                return True, "mCurrentFocus=Window{1 u0 com.google.android.youtube.tv/x}", ""
+            if "media_session" in cmd and awake["on"]:
+                return True, ("package=com.google.android.youtube.tv\n  state=PlaybackState "
+                              "{state=3, position=0, buffered position=0, speed=1.0, "
+                              f"updated={len(sent)}, actions=379"), ""
+            return True, "", ""
+        ok, msg = tv.Tv(sh, wait=lambda s: None).cast({"service": "youtube", "id": "rru2passumI"})
+        self.assertTrue(ok, msg)
+        self.assertLess(sent.index("input keyevent 224"),
+                        next(i for i, c in enumerate(sent) if "am start" in c))
+
+    def test_youtubes_who_is_watching_gets_one_ok_then_the_link_again(self):
+        # Seen 2026-10-20: after waking, YouTube asks "Who's watching?" and swallows the
+        # link. The user chose: pick the highlighted account, as Netflix's gate does.
+        sent, seen = [], {"ok": False, "links": 0}
+
+        def sh(cmd):
+            sent.append(cmd)
+            seen["links"] += cmd.startswith("am start")
+            seen["ok"] |= cmd == "input keyevent 23"
+            if "mCurrentFocus" in cmd:
+                return True, "mCurrentFocus=Window{1 u0 com.google.android.youtube.tv/x}", ""
+            if "media_session" in cmd and seen["ok"] and seen["links"] >= 2:
+                return True, ("package=com.google.android.youtube.tv\n  state=PlaybackState "
+                              "{state=3, position=120000, buffered position=0, speed=1.0, "
+                              "updated=5, actions=379"), ""
+            return True, "", ""                 # pidof: YouTube not running, a cold start
+        ok, msg = tv.Tv(sh, wait=lambda s: None).cast({"service": "youtube", "id": "rru2passumI"}, 120)
+        self.assertTrue(ok, msg)
+        links = [i for i, c in enumerate(sent) if c.startswith("am start")]
+        self.assertEqual(len(links), 2)
+        self.assertTrue(links[0] < sent.index("input keyevent 23") < links[1])
+
+    def test_a_search_after_who_is_watching_is_sent_again(self):
+        sent, seen = [], {"ok": 0, "links": 0}
+
+        def sh(cmd):
+            sent.append(cmd)
+            seen["links"] += cmd.startswith("am start")
+            seen["ok"] += cmd == "input keyevent 23"
+            if "mCurrentFocus" in cmd:
+                return True, "mCurrentFocus=Window{1 u0 com.google.android.youtube.tv/x}", ""
+            if "media_session" in cmd and seen["ok"] >= 2 and seen["links"] >= 2:
+                return True, ("package=com.google.android.youtube.tv\n  state=PlaybackState "
+                              "{state=3, position=0, buffered position=0, speed=1.0, "
+                              "updated=5, actions=379"), ""
+            return True, "", ""                 # cold start: the first OK picks the account
+        ok, msg = tv.Tv(sh, wait=lambda s: None).youtube_play("lofi")
+        self.assertTrue(ok, msg)
+        self.assertEqual(seen["links"], 2)
+
+    def test_the_last_videos_leftover_session_isnt_the_new_one(self):
+        # Seen 2026-10-20: the lofi video's state 3 (position 436, not reported since)
+        # was taken for the shared link playing, so the reply said the TV ignored
+        # ?t=120 while it was at 2:00.
+        reads = iter([(436, 100)] * 3 + [(120_393, 200)] * 10)
+
+        def sh(cmd):
+            if "mCurrentFocus" in cmd:
+                return True, "mCurrentFocus=Window{1 u0 com.google.android.youtube.tv/x}", ""
+            if "media_session" in cmd:
+                pos, upd = next(reads)
+                return True, ("package=com.google.android.youtube.tv\n  state=PlaybackState "
+                              f"{{state=3, position={pos}, buffered position=0, speed=1.0, "
+                              f"updated={upd}, actions=379"), ""
+            return True, "", ""
+        ok, msg = tv.Tv(sh, wait=lambda s: None).cast({"service": "youtube", "id": "rru2passumI"}, 120)
+        self.assertTrue(ok, msg)
+        self.assertIn("from 2:00", msg)
+        self.assertNotIn("not from", msg)
 
     def test_says_when_the_tv_ignored_the_start_time(self):
         t, _ = self.tv(0)
         ok, msg = t.cast({"service": "youtube", "id": "jfKfPfyJRdk"}, 754, "lofi")
         self.assertTrue(ok)
-        self.assertIn("from the start", msg)
+        self.assertIn("not from 12:34: it didn't take the start time", msg)
 
     def test_refuses_what_isnt_a_video_id(self):
         t, sent = self.tv(0)

@@ -273,10 +273,13 @@ def _body(messages: list, max_tokens: int, temperature: float,
     return body
 
 
-def _extract_text(data: dict) -> str:
+def _extract_text(data: dict, strip: bool = True) -> str:
+    """A reply's text. A streamed chunk keeps its edges (strip=False): stripping each
+    one glued words across chunk boundaries ("Ican't", "yourcomputer")."""
     try:
         parts = data["candidates"][0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in parts).strip()
+        text = "".join(p.get("text", "") for p in parts)
+        return text.strip() if strip else text
     except (KeyError, IndexError, TypeError):
         return ""
 
@@ -452,7 +455,7 @@ async def gemini_stream(messages: list, model: str, api_key: str,
                     for fc in _extract_function_calls(obj):
                         tool_sink.append({"id": f"call_{len(tool_sink)}",
                                           "name": fc["name"], "args": fc["args"]})
-                delta = _extract_text(obj)
+                delta = _extract_text(obj, strip=False)
                 if delta:
                     full += delta
                     yield delta, full

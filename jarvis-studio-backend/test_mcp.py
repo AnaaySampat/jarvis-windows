@@ -128,6 +128,11 @@ class PaletteTests(unittest.TestCase):
         mc._servers["gh"] = fake_server(trusted=True)
         self.assertFalse(needs_permission({"type": "mcp", "tool": "mcp__gh__create_issue"})[0])
 
+    def test_a_refusal_is_spoken_without_the_arguments(self):
+        import main
+        self.assertEqual(main._spoken_refusal('let the “gh” MCP server run create_issue {"title": "Crash"}'),
+                         "Understood, sir — I won't let the “gh” MCP server run create_issue.")
+
 
 class RunTests(unittest.TestCase):
     """mc.run on an executor thread, the call on a running loop (as in the app)."""
@@ -158,6 +163,10 @@ class RunTests(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertIn("not instructions", r["message"])
         self.assertIn("#1 Crash on start", r["message"])
+        # The model gets the answer and words it; the raw label isn't read aloud.
+        self.assertEqual(r["speak"], "")
+        self.assertIn("#1 Crash on start", r["feed_to_model"]["content"])
+        self.assertIn("not instructions", r["feed_to_model"]["content"])
         r = mc.run({"type": "mcp", "tool": "mcp__gh__create_issue",
                     "args": {"title": "x", "labels": '["bug"]'}})
         self.assertFalse(r["ok"])

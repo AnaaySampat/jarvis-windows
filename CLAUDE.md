@@ -44,7 +44,7 @@ cd jarvis-studio-backend; python -m unittest discover -s . -p "test_*.py" -t .
 cd jarvis-studio-gui; npm run build
 ```
 
-425 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
+438 backend tests, no network or API keys needed. GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
 installs a hand-picked minimum — add to that list if a new test needs a module).
 For anything touching the live voice/WS wiring, run the app (`python start.py`),
 don't stop at compiling.

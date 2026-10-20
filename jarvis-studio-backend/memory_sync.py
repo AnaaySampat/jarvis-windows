@@ -90,6 +90,11 @@ def gone(kind: str, keys, at: "int | None" = None) -> None:
         _save_tombs(tombs)
 
 
+def fact_tombstones() -> dict:
+    """Forgotten facts: key → when (ms)."""
+    return _tombs()["facts"]
+
+
 def revived(kind: str, key: str) -> None:
     """A fact/routine with this key exists again: forget its tombstone."""
     with _lock:

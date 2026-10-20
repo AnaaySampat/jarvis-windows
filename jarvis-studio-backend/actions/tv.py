@@ -442,6 +442,9 @@ class Tv:
         pkg = self.resolve_app(name)
         if not pkg:
             return False, f"There's no app called “{name}” on the TV."
+        on, why = self.screen_on()
+        if not on:
+            return False, why
         label = _APP_NAMES.get(pkg, name.strip())
         # TV apps register under LEANBACK_LAUNCHER; a phone-style app only under LAUNCHER.
         out = self.sh(f"monkey -p {pkg} -c android.intent.category.LEANBACK_LAUNCHER 1")
@@ -455,9 +458,10 @@ class Tv:
         return False, (f"I asked the TV to open {label}, but it's showing "
                        f"{_APP_NAMES.get(now) or now or 'something else'} instead.")
 
-    def sessions(self) -> "dict[str, tuple[int, int]]":
-        """Every media session's (state, position), by package."""
-        found: "dict[str, tuple[int, int]]" = {}
+    def sessions(self) -> "dict[str, tuple[int, int, int]]":
+        """Every media session's (state, position, updated), by package. `updated` is
+        when the app last reported its state (the TV's uptime, ms)."""
+        found: "dict[str, tuple[int, int, int]]" = {}
         pkg = ""
         for line in self.sh("dumpsys media_session").splitlines():
             p = re.match(r"^\s*package=([A-Za-z0-9_.]+)", line)
@@ -465,18 +469,26 @@ class Tv:
                 pkg = p.group(1)
             s = re.search(r"state=PlaybackState \{state=(-?\d+), position=(-?\d+)", line)
             if s and pkg and pkg not in found:
-                found[pkg] = (int(s.group(1)), int(s.group(2)))
+                u = re.search(r"updated=(-?\d+)", line)
+                found[pkg] = (int(s.group(1)), int(s.group(2)), int(u.group(1)) if u else 0)
         return found
 
-    def playing_now(self, pkg: str) -> "tuple[bool, tuple | None, tuple | None]":
+    def playing_now(self, pkg: str, since: "tuple | None" = None
+                    ) -> "tuple[bool, tuple | None, tuple | None]":
         """Playing = state 3 AND the position moving between two reads. State alone
-        lies: Netflix reports state 3 at position 0 while "Who's watching?" is up."""
+        lies: Netflix reports state 3 at position 0 while "Who's watching?" is up.
+        YouTube's TV app reports its position only when its state changes (2026-10-20:
+        902099 for 95 s while playing), so for it state 3 in both reads is enough —
+        but after a new link only once it has reported since (`since`, its session
+        before the link): the last video's leftover state 3 isn't the new one playing."""
         before = self.sessions().get(pkg)
         if not before or before[0] != 3:
             return False, before, None
         self.wait(2.5)
         after = self.sessions().get(pkg)
-        return bool(after and after[0] == 3 and after[1] > before[1] + 500), before, after
+        moved = bool(after) and (after[1] > before[1] + 500
+                                 or (pkg == YOUTUBE and after != since))
+        return bool(after and after[0] == 3 and moved), before, after
 
     def playback(self, what: str) -> "tuple[bool, str]":
         """Pause/resume by the app's reported state, not by key name: Netflix on the
@@ -527,6 +539,9 @@ class Tv:
 
     def netflix_open(self, path: str, name: str) -> "tuple[bool, str]":
         """Open a Netflix `title/<id>` or `watch/<id>` link and confirm it plays."""
+        on, why = self.screen_on()
+        if not on:
+            return False, why
         cold = not self.sh(f"pidof {NETFLIX}").strip()
         before = None if cold else self.playing_now(NETFLIX)
         sent_at = self.now()
@@ -577,17 +592,30 @@ class Tv:
             return False, "Only YouTube and Netflix links can be sent to the TV."
         start = max(int(start_s or 0), 0)
         url = f"https://www.youtube.com/watch?v={vid}" + (f"&t={start}s" if start >= 5 else "")
-        self.sh(f"am start -a android.intent.action.VIEW -d {shell_quote(url)} {YOUTUBE}")
+        on, why = self.screen_on()
+        if not on:
+            return False, why
+        gate = self.youtube_gate(woke=bool(why))
+        prior = self.sessions().get(YOUTUBE)
+        link_cmd = f"am start -a android.intent.action.VIEW -d {shell_quote(url)} {YOUTUBE}"
+        self.sh(link_cmd)
         if not self.wait_for_focus(YOUTUBE):
             return False, "I asked the TV to open YouTube, but it didn't come up."
-        for _ in range(8):
+        for i in range(8):
             self.wait(2)
-            playing, _before, after = self.playing_now(YOUTUBE)
+            playing, _before, after = self.playing_now(YOUTUBE, since=prior)
             if not playing:
+                if gate and i == 2:          # still nothing: past "Who's watching?", again
+                    gate = False
+                    self.keyevent(_KEYS["ok"])
+                    self.wait(4)
+                    self.sh(link_cmd)
                 continue
             if start >= 5 and after and after[1] < (start - 10) * 1000:
-                return True, (f"Playing {label} on YouTube on the TV, but from the start: "
-                              f"it didn't take the start time ({_clock(start)}).")
+                # Not "from the start": a TV already playing this video just carries on
+                # where it was (seen 2026-10-20).
+                return True, (f"Playing {label} on YouTube on the TV, but not from "
+                              f"{_clock(start)}: it didn't take the start time.")
             return True, (f"Playing {label} on YouTube on the TV"
                           + (f" from {_clock(start)}." if start >= 5 else "."))
         return False, f"I opened {label} in YouTube on the TV, but couldn't confirm it started playing."
@@ -596,15 +624,26 @@ class Tv:
         """YouTube's own search link (verified on the TV), then OK on the top result."""
         q = query.strip()[:200]
         url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(q, safe="")
-        self.sh(f"am start -a android.intent.action.VIEW -d {shell_quote(url)} {YOUTUBE}")
+        on, why = self.screen_on()
+        if not on:
+            return False, why
+        gate = self.youtube_gate(woke=bool(why))
+        prior = self.sessions().get(YOUTUBE)
+        search_cmd = f"am start -a android.intent.action.VIEW -d {shell_quote(url)} {YOUTUBE}"
+        self.sh(search_cmd)
         if not self.wait_for_focus(YOUTUBE):
             return False, "I asked the TV to open YouTube, but it didn't come up."
         self.wait(5)   # results render before OK means "the top result"
         self.keyevent(_KEYS["ok"])
-        for _ in range(6):
+        for i in range(6):
             self.wait(2)
-            if self.playing_now(YOUTUBE)[0]:
+            if self.playing_now(YOUTUBE, since=prior)[0]:
                 return True, f"Playing the top YouTube result for “{q}” on the TV."
+            if gate and i == 1:              # that OK picked the account: search again
+                gate = False
+                self.sh(search_cmd)
+                self.wait(5)
+                self.keyevent(_KEYS["ok"])
         return False, (f"I opened YouTube's results for “{q}” on the TV, but couldn't "
                        "confirm a video started.")
 
@@ -669,6 +708,22 @@ class Tv:
             if w == want or (not on and w == "Dozing"):
                 return True, f"Turned the TV {'on' if on else 'off'}."
         return False, f"I sent the TV the {'wake' if on else 'sleep'} key, but it didn't change."
+
+    def youtube_gate(self, woke: bool) -> bool:
+        """Whether YouTube will likely ask "Who's watching?" first: it does after the TV
+        wakes and on a cold start, and swallows the link (2026-10-20). ADB can't see it
+        (uiautomator finds nothing in YouTube's TV app), so cast/youtube_play press OK
+        once if nothing starts — the highlighted, last-used account (the user's choice,
+        like Netflix's profile gate) — and send the link again."""
+        return woke or not self.sh(f"pidof {YOUTUBE}").strip()
+
+    def screen_on(self) -> "tuple[bool, str]":
+        """Before starting anything. A TV in standby with its network up answers ADB but
+        shows nothing, so an app opened there plays to a dark screen (2026-10-20: with
+        Remote start on, this TV never goes further than that). Unknown → carry on."""
+        if self.wakefulness() in ("Asleep", "Dozing"):
+            return self.power(True)
+        return True, ""
 
     def key(self, spec: str) -> "tuple[bool, str]":
         words = re.findall(r"[a-z]+|\d+", (spec or "").lower())
@@ -821,6 +876,10 @@ def cast(tv: Tv, target: str, np=None) -> "tuple[bool, str]":
         return False, ("I couldn't find a YouTube or Netflix page open on this PC. (Install "
                        "the winrt-Windows.Media.Control package so I can see what's playing.)")
     link, name = page["link"], title or ""
+    # Only without winrt can nothing be playing here: then all there is to go by is the
+    # address bar (2026-10-20: a stale &t=600s started the TV 6 minutes behind the PC).
+    blind = "" if found else (" (I went by the address bar: install winrt-Windows.Media."
+                              "Control so I can start where you are and pause it here.)")
     if link["service"] == "netflix":
         paused = bool(found) and np.pause(found)
         if paused:
@@ -828,14 +887,14 @@ def cast(tv: Tv, target: str, np=None) -> "tuple[bool, str]":
         ok, msg = tv.cast(link, 0, name)
         if paused:
             msg += " Paused it on the PC." if ok else " (It's paused on the PC.)"
-        return ok, msg
+        return ok, msg + blind
     start = found["position"] if found else link.get("t", 0)
     ok, msg = tv.cast(link, start, name)
     if ok and found:
         msg += " Paused it on the PC." if np.pause(found) else " (I couldn't pause it on the PC.)"
     elif ok:
         msg += " It's still playing on the PC."
-    return ok, msg
+    return ok, msg + blind
 
 
 _WAKE_WAIT_S = 30.0
@@ -862,10 +921,12 @@ def wake(cfg: dict, wait=time.sleep, now=time.monotonic) -> "tuple[bool, str] | 
         wait(2.0)
         if shell(cfg["host"], "echo ok")[0]:
             return True, "Woke the TV over the network."
-    return False, ("I sent the TV a wake-up packet, but it didn't come online within "
-                   f"{int(_WAKE_WAIT_S)} seconds. On the TV, turn on Settings → Network → "
-                   "Remote start (it may be called 'Turn on with Wi-Fi/LAN'), and make sure "
-                   "this PC is on the same network as the TV.")
+    # Both causes, not just "off": on 2026-10-20 the TV was on (the phone could reach it)
+    # while this PC couldn't for minutes at a time, and Remote start was already on.
+    return False, ("I couldn't reach the TV, so I sent it a wake-up packet, but it still didn't "
+                   f"answer within {int(_WAKE_WAIT_S)} seconds. If it's off, Settings → Network "
+                   "→ Remote start on the TV (it may be called 'Turn on with Wi-Fi/LAN') lets "
+                   "me wake it; if it's on, this PC can't reach it over the network right now.")
 
 
 # ── Seeing the screen ─────────────────────────────────────────────────────────
@@ -977,7 +1038,7 @@ def look(host: str, question: str, tv: "Tv | None" = None, grab=None) -> dict:
         if shot.get("ok") and shot.get("blocked"):
             # State 3 at position 0 is Netflix's "Who's watching?" screen, not playback
             # (live: this said "playing" there). A moving position would cost 2.5s more.
-            state, position = tv.sessions().get(pkg, (0, 0))
+            state, position, _ = tv.sessions().get(pkg, (0, 0, 0))
             doing = (" and playing" if state == 3 and position > 0
                      else " and paused" if state == 2 else "")
             return {"type": "tv", "ok": True,
