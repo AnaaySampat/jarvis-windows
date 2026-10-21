@@ -26,7 +26,7 @@ from server.websocket_server import (
     configure_device_identity, set_remote_allowed, set_ready_info,
     emit_task_event, subscribe_task, subscribe_local_clients,
     is_current_sender_remote, current_authenticated_device,
-    connected_device_ids,
+    connected_device_ids, send_to_device,
     disconnect_authenticated_device,
 )
 from server import webrtc_screen
@@ -54,6 +54,7 @@ import memory_store
 import routines
 import mcp_client
 import connectors
+import phone_link
 import turn_recorder
 import reminders
 import playbooks
@@ -2980,6 +2981,13 @@ async def _start_whatsapp() -> None:
     await _wa.start()
 
 
+async def handle_phone_result(data) -> None:
+    """Phone → the answer to a command this PC sent it (phone_link.py). Only the
+    device the command went to can answer it."""
+    if is_current_sender_remote():
+        phone_link.on_result(current_authenticated_device(), data)
+
+
 async def handle_whatsapp_state(_data) -> None:
     await _emit_whatsapp()
 
@@ -4627,6 +4635,8 @@ async def main(use_text: bool) -> None:
             "protocol.hello", "stop_control",
             # One memory: the phone merges facts and routines (memory_sync.py).
             "memory.sync",
+            # The answer to a command this PC sent the phone (phone_link.py).
+            "phone.result",
             # Live remote-desktop: WebRTC screen signalling + direct input.
             "webrtc_offer", "webrtc_ice", "stop_screen",
             "arm_control", "disarm_control", "remote_input",
@@ -4644,6 +4654,12 @@ async def main(use_text: bool) -> None:
         register_handler("arm_control", handle_arm_control)
         register_handler("disarm_control", handle_disarm_control)
         register_handler("remote_input", handle_remote_input)
+        register_handler("phone.result", handle_phone_result)
+        # "Set an alarm on my phone" from here or from WhatsApp (phone_link.py).
+        phone_link.configure(asyncio.get_running_loop(), send_to_device, connected_device_ids,
+                             lambda: any(not d["pending"] for d in (
+                                 _device_registry.list_devices(include_revoked=False)
+                                 if _device_registry else ())))
         on_disconnect(handle_remote_disconnect)
         # Bind all interfaces so a Tailscale peer can reach us; the crypto+whois
         # transport gate is the real access control (plan G3/S3). Respect an

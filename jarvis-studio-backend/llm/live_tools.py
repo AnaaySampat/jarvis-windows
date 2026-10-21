@@ -450,10 +450,36 @@ def function_declarations(places_ok: "bool | None" = None,
              "new_task": _str("New task text when editing an item.")},
             ["action"]),
         *_tv_tools(_tv_paired()),
+        *_phone_tools(),
         *_email_tools(),
         *_skill_tools(),
         *_mcp_tools(),
     ]
+
+
+PHONE_TOOLS = ("phone_command",)
+
+
+def _phone_paired() -> bool:
+    try:
+        import phone_link
+        return phone_link.paired()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _phone_tools() -> list:
+    """`phone_command` (phone_link.py) — only once a phone is paired (Settings ▸ Devices)."""
+    if not _phone_paired():
+        return []
+    return [_fn("phone_command",
+        "Do something on the user's paired Android phone, through JARVIS on the phone: "
+        "set an alarm or a timer, a reminder, the flashlight, ringer or Do Not Disturb, "
+        "the phone's volume, play/pause its music. Use it whenever the user says 'on my "
+        "phone' or asks for an alarm. Give the request as the user would say it to the "
+        "phone ('set an alarm for 7am called gym'). The phone answers with what really "
+        "happened; JARVIS must be open on it (or recently used) to answer.",
+        {"request": _str("The request for the phone, in plain words.")}, ["request"])]
 
 
 EMAIL_TOOLS = ("check_email", "read_email", "draft_email")
@@ -589,6 +615,9 @@ def groups() -> dict:
     """GROUPS, plus `email` while a mailbox is connected and `mcp` while an MCP server
     is."""
     out = dict(GROUPS)
+    if _phone_paired():
+        out["phone"] = ("The user's paired phone: alarms, timers, reminders, flashlight, "
+                        "ringer, Do Not Disturb, its volume and music", PHONE_TOOLS)
     if _email_connected():
         out["email"] = ("The user's email: check or search the inbox, read a message, "
                         "write a draft (never sends)", EMAIL_TOOLS)
@@ -605,7 +634,13 @@ def groups() -> dict:
 def _group_of(name: str) -> "str | None":
     if name.startswith(MCP_PREFIX):
         return "mcp"
+    if name in PHONE_TOOLS:
+        return "phone"
     return "email" if name in EMAIL_TOOLS else _TOOL_GROUP.get(name)
+
+
+_PHONE_CUE = re.compile(r"\b(my phone|the phone|on (?:my )?(?:phone|mobile)|phone'?s|"
+                        r"(?:my )?mobile|alarms?|wake me)\b", re.IGNORECASE)
 
 
 _EMAIL_CUE = re.compile(r"\b(e-?mails?|mail|inbox|gmail|unread|draft|repl(?:y|ied) to|"
@@ -624,7 +659,7 @@ def _mcp_cue(text: str) -> bool:
     return bool(re.search(rf"\b(mcp|{words})\b", text or "", re.IGNORECASE))
 
 
-_active: "set[str]" = set(GROUPS) | {"mcp", "email"}   # until the first turn: everything
+_active: "set[str]" = set(GROUPS) | {"mcp", "email", "phone"}   # until the first turn: everything
 _used: "set[str]" = set()           # groups this turn called or loaded
 _recent: "list[set[str]]" = []      # what the last two turns used (newest last)
 
@@ -634,6 +669,8 @@ def groups_for(text: str) -> "set[str]":
     found = {g for g, rx in _CUE_RE.items() if rx.search(text or "")}
     if _EMAIL_CUE.search(text or ""):
         found.add("email")
+    if _PHONE_CUE.search(text or ""):
+        found.add("phone")
     return found | {"mcp"} if _mcp_cue(text) else found
 
 
@@ -750,6 +787,7 @@ _SPEC = {
                                     "new_time": a.get("new_time", ""),
                                     "new_task": a.get("new_task", "")},
     "load_tools":        lambda a: {"type": "load_tools", "groups": _group_list(a.get("groups"))},
+    "phone_command":     lambda a: {"type": "phone_command", "request": a.get("request", "")},
     "check_email":       lambda a: {"type": "email_search", "query": a.get("query", ""),
                                     "unread": bool(a.get("unread")), "limit": a.get("limit") or 8},
     "read_email":        lambda a: {"type": "email_read", "id": str(a.get("id", ""))},

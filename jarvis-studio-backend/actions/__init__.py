@@ -174,6 +174,8 @@ def _describe(spec: dict, atype: str) -> str:
         goal = spec.get("goal") or spec.get("task") or spec.get("target") or spec.get("text")
         where = "browser" if atype in _AUTOPILOT_BROWSER_TYPES else "PC"
         return f"do this on the {where}: {goal}"
+    if atype == "phone_command":
+        return f"ask your phone to: {spec.get('request') or spec.get('text') or 'do something'}"
     if atype == "email_search":
         q = spec.get("query")
         return "look through your email" + (f" for “{q}”" if q else "")
@@ -1098,6 +1100,9 @@ def _run_one(spec: dict) -> dict:
     elif atype == "mcp":
         import mcp_client
         return mcp_client.run(spec)
+    elif atype == "phone_command":
+        import phone_link
+        return phone_link.run(spec)
     elif atype in ("email_search", "email_read", "email_draft"):
         from actions import email_box
         if atype == "email_search":

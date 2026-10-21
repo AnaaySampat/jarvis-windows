@@ -74,6 +74,21 @@ def connected_device_ids() -> "set[str]":
     return {device.device_id for device in _authenticated_devices.values()}
 
 
+async def send_to_device(device_id: str, event: str, data) -> int:
+    """Send one host-signed event to every live socket of a paired device (a command for
+    the phone, phone_link.py). Returns how many sockets it went to; 0 = not connected."""
+    targets = [client for client, device in tuple(_authenticated_devices.items())
+               if device.device_id == device_id]
+    sent = 0
+    for client in targets:
+        try:
+            await _send_payload(client, {"event": event, "data": data})
+            sent += 1
+        except Exception as exc:  # noqa: BLE001 — a dead socket is just not a target
+            print(f"[WebSocket] send to {device_id} failed: {exc}", flush=True)
+    return sent
+
+
 async def disconnect_authenticated_device(device_id: str) -> int:
     """Immediately terminate every socket bound to a newly revoked device."""
     targets = [
