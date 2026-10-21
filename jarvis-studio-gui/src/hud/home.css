@@ -1,7 +1,8 @@
 /* home.css — the home screen (HudApp.jsx, widgets.jsx, Orb.jsx). A calm, neutral dark
    surface; the user's accent (--ac / --ac2) is kept for JARVIS itself, live values and
-   active states. Background (grid / solid / aurora / minimal) and density (normal /
-   compact) come from Customize. The panels that open on top are hud.css. */
+   active states. From Customize: --h-r (corners), --glow (0–1), the background (grid /
+   solid / aurora / minimal / image) and density (normal / compact); the HUD card style
+   and font are ironman.css. The panels that open on top are hud.css. */
 
 .home {
   --h-bg: #0a0c10;
@@ -12,6 +13,9 @@
   --h-t2: #9ba6b2;
   --h-t3: #67717c;
   --h-r: 14px;
+  --h-r-s: calc(var(--h-r) * 0.65);
+  --glow: 0.4;
+  --im-glow: color-mix(in oklab, var(--ac) calc(var(--glow) * 55%), transparent);
   /* the overlays (hud.css) read these: neutral text instead of the old cyan-white */
   --bg-0: var(--h-bg);
   --txt: var(--h-t1);
@@ -40,7 +44,7 @@
           mask-image: radial-gradient(65% 70% at 50% 42%, #000 15%, transparent 85%);
 }
 .home-bg::after {
-  background: radial-gradient(38% 44% at 50% 42%, color-mix(in oklab, var(--ac) 10%, transparent), transparent 72%);
+  background: radial-gradient(38% 44% at 50% 42%, color-mix(in oklab, var(--ac) calc(var(--glow) * 25%), transparent), transparent 72%);
 }
 .home--bg-grid .home-bg::before { opacity: 1; }
 .home--bg-minimal .home-bg::after { display: none; }
@@ -52,6 +56,14 @@
   animation: home-aurora 22s ease-in-out infinite alternate;
 }
 @keyframes home-aurora { from { transform: translate3d(-3%, -2%, 0); } to { transform: translate3d(3%, 2%, 0) scale(1.05); } }
+/* the user's own picture, dimmed so the cards stay readable */
+.home.home--bg-image .home-bg { background: var(--bg-img, none) center / cover no-repeat; }
+.home.home--bg-image .home-bg::before { opacity: 0; }
+.home.home--bg-image .home-bg::after {
+  inset: 0; opacity: 1; animation: none;
+  background: radial-gradient(120% 95% at 50% 42%, color-mix(in oklab, var(--h-bg) 62%, transparent),
+              color-mix(in oklab, var(--h-bg) 86%, transparent));
+}
 
 /* ── header ── */
 .home-top {
@@ -67,19 +79,19 @@
   width: 20px; height: 20px; border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, color-mix(in oklab, white 70%, var(--ac)) 0%, var(--ac) 45%,
               color-mix(in oklab, var(--ac) 40%, #000) 100%);
-  box-shadow: 0 0 14px color-mix(in oklab, var(--ac) 45%, transparent);
+  box-shadow: 0 0 14px color-mix(in oklab, var(--ac) min(100%, calc(var(--glow) * 112%)), transparent);
 }
 .home-name { font-size: 15px; font-weight: 650; letter-spacing: 0.06em; }
 .home-conn {
   display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; margin-left: 4px;
-  border-radius: 999px; border: 1px solid var(--h-line); font-size: 11.5px; color: var(--h-t3);
+  border-radius: calc(var(--h-r) * 2); border: 1px solid var(--h-line); font-size: 11.5px; color: var(--h-t3);
 }
 .home-conn::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #ff6b7a; }
 .home-conn.is-on::before { background: #3ddc97; box-shadow: 0 0 6px rgba(61, 220, 151, 0.6); }
 .home-nav { display: flex; gap: 2px; margin-left: 10px; min-width: 0; }
 .home-nav-btn {
   display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; flex-shrink: 0;
-  border: none; border-radius: 9px; background: none; cursor: pointer;
+  border: none; border-radius: var(--h-r-s); background: none; cursor: pointer;
   color: var(--h-t2); font-family: var(--body); font-size: 13px; font-weight: 500;
   transition: background 0.15s, color 0.15s;
 }
@@ -97,7 +109,7 @@
 .home-tools .tb-group + .tb-group { border-left: 1px solid var(--h-line); }
 .home-tools .tb-group:last-child { padding-right: 0; }
 .home-tools .hud-fixed-btn {
-  width: 34px; height: 34px; border-radius: 9px; font-size: 16px;
+  width: 34px; height: 34px; border-radius: var(--h-r-s); font-size: 16px;
   background: none; border: 1px solid transparent; color: var(--h-t2); box-shadow: none; animation: none;
 }
 .home-tools .hud-fixed-btn:hover { background: rgba(255, 255, 255, 0.06); color: var(--h-t1); box-shadow: none; }
@@ -171,7 +183,7 @@
 .ask {
   width: 100%; max-width: 560px; height: 54px; flex-shrink: 0;
   display: flex; align-items: center; gap: 4px; padding: 0 7px 0 18px;
-  border-radius: 16px; background: var(--h-card); border: 1px solid var(--h-line-2);
+  border-radius: calc(var(--h-r) + 2px); background: var(--h-card); border: 1px solid var(--h-line-2);
   box-shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.7);
   transition: border-color 0.15s, box-shadow 0.15s;
 }
@@ -187,7 +199,7 @@
 .ask-kbd { margin-right: 6px; color: var(--h-t3); border-color: var(--h-line-2); }
 .ask-btn {
   display: grid; place-items: center; width: 40px; height: 40px; flex-shrink: 0; padding: 0;
-  border: none; border-radius: 12px; background: none; color: var(--h-t2); cursor: pointer;
+  border: none; border-radius: max(0px, calc(var(--h-r) - 2px)); background: none; color: var(--h-t2); cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 .ask-btn:hover { background: rgba(255, 255, 255, 0.06); color: var(--h-t1); }
@@ -199,7 +211,7 @@
 
 .hero-starters { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 560px; }
 .hero-starter {
-  height: 32px; padding: 0 14px; border-radius: 999px; cursor: pointer;
+  height: 32px; padding: 0 14px; border-radius: calc(var(--h-r) * 2); cursor: pointer;
   border: 1px solid var(--h-line-2); background: rgba(255, 255, 255, 0.02);
   color: var(--h-t2); font-family: var(--body); font-size: 13px;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
@@ -219,7 +231,7 @@
 }
 .orb-halo {
   position: absolute; inset: -38%; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(circle, color-mix(in oklab, var(--ac) 20%, transparent) 0%, transparent 62%);
+  background: radial-gradient(circle, color-mix(in oklab, var(--ac) calc(var(--glow) * 50%), transparent) 0%, transparent 62%);
   animation: orb-breathe 6s ease-in-out infinite;
 }
 .orb-ball {
@@ -228,7 +240,7 @@
   box-shadow:
     inset 0 0 0 1px color-mix(in oklab, var(--ac) 26%, transparent),
     inset 0 -14px 34px rgba(0, 0, 0, 0.5),
-    0 22px 60px -16px color-mix(in oklab, var(--ac) 50%, transparent);
+    0 22px 60px -16px color-mix(in oklab, var(--ac) min(100%, calc(var(--glow) * 125%)), transparent);
   transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .orb:hover .orb-ball { transform: scale(1.035); }
@@ -289,7 +301,7 @@
 }
 .wd-hd:focus-visible { outline: 2px solid var(--ac); outline-offset: -2px; }
 .wd-ico {
-  display: grid; place-items: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px;
+  display: grid; place-items: center; width: 26px; height: 26px; flex-shrink: 0; border-radius: var(--h-r-s);
   background: rgba(255, 255, 255, 0.05); color: var(--h-t2);
 }
 .wd-title { flex-shrink: 0; font-size: 13.5px; font-weight: 600; color: var(--h-t1); }
@@ -305,7 +317,7 @@
 .wd-empty { font-size: 13px; color: var(--h-t3); }
 .wd-add {
   display: flex; align-items: center; justify-content: center; gap: 6px; height: 32px; cursor: pointer;
-  border-radius: 9px; border: 1px dashed var(--h-line-2); background: none;
+  border-radius: var(--h-r-s); border: 1px dashed var(--h-line-2); background: none;
   color: var(--h-t2); font-family: var(--body); font-size: 12.5px; font-weight: 500;
   transition: color 0.15s, border-color 0.15s;
 }
@@ -316,7 +328,7 @@
 .stat-l { font-size: 12px; color: var(--h-t2); }
 .stat-v { margin: 1px 0 8px; font-size: 24px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .stat-s { margin-top: 6px; font-size: 11.5px; color: var(--h-t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bar { height: 4px; border-radius: 4px; overflow: hidden; background: rgba(255, 255, 255, 0.07); }
+.bar { height: 4px; border-radius: max(0px, min(4px, calc(var(--h-r) - 3px))); overflow: hidden; background: rgba(255, 255, 255, 0.07); }
 .bar > span { display: block; height: 100%; border-radius: inherit; background: var(--ac);
   transition: width 0.6s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .bar > span.bar--warn { background: var(--amber); }
@@ -346,7 +358,7 @@
 .ag-row.is-done .ag-dot { background: var(--h-t3); border-color: transparent; }
 .ag-task { font-size: 13.5px; line-height: 1.4; color: var(--h-t1); overflow-wrap: anywhere; }
 .ag-row.is-done .ag-task { color: var(--h-t3); text-decoration: line-through; }
-.ag-now { margin-left: 8px; padding: 1px 7px; border-radius: 999px; vertical-align: 1px;
+.ag-now { margin-left: 8px; padding: 1px 7px; border-radius: calc(var(--h-r) * 2); vertical-align: 1px;
   font-size: 10.5px; font-weight: 600; color: var(--ac); background: color-mix(in oklab, var(--ac) 14%, transparent); }
 .ag-dur { font-size: 11.5px; color: var(--h-t3); white-space: nowrap; }
 .ag-edit {
@@ -357,13 +369,13 @@
 .ag-row:hover .ag-edit, .ag-edit:focus-within { opacity: 1; }
 .ag-edit button, .ag-btn {
   display: grid; place-items: center; width: 28px; height: 28px; padding: 0; cursor: pointer;
-  border: none; border-radius: 8px; background: rgba(255, 255, 255, 0.06); color: var(--h-t2);
+  border: none; border-radius: var(--h-r-s); background: rgba(255, 255, 255, 0.06); color: var(--h-t2);
   transition: background 0.15s, color 0.15s;
 }
 .ag-edit button:hover, .ag-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.11); color: var(--h-t1); }
 .ag-form { display: grid; grid-template-columns: 90px minmax(0, 1fr) 28px 28px; gap: 6px; align-items: center; padding: 6px 0; }
 .ag-form input {
-  min-width: 0; height: 32px; padding: 0 9px; border-radius: 8px; outline: none; color-scheme: dark;
+  min-width: 0; height: 32px; padding: 0 9px; border-radius: var(--h-r-s); outline: none; color-scheme: dark;
   background: rgba(255, 255, 255, 0.04); border: 1px solid var(--h-line-2);
   color: var(--h-t1); font-family: var(--body); font-size: 13.5px;
 }
@@ -412,6 +424,16 @@
 .log-txt code { font-family: var(--mono); font-size: 11.5px; color: var(--h-t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-txt span { font-size: 12px; color: var(--h-t3); overflow-wrap: anywhere; }
 .log-t { font-size: 11px; color: var(--h-t3); font-variant-numeric: tabular-nums; }
+
+/* where a dragged card will land (widgets.jsx useCardDrop); negative margins so
+   the cards around it don't move */
+.card-drop {
+  flex-shrink: 0; height: 2px; margin: -7px 0; border-radius: 2px;
+  background: var(--ac, var(--accent)); box-shadow: 0 0 8px var(--ac, var(--accent));
+}
+.home-col > .card-drop:first-child { margin: 0 0 -14px; }
+.home--compact .card-drop { margin: -5px 0; }
+.home--compact .home-col > .card-drop:first-child { margin: 0 0 -10px; }
 
 /* ── density ── */
 .home--compact .home-main { gap: 12px; padding: 12px 14px 14px; }

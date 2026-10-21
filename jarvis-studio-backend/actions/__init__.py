@@ -296,7 +296,7 @@ def _hex_to_rgb(h: str) -> list:
     return [int(h[i:i + 2], 16) for i in (0, 2, 4)]
 
 
-_SCREEN_BACKGROUNDS = ("grid", "solid", "aurora", "minimal", "stars")
+_SCREEN_BACKGROUNDS = ("grid", "solid", "aurora", "minimal")
 _ALL_PANELS = ("system", "power", "agenda", "weather", "network", "terminal")
 
 
@@ -310,11 +310,16 @@ def _match_theme(val) -> "tuple | None":
         return _THEMES[v]
     if _HEX_RE.match(v):
         hx = v if v.startswith("#") else "#" + v
-        return hx, hx, _hex_to_rgb(hx)
+        return hx, "", _hex_to_rgb(hx)      # set_screen derives the second colour
     for name, theme in _THEMES.items():
         if re.search(rf"\b{name}\b", v):
             return theme
     return None
+
+
+def _accent_patch(theme: tuple) -> dict:
+    a, a2, _rgb = theme
+    return {"accent": a, **({"accent2": a2} if a2 else {})}
 
 
 def _match_panel(*vals) -> str:
@@ -359,14 +364,27 @@ def _combined_screen_patch(spec: dict, val: str) -> "Tuple[dict | None, str]":
     """Build a patch from whatever recognisable properties the spec carries —
     so one action can restyle several things ('make it red and minimal') and an
     unexpected verb still works as long as the values are recognisable."""
+    from llm.groq_bridge import clean_look
     patch: dict = {}
     said: list = []
     theme = _match_theme(spec.get("theme") or spec.get("accent") or spec.get("color")
                          or spec.get("colour")) or _match_theme(val)
     if theme:
-        a, a2, rgb = theme
-        patch.update({"accent": a, "accent2": a2, "rgb": rgb})
+        patch.update(_accent_patch(theme))
         said.append("recoloured the display")
+    second = _match_theme(spec.get("accent2"))
+    if theme and second:
+        patch["accent2"] = second[0]
+    # "make it look like …": JARVIS designs the look; set_screen re-checks it all.
+    look = clean_look({k: spec[k] for k in ("font", "corners", "glow", "cards", "core", "gauges")
+                       if k in spec})
+    if look:
+        patch.update(look)
+        said.append("restyled it")
+    name = " ".join(str(spec.get("save_as") or "").split())[:40]
+    if patch and name:
+        patch["save_preset"] = name
+        said.append(f"saved it as the “{name}” theme")
     bg = _match_background(spec.get("background") or spec.get("bg")) or _match_background(val)
     if bg:
         patch["background"] = bg
@@ -399,9 +417,7 @@ def _screen_patch(do: str, spec: dict) -> "Tuple[dict | None, str]":
         if not theme:
             return None, (f"I don't know the colour “{val}”, sir. Try cyan, amber, red, "
                           "green, purple, or a hex code.")
-        a, a2, rgb = theme
-        return ({"accent": a, "accent2": a2, "rgb": rgb},
-                f"Changed the display to {val if val in _THEMES else a}, sir.")
+        return _accent_patch(theme), f"Changed the display to {val if val in _THEMES else theme[0]}, sir."
 
     if do in ("set_background", "background", "bg", "set_bg", "wallpaper"):
         opt = _match_background(val) or _match_background(spec.get("background"))
@@ -422,6 +438,13 @@ def _screen_patch(do: str, spec: dict) -> "Tuple[dict | None, str]":
             return None, "The style can be modern or Iron Man, sir."
         return {"style": opt}, ("Iron Man display online, sir." if opt == "ironman"
                                 else "Switched to the modern display, sir.")
+
+    if do in ("apply_preset", "preset", "use_preset", "load_preset", "apply_theme"):
+        from llm.groq_bridge import find_preset
+        name = str(spec.get("value") or spec.get("name") or "").strip()
+        if not find_preset(name):
+            return None, f"I don't have a theme called “{name}”, sir."
+        return {"preset": name}, f"Applied the {name} theme, sir."
 
     if do in ("show_panel", "show", "unhide", "show_all", "hide_panel", "hide",
               "hide_all", "toggle_panel", "toggle"):

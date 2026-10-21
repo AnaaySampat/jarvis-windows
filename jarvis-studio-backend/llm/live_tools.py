@@ -334,18 +334,33 @@ def function_declarations(places_ok: "bool | None" = None,
         _fn("customize_screen",
             "Restyle or rearrange the home-screen HUD on request. For 'show/hide/"
             "minimize/expand ALL the panels', use show_all or hide_all (no panel "
-            "needed). For one panel, use show_panel/hide_panel with `panel`.",
+            "needed). For one panel, use show_panel/hide_panel with `panel`. To make it "
+            "'look like' something (a film, a mood, a brand…), use design: choose every "
+            "look setting yourself to match, and give it a short save_as name. A design "
+            "only changes the look, never the layout.",
             {"action": _str("What to change.",
                             ["set_theme", "set_background", "set_density", "set_style",
+                             "design", "apply_preset",
                              "show_panel", "hide_panel", "show_all", "hide_all",
                              "toggle_panel", "move_panel", "reset"]),
              "value": _str("The new value: a colour (cyan/amber/red/green/purple/…/hex) "
                            "for set_theme; grid/solid/aurora/minimal for set_background; "
                            "normal/compact for set_density; ironman (the heads-up display "
-                           "with the arc reactor) or modern for set_style."),
+                           "with the arc reactor) or modern for set_style; a saved theme's "
+                           "name for apply_preset."),
              "panel": _str("Panel name for show/hide/toggle/move (system, power, agenda, "
                            "weather, network, terminal — or 'all' to show/hide every panel)."),
-             "direction": _str("up/down/left/right for move_panel.")},
+             "direction": _str("up/down/left/right for move_panel."),
+             "accent": _str("design: the main colour, #rrggbb."),
+             "accent2": _str("design: the second colour, #rrggbb."),
+             "font": _str("design: clean, or hud (Orbitron, uppercase, spaced out).", ["clean", "hud"]),
+             "corners": {"type": "INTEGER", "description": "design: corner radius in px, 0 (sharp) to 24 (round)."},
+             "glow": {"type": "INTEGER", "description": "design: how much things glow, 0 to 100."},
+             "cards": _str("design: clean cards, or hud (tinted, corner brackets, scanlines).", ["clean", "hud"]),
+             "core": _str("design: the centrepiece, an orb or the arc reactor with the helmet.", ["orb", "reactor"]),
+             "gauges": _str("design: system gauges as bars or rings.", ["bars", "rings"]),
+             "background": _str("design: the backdrop.", ["grid", "solid", "aurora", "minimal"]),
+             "save_as": _str("design: a short name to save the theme under.")},
             ["action"]),
         _fn("browser_task",
             "Do a WHOLE task on the web via the silent autopilot: it drives a "
@@ -512,7 +527,8 @@ _CUES = {
                r"daily|weekdays?|weekends?|teach|recipe)\b",
     "hud": r"\b(theme|colou?r|background|panels?|hud|layout|density|compact|interface|"
            r"camera|clear|reset|minimi[sz]e|maximi[sz]e|expand|collapse|terminal|"
-           r"activity|memory view|skills panel|settings|style|orb|reactor|iron ?man|helmet|modern)\b",
+           r"activity|memory view|skills panel|settings|style|orb|reactor|iron ?man|helmet|modern|"
+           r"look like|presets?|font|glow|corners|home ?screen)\b",
     "manual": r"\b(scroll|press|click|type|go back|ctrl|alt|shift|hotkey|shortcut|"
               r"disarm|this page|current page|close (?:the )?browser|tab)\b",
     "system": r"\b(shut ?down|restart|reboot|hibernate|log ?off|sign out|ip|speed ?test|"
@@ -650,7 +666,10 @@ _SPEC = {
                                     "triggers": a.get("triggers", ""), "query": a.get("name", "")},
     "customize_screen":  lambda a: {"type": "screen", "do": a.get("action", ""),
                                     "value": a.get("value", ""), "panel": a.get("panel", ""),
-                                    "direction": a.get("direction", "")},
+                                    "direction": a.get("direction", ""),
+                                    **{k: a[k] for k in ("accent", "accent2", "font", "corners",
+                                                         "glow", "cards", "core", "gauges",
+                                                         "background", "save_as") if k in a}},
     "browser_task":      lambda a: {"type": "browser_task", "goal": a.get("goal", "")},
     "computer_task":     lambda a: {"type": "computer_task", "goal": a.get("goal", "")},
     "computer_control":  lambda a: {"type": "computer", "do": a.get("action", ""),

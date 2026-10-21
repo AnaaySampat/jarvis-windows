@@ -326,7 +326,7 @@ export default function App() {
         { keywords: "autopilot steps screenshots tasks", state: running ? "Running" : null }),
       cmd("power", "Panels", "Power options", "power", () => setPowerOpen(true), { keywords: "shutdown restart sleep lock" }),
       cmd("customize", "Panels", "Customize the home screen", "palette", () => setCustomizeOpen(true),
-        { keywords: "theme colour color accent background layout panels" }),
+        { keywords: "theme preset colour color accent font glow corners background picture image layout panels cards drag arrange iron man" }),
       cmd("settings", "Panels", "Settings", "settings", () => openSettings(), { keys: ["Ctrl", ","] }),
 
       cmd("listen", "Voice", "Start listening", "mic", triggerListen, { keywords: "talk speak microphone", keys: ["Ctrl", "Space"] }),
@@ -447,6 +447,7 @@ export default function App() {
         toolbar={toolbar}
         activeTask={(agentTasks.find((t) => t.status === "running") || {}).goal}
         screen={screen}
+        onArrange={(order) => sendScreen({ order })}
         status={status}
         telemetry={telemetry}
         weather={weather}

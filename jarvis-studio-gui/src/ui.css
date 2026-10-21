@@ -356,7 +356,7 @@ label.sx-row:hover { background: color-mix(in oklab, var(--accent) 3%, transpare
 .cz-swatch:hover { transform: scale(1.1); }
 .cz-swatch:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .cz-swatch--on { border-color: var(--bg-surface); box-shadow: 0 0 0 2px var(--sw), 0 0 14px var(--sw); }
-.cz-bgs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.cz-bgs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 .cz-bg { display: flex; flex-direction: column; gap: 6px; padding: 5px; border-radius: 9px; cursor: pointer;
   background: none; border: 1px solid var(--border-soft); color: var(--text-sec); font-family: var(--body);
   font-size: 12px; transition: border-color .15s, color .15s; }
@@ -385,13 +385,50 @@ label.sx-row:hover { background: color-mix(in oklab, var(--accent) 3%, transpare
   background: var(--bg-elevated); border: 1px solid var(--border-soft); transition: opacity .15s; }
 .cz-panel-row.is-hidden .cz-panel-name { color: var(--text-muted); text-decoration: line-through; }
 .cz-panel-name { flex: 1; font-size: 13px; color: var(--text-pri); }
-.cz-panel-ctrls { display: flex; gap: 3px; }
-.cz-panel-ctrls button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border-radius: 6px;
-  cursor: pointer; background: none; border: 1px solid transparent; color: var(--text-sec); }
-.cz-panel-ctrls button:hover:not(:disabled) { background: color-mix(in oklab, var(--accent) 12%, transparent);
-  border-color: color-mix(in oklab, var(--accent) 30%, transparent); color: var(--text-pri); }
-.cz-panel-ctrls button:disabled { opacity: .22; cursor: default; }
-.cz-panel-ctrls button:focus-visible { outline: 2px solid var(--accent); }
+.cz-panel-row { cursor: grab; }
+.cz-panel-row:active { cursor: grabbing; }
+.cz-panel-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-grip { flex-shrink: 0; margin: 0 -4px 0 -2px; color: var(--text-muted); }
+.cz-railcol.is-drop { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+.cz-railcol .card-drop { margin: -4px 0; }
+
+/* theme presets */
+.cz-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.cz-preset { display: inline-flex; align-items: center; height: 32px; padding: 0 14px; border-radius: var(--r-sm);
+  cursor: pointer; background: var(--bg-elevated); border: 1px solid var(--border-soft); color: var(--text-sec);
+  font-family: var(--body); font-size: 12.5px; font-weight: 500; transition: border-color .15s, color .15s; }
+.cz-preset:hover { color: var(--text-pri); border-color: var(--border); }
+.cz-preset.is-on { color: var(--text-pri); border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 18%, transparent); }
+.cz-preset:focus-visible, .cz-preset--mine button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cz-preset--mine { padding: 0 3px 0 0; cursor: default; }
+.cz-preset--mine button { height: 100%; background: none; border: none; color: inherit; font: inherit; cursor: pointer; }
+.cz-preset-name { display: inline-flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; }
+.cz-preset-name::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--sw, var(--accent)); }
+.cz-preset--mine .cz-preset-act { display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
+  border-radius: 6px; color: var(--text-muted); white-space: nowrap; }
+.cz-preset--mine .cz-preset-act:hover { color: var(--text-pri); background: rgba(255,255,255,.06); }
+.cz-preset--mine .cz-preset-act.is-armed { width: auto; padding: 0 8px; color: #fff; background: #d6455a; }
+.cz-preset-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cz-preset-bar > form { flex: 1; min-width: 240px; }
+.cz-err { font-size: 12px; color: #ff9aa6; }
+
+/* colours + look */
+.cz-colors { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.cz-picks { display: inline-flex; gap: 16px; }
+.cz-pick { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-sec); cursor: pointer; }
+.cz-pick input { width: 34px; height: 34px; padding: 0; border: 1px solid var(--border); border-radius: 50%;
+  background: none; cursor: pointer; overflow: hidden; }
+.cz-pick input::-webkit-color-swatch-wrapper { padding: 0; }
+.cz-pick input::-webkit-color-swatch { border: none; border-radius: 50%; }
+.cz-pick input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cz-look { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 20px; }
+.cz-look-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cz-look-l { width: 82px; flex-shrink: 0; font-size: 12.5px; color: var(--text-sec); }
+.cz-look-row .seg { align-self: auto; }
+.cz-look-v { width: 42px; flex-shrink: 0; text-align: right; font-size: 12px; color: var(--text-sec); font-variant-numeric: tabular-nums; }
+.cz-range { flex: 1; min-width: 0; accent-color: var(--accent); cursor: pointer; }
+.cz-bg-prev--image { display: grid; place-items: center; color: var(--text-muted); background: #04070d center / cover no-repeat; }
 .cz-foot, .activity-foot-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 12px 24px; border-top: 1px solid var(--border-soft); background: rgba(0,0,0,.2); }
 .cz-foot .btn { align-self: center; }
@@ -424,6 +461,6 @@ label.sx-row:hover { background: color-mix(in oklab, var(--accent) 3%, transpare
 .activity-lightbox-x { display: grid; place-items: center; }
 
 @media (max-width: 720px) {
-  .cz-two, .cz-rails { grid-template-columns: 1fr; }
+  .cz-two, .cz-rails, .cz-look { grid-template-columns: 1fr; }
   .cz-bgs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

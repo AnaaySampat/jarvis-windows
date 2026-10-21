@@ -1,6 +1,7 @@
 /* widgets.jsx — the home screen's cards: System, Power, Agenda, Weather, Network and
    the command log. Each one collapses to a one-line summary in its header (JARVIS
-   can expand/collapse them by voice too: App owns the open state). */
+   can expand/collapse them by voice too: App owns the open state), and is dragged
+   by that header to rearrange them. */
 
 import { useState, useEffect, useRef, useId } from "react";
 import { Icon } from "./icons";
@@ -32,12 +33,64 @@ function useHistory(value, points = 40) {
   return hist || Array(points).fill(0);
 }
 
+/* ───────── arranging the cards ───────── */
+/* A card is dragged by its header (here) or its row in Customize, and dropped on
+   either column. The columns know only the order; `[data-panel]` marks each card. */
+const CARD_MIME = "text/x-jarvis-card";
+
+export function dragCard(e, key) {
+  e.dataTransfer.setData(CARD_MIME, key);
+  e.dataTransfer.effectAllowed = "move";
+  const card = e.currentTarget.closest("[data-panel]");
+  const r = card.getBoundingClientRect();
+  e.dataTransfer.setDragImage(card, e.clientX - r.left, e.clientY - r.top);
+}
+
+/* `order` with card `key` moved to `side`, just before card `before` (or last). */
+export function placeCard(order, key, side, before) {
+  if (before === key) return order;
+  const next = {
+    left: (order.left || []).filter((k) => k !== key),
+    right: (order.right || []).filter((k) => k !== key),
+  };
+  const i = before ? next[side].indexOf(before) : -1;
+  next[side].splice(i < 0 ? next[side].length : i, 0, key);
+  return next;
+}
+
+/* Drop handlers for a column, and where a dragged card would land ({side, before}). */
+export function useCardDrop(order, onArrange) {
+  const [drop, setDrop] = useState(null);
+  const beforeAt = (e) => [...e.currentTarget.querySelectorAll("[data-panel]")].find((el) => {
+    const r = el.getBoundingClientRect();
+    return e.clientY < r.top + r.height / 2;
+  })?.dataset.panel || null;
+  const zone = (side) => ({
+    onDragOver: (e) => {
+      if (!e.dataTransfer.types.includes(CARD_MIME)) return;
+      e.preventDefault();
+      const before = beforeAt(e);
+      if (drop?.side !== side || drop?.before !== before) setDrop({ side, before });
+    },
+    onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDrop(null); },
+    onDrop: (e) => {
+      const key = e.dataTransfer.getData(CARD_MIME);
+      if (!key) return;
+      e.preventDefault();
+      setDrop(null);
+      onArrange(placeCard(order, key, side, beforeAt(e)));
+    },
+  });
+  return [drop, zone];
+}
+
 /* ───────── building blocks ───────── */
 export function Widget({ id, icon, title, meta, summary, open, onToggle, children }) {
   return (
     <section className={`wd${open ? "" : " wd--closed"}`} data-panel={id}>
       <button type="button" className="wd-hd" onClick={() => onToggle && onToggle(!open)}
-              aria-expanded={open} title={open ? "Collapse" : "Expand"}>
+              draggable onDragStart={(e) => dragCard(e, id)}
+              aria-expanded={open} title={open ? "Collapse (drag to move)" : "Expand (drag to move)"}>
         <span className="wd-ico"><Icon name={icon} size={15} /></span>
         <span className="wd-title">{title}</span>
         <span className="wd-meta">{open ? meta : summary}</span>
@@ -81,7 +134,7 @@ function Spark({ data, height = 34 }) {
   );
 }
 
-/* Iron Man style: a 270° ring gauge with tick marks and the value in the middle. */
+/* Gauges ▸ Rings: a 270° ring gauge with tick marks and the value in the middle. */
 function Ring({ value, label, sub, size = 104, stroke = 7 }) {
   const v = Math.max(0, Math.min(100, n0(value)));
   const r = size / 2 - stroke - 5, c = 2 * Math.PI * r, arc = c * 0.75, mid = size / 2;
@@ -106,7 +159,7 @@ function Ring({ value, label, sub, size = 104, stroke = 7 }) {
   );
 }
 
-/* Iron Man style: an LED segment strip. */
+/* Gauges ▸ Rings: an LED segment strip for the battery. */
 function Leds({ value, segs = 20 }) {
   const lit = Math.round((Math.max(0, Math.min(100, n0(value))) / 100) * segs);
   return (
@@ -137,7 +190,7 @@ function KV({ k, v, mono }) {
 }
 
 /* ───────── System ───────── */
-export function SystemWidget({ d, live, open, onToggle, hud }) {
+export function SystemWidget({ d, live, open, onToggle, rings }) {
   const cpuHist = useHistory(live ? n0(d.cpu) : null);
   const total = n0(d.ramTotalGb);
   const used = (n0(d.ram) / 100) * total;
@@ -145,7 +198,7 @@ export function SystemWidget({ d, live, open, onToggle, hud }) {
     <Widget id="system" icon="cpu" title="System" open={open} onToggle={onToggle}
             meta={d.temp != null ? `${Math.round(n0(d.temp))}°C` : null}
             summary={`CPU ${pct(d.cpu)} · RAM ${pct(d.ram)}`}>
-      {hud ? (<>
+      {rings ? (<>
         <div className="rings">
           <Ring value={d.cpu} label="CPU" sub={d.temp != null ? `${Math.round(n0(d.temp))}°C` : null} />
           <Ring value={d.ram} label="Memory" sub={total ? `${Math.round(total)} GB` : null} />
@@ -176,7 +229,7 @@ export function SystemWidget({ d, live, open, onToggle, hud }) {
 }
 
 /* ───────── Power ───────── */
-export function PowerWidget({ d, open, onToggle, hud }) {
+export function PowerWidget({ d, open, onToggle, rings }) {
   const level = d.batteryPct;
   const has = level != null;
   const state = !has ? "Plugged in" : d.charging ? "Charging" : "On battery";
@@ -188,11 +241,11 @@ export function PowerWidget({ d, open, onToggle, hud }) {
     <Widget id="power" icon={d.charging || !has ? "charging" : "battery"} title="Power" open={open} onToggle={onToggle}
             meta={state} summary={has ? `${Math.round(level)}% · ${state.toLowerCase()}` : "Plugged in"}>
       <div className="pwr2">
-        {hud && has ? <Ring value={level} size={88} stroke={6} />
+        {rings && has ? <Ring value={level} size={88} stroke={6} />
           : <span className="pwr2-v">{has ? `${Math.round(level)}%` : "AC"}</span>}
         <span className="pwr2-txt"><b>{state}</b><span>{sub}</span></span>
       </div>
-      {has && (hud ? <Leds value={level} /> : <Bar value={level} tone={tone} />)}
+      {has && (rings ? <Leds value={level} /> : <Bar value={level} tone={tone} />)}
     </Widget>
   );
 }

@@ -2,8 +2,9 @@
    centre (time, the orb, what it's doing, its last reply and an ask box), and the
    live cards in a column on each side. Responsive: it lays out for the window
    rather than scaling a fixed picture. App owns every open/collapse state so
-   JARVIS can drive the screen by voice; `screen` (Customize) picks the accent,
-   background, density and which cards sit on which side. */
+   JARVIS can drive the screen by voice; `screen` (Customize) holds the look (colours,
+   font, corners, glow, card style, centrepiece, gauges, background) and the layout
+   (density, which cards show, and where — drag a card's header to move it). */
 
 import { useState, useEffect, useRef } from "react";
 import "./hud.css";
@@ -15,6 +16,7 @@ import { plainPreview as plain } from "../utils/markdown";
 import { Icon } from "./icons";
 import {
   DEFAULT_TELEMETRY, SystemWidget, PowerWidget, AgendaWidget, WeatherWidget, NetworkWidget, LogWidget,
+  useCardDrop,
 } from "./widgets";
 import { SkillsOverlay, CapabilitiesOverlay, PowerOverlay, ChatOverlay, MemoryOverlay } from "./HudPanels";
 
@@ -95,7 +97,8 @@ const NAV = [
 
 export function JarvisHUD({
   config,
-  screen,                       // home-screen look & layout (accent/bg/density/panels/order)
+  screen,                       // home-screen look & layout (see the header comment)
+  onArrange,                    // a card was dragged: the new {left, right} order
   toolbar,                      // the quick controls (App owns their state)
   // live data
   status = "idle",
@@ -145,15 +148,25 @@ export function JarvisHUD({
   const tog = (k) => (v) => onTogglePanel && onTogglePanel(k, v);
   const closeMemory = () => setMemoryOpen(false);
 
-  // Screen layout config (visibility + per-side order + background/density).
+  // Screen config: the look, then the layout (visibility + per-side order + density).
   const sc = screen || {};
   const vis = sc.panels || {};
   const order = sc.order || { left: ["system", "power", "agenda"], right: ["weather", "network", "terminal"] };
   const background = sc.background || "grid";
   const density = sc.density || "normal";
-  const ironman = sc.style === "ironman";
-  const Core = ironman ? Reactor : Orb;
+  const hudCards = sc.cards === "hud";
+  const reactor = sc.core === "reactor";
+  const Core = reactor ? Reactor : Orb;
+  const rings = sc.gauges === "rings";
+  const lookStyle = {
+    "--ac": c.accent, "--ac2": c.accent2,
+    "--h-r": `${sc.corners ?? 14}px`,
+    "--glow": (sc.glow ?? 40) / 100,
+    // the backend only keeps a base64 image data: URL, so it can't break out of url("")
+    ...(background === "image" && sc.image ? { "--bg-img": `url("${sc.image}")` } : {}),
+  };
   const shown = (key) => vis[key] !== false;
+  const [drop, dropZone] = useCardDrop(order, (o) => onArrange && onArrange(o));
 
   // "/" puts the cursor in the ask box (when nothing is open over the home screen).
   const overlayOpen = chatOpen || skillsOpen || capsOpen || powerOpen || memoryOpen;
@@ -171,17 +184,22 @@ export function JarvisHUD({
   }, [overlayOpen]);
 
   const CARDS = {
-    system: <SystemWidget key="system" d={d} live={!!telemetry} open={p("system")} onToggle={tog("system")} hud={ironman} />,
-    power: <PowerWidget key="power" d={d} open={p("power")} onToggle={tog("power")} hud={ironman} />,
+    system: <SystemWidget key="system" d={d} live={!!telemetry} open={p("system")} onToggle={tog("system")} rings={rings} />,
+    power: <PowerWidget key="power" d={d} open={p("power")} onToggle={tog("power")} rings={rings} />,
     agenda: <AgendaWidget key="agenda" items={schedule} open={p("agenda")} onToggle={tog("agenda")} runAction={runAction} />,
     weather: <WeatherWidget key="weather" weather={weather} open={p("weather")} onToggle={tog("weather")} />,
     network: <NetworkWidget key="network" d={d} live={!!telemetry} netInfo={netInfo} open={p("network")} onToggle={tog("network")} />,
     terminal: <LogWidget key="terminal" commands={commands} open={p("terminal", false)} onToggle={tog("terminal")} />,
   };
-  const column = (side) => (order[side] || []).filter(shown).map((k) => CARDS[k]).filter(Boolean);
+  const column = (side) => {
+    const cards = (order[side] || []).filter(shown).filter((k) => CARDS[k]);
+    const line = <div key="drop" className="card-drop" aria-hidden="true" />;
+    const out = cards.flatMap((k) => (drop?.side === side && drop.before === k ? [line, CARDS[k]] : [CARDS[k]]));
+    return drop?.side === side && !cards.includes(drop.before) ? [...out, line] : out;
+  };
 
   const [title, orbHint] = STATUS_TEXT[status] || STATUS_TEXT.idle;
-  const hint = ironman ? orbHint.replace("the orb", "the reactor") : orbHint;
+  const hint = reactor ? orbHint.replace("the orb", "the reactor") : orbHint;
   const busy = status !== "idle";
   const lastReplyAt = messages.map((m) => m.role !== "user").lastIndexOf(true);
   const lastReply = lastReplyAt >= 0 ? messages[lastReplyAt] : null;
@@ -197,10 +215,10 @@ export function JarvisHUD({
   };
 
   return (
-    <div className={`hud home home--bg-${background} home--${density}${ironman ? " home--ironman" : ""}`}
-         style={{ "--ac": c.accent, "--ac2": c.accent2 }}>
+    <div className={`hud home home--bg-${background} home--${density} home--font-${sc.font || "clean"} home--cards-${sc.cards || "clean"}`}
+         style={lookStyle}>
       <div className="home-bg" aria-hidden="true" />
-      {ironman && <div className="im-frame" aria-hidden="true" />}
+      {hudCards && <div className="im-frame" aria-hidden="true" />}
 
       <header className="home-top">
         <div className="home-brand">
@@ -220,14 +238,14 @@ export function JarvisHUD({
       </header>
 
       <main className="home-main">
-        <aside className="home-col home-col--left" aria-label="Left cards">{column("left")}</aside>
+        <aside className="home-col home-col--left" aria-label="Left cards" {...dropZone("left")}>{column("left")}</aside>
 
         <section className="home-hero" aria-label="JARVIS">
           <HeroClock />
           <Core status={status} rgb={c.rgb} onClick={busy ? onStop : onListen}
                 label={busy ? "Stop" : "Talk to JARVIS"} />
           <div className="hero-status" role="status">
-            {ironman && <Waveform status={status} />}
+            {hudCards && <Waveform status={status} />}
             <div className={`hero-title hero-title--${status}`}><span className="hero-dot" />{title}</div>
             <div className="hero-hint">{status === "working" && activeTask ? activeTask : hint}</div>
           </div>
@@ -254,10 +272,10 @@ export function JarvisHUD({
               ))}
             </div>
           )}
-          {ironman && <div className="im-tag" aria-hidden="true">Just A Rather Very Intelligent System</div>}
+          {hudCards && <div className="im-tag" aria-hidden="true">Just A Rather Very Intelligent System</div>}
         </section>
 
-        <aside className="home-col home-col--right" aria-label="Right cards">{column("right")}</aside>
+        <aside className="home-col home-col--right" aria-label="Right cards" {...dropZone("right")}>{column("right")}</aside>
       </main>
 
       {/* ── overlays ── */}

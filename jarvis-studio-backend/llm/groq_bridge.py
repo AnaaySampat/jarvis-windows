@@ -320,8 +320,11 @@ ACTION_CATALOG = (
     '{"type":"playbook","do":"add","name":"movie night","triggers":["movie night"],"steps":"..."}\n'
     '{"type":"playbook","do":"list"} · {"type":"playbook","do":"remove","name":"movie night"}\n'
     '{"type":"screen","do":"set_theme|set_background|set_density|set_style|hide_panel|show_panel|'
-    'toggle_panel|move_panel|set|reset","value":"amber|aurora|compact|ironman|modern","panel":"weather",'
+    'toggle_panel|move_panel|apply_preset|set|reset","value":"amber|aurora|compact|ironman|modern","panel":"weather",'
     '"direction":"up","theme":"red","background":"minimal","density":"compact"}\n'
+    '"make my home screen look like …" → {"type":"screen","do":"design","accent":"#hex","accent2":"#hex",'
+    '"font":"clean|hud","corners":0-24,"glow":0-100,"cards":"clean|hud","core":"orb|reactor",'
+    '"gauges":"bars|rings","background":"grid|solid|aurora|minimal","save_as":"short name"}\n'
     '{"type":"ui","do":"open_camera|close_camera|open_chat|close_chat|open_settings|'
     'close_settings|listen|stop_speaking|clear_chat|open_skills|close_skills|open_capabilities|'
     'open_power|close_power|open_memory|close_memory|open_terminal|close_terminal|open_activity|close_activity|'
@@ -531,16 +534,30 @@ def set_skill_context(text: str) -> None:
     _skill_context = (text or "").strip()
 
 
+# The home screen's look, as presets. A built-in one leaves the colours and the
+# background alone; a saved one (`presets` in the screen config) carries every key
+# in LOOK_KEYS. None of them touch the layout (panels, order, density).
+SCREEN_PRESETS = {
+    "modern":  {"font": "clean", "corners": 14, "glow": 40, "cards": "clean",
+                "core": "orb", "gauges": "bars"},
+    "ironman": {"font": "hud", "corners": 3, "glow": 100, "cards": "hud",
+                "core": "reactor", "gauges": "rings"},
+}
+LOOK_KEYS = ("accent", "accent2", "background", "image", "font", "corners", "glow",
+             "cards", "core", "gauges")
+
 # Default HUD appearance/layout. The user AND JARVIS can change this at runtime
 # (see the `screen` action); it persists in config.json so the look survives a
 # restart. `panels` is a visibility map; `order` is the per-rail arrangement.
 DEFAULT_SCREEN = {
     "accent": "#00e5ff", "accent2": "#6fe9ff", "rgb": [0, 229, 255],
-    "background": "grid", "density": "normal", "style": "modern",
+    "background": "grid", "image": "", "density": "normal",
+    **SCREEN_PRESETS["modern"],
     "panels": {"system": True, "power": True, "agenda": True,
                "weather": True, "network": True, "terminal": True},
     "order": {"left": ["system", "power", "agenda"],
               "right": ["weather", "network", "terminal"]},
+    "presets": [],
 }
 
 # Floating overlay pill: a tiny status widget that shows on OTHER apps (never on
@@ -763,35 +780,140 @@ def get_screen() -> dict:
     scr = _config.get("screen")
     if not isinstance(scr, dict):
         return dict(DEFAULT_SCREEN)
-    # Fill any missing keys from defaults so older configs upgrade cleanly.
-    merged = {**DEFAULT_SCREEN, **scr}
+    # Fill any missing keys from defaults so older configs upgrade cleanly. One
+    # saved before the look was split into settings had only `style`.
+    base = DEFAULT_SCREEN
+    if scr.get("style") == "ironman" and "cards" not in scr:
+        base = {**DEFAULT_SCREEN, **SCREEN_PRESETS["ironman"]}
+    merged = {**base, **scr}
+    merged.pop("style", None)
     merged["panels"] = {**DEFAULT_SCREEN["panels"], **(scr.get("panels") or {})}
     merged["order"] = {**DEFAULT_SCREEN["order"], **(scr.get("order") or {})}
+    if not isinstance(merged.get("presets"), list):
+        merged["presets"] = []
     return merged
+
+
+_LOOK_CHOICES = {"background": ("grid", "solid", "aurora", "minimal", "image"),
+                 "font": ("clean", "hud"), "cards": ("clean", "hud"),
+                 "core": ("orb", "reactor"), "gauges": ("bars", "rings")}
+_LOOK_RANGES = {"corners": (0, 24), "glow": (0, 100)}
+_HEX6_RE = re.compile(r"^#[0-9a-f]{6}$")
+# A background picture is kept inline; the HUD shrinks it to a ≤1920px JPEG first.
+_IMAGE_RE = re.compile(r"^data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$")
+_IMAGE_MAX = 4_000_000
+
+
+def clean_look(d) -> dict:
+    """The valid look settings in `d` (a patch, a saved preset or an imported theme
+    file), normalised; everything else is dropped. They all end up in the HUD's CSS,
+    so they're checked strictly here, where every caller passes through."""
+    if not isinstance(d, dict):
+        return {}
+    out: dict = {}
+    for k in ("accent", "accent2"):
+        v = str(d.get(k) or "").strip().lower()
+        v = v if v.startswith("#") else "#" + v
+        if _HEX6_RE.match(v):
+            out[k] = v
+    for k, options in _LOOK_CHOICES.items():
+        if d.get(k) in options:
+            out[k] = d[k]
+    for k, (lo, hi) in _LOOK_RANGES.items():
+        try:
+            out[k] = max(lo, min(hi, int(round(float(d[k])))))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
+    img = d.get("image")
+    if img == "" or (isinstance(img, str) and len(img) <= _IMAGE_MAX and _IMAGE_RE.match(img)):
+        out["image"] = img
+    if "accent" in out:
+        out["rgb"] = [int(out["accent"][i:i + 2], 16) for i in (1, 3, 5)]
+    return out
+
+
+def _preset_name(v) -> str:
+    return " ".join(str(v or "").split())[:40]
+
+
+def find_preset(name, scr: "dict | None" = None) -> dict:
+    """A saved preset's look by name (any case), else a built-in one; {} if none."""
+    n = _preset_name(name).lower()
+    if not n:
+        return {}
+    for p in (scr or get_screen())["presets"]:
+        if isinstance(p, dict) and _preset_name(p.get("name")).lower() == n:
+            return clean_look(p)
+    return dict(SCREEN_PRESETS.get(n.replace(" ", ""), {}))
+
+
+def _store_preset(scr: dict, name: str, look: dict) -> None:
+    """Save `look` as preset `name`, replacing one of the same name."""
+    keep = [p for p in scr["presets"]
+            if isinstance(p, dict) and _preset_name(p.get("name")).lower() != name.lower()]
+    scr["presets"] = keep + [{"name": name, **look}]
+
+
+def _clean_order(new: dict, cur: dict) -> dict:
+    """A dragged arrangement, kept to the known panels, each once; a panel it leaves
+    out stays on its old side."""
+    known = DEFAULT_SCREEN["panels"]
+    seen: set = set()
+    out: dict = {"left": [], "right": []}
+    for src in (new, cur):
+        for side in ("left", "right"):
+            for k in src.get(side) if isinstance(src.get(side), list) else []:
+                if k in known and k not in seen:
+                    seen.add(k)
+                    out[side].append(k)
+    return out
 
 
 def set_screen(patch: dict) -> dict:
     """Apply a (possibly partial) screen-config patch and persist it. Understands
-    `reset`, `move` (panel reorder), and nested `panels` maps. Returns the full
-    resolved screen config so callers can broadcast it to every client."""
+    `reset`, `move` (panel reorder), nested `panels` maps, a whole `order`, the look
+    keys (clean_look), and presets: `style` (built-in), `preset` (apply by name),
+    `save_preset` (the current look under a name), `delete_preset` and
+    `import_preset` (a theme file: saved, then applied). Returns the full resolved
+    screen config so callers can broadcast it to every client."""
     scr = get_screen()
     if not isinstance(patch, dict):
         return scr
     if patch.get("reset"):
+        # The saved presets are the user's own work: a reset keeps them.
+        presets = scr["presets"]
         scr = dict(DEFAULT_SCREEN)
         scr["panels"] = dict(DEFAULT_SCREEN["panels"])
         scr["order"] = {k: list(v) for k, v in DEFAULT_SCREEN["order"].items()}
+        scr["presets"] = presets
         _config["screen"] = scr
         _save_config(_config)
         return scr
     mv = patch.get("move")
     if isinstance(mv, dict):
         _apply_move(scr, mv.get("panel"), mv.get("direction"))
-    for k in ("accent", "accent2", "rgb", "background", "density"):
-        if k in patch:
-            scr[k] = patch[k]
-    if patch.get("style") in ("modern", "ironman"):
-        scr["style"] = patch["style"]
+    look = dict(SCREEN_PRESETS.get(patch.get("style"), {}))
+    if patch.get("preset"):
+        look.update(find_preset(patch["preset"], scr))
+    imported = patch.get("import_preset")
+    if clean_look(imported):
+        name = _preset_name(imported.get("name")) or "Imported theme"
+        _store_preset(scr, name, clean_look(imported))
+        look.update(clean_look(imported))
+    look.update(clean_look(patch))
+    if "accent" in look and "accent2" not in look:
+        # one colour given: the second is a lighter shade of it
+        look["accent2"] = "#" + "".join(f"{c + round((255 - c) * 0.42):02x}" for c in look["rgb"])
+    scr.update(look)
+    if _preset_name(patch.get("save_preset")):
+        _store_preset(scr, _preset_name(patch["save_preset"]),
+                      clean_look({k: scr[k] for k in LOOK_KEYS if k in scr}))
+    if _preset_name(patch.get("delete_preset")):
+        gone = _preset_name(patch["delete_preset"]).lower()
+        scr["presets"] = [p for p in scr["presets"]
+                          if _preset_name((p or {}).get("name")).lower() != gone]
+    if patch.get("density") in ("normal", "compact"):
+        scr["density"] = patch["density"]
     if isinstance(patch.get("panels"), dict):
         cur = dict(scr.get("panels", {}))
         for name, v in patch["panels"].items():
@@ -800,7 +922,7 @@ def set_screen(patch: dict) -> dict:
             cur[name] = (not cur.get(name, True)) if v == "toggle" else bool(v)
         scr["panels"] = cur
     if isinstance(patch.get("order"), dict):
-        scr["order"] = {**scr.get("order", {}), **patch["order"]}
+        scr["order"] = _clean_order(patch["order"], scr["order"])
     _config["screen"] = scr
     _save_config(_config)
     return scr
