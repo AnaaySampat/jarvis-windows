@@ -159,8 +159,9 @@ function RemotePairingSection({ devicePairing, devices, onCreatePairing,
 }
 
 // WhatsApp channel (backend whatsapp_channel.py): JARVIS as a linked device of the user's
-// WhatsApp, by QR. Commands come from the account's own "Message yourself" chat (starting
-// with "Jarvis") or from numbers listed here; replies and approvals go back there.
+// WhatsApp, by QR. Commands come from the account's own "Message yourself" chat or from
+// numbers listed here, starting with "Jarvis" or replying to JARVIS; replies and approvals
+// go back there.
 const WA_STATUS = {
   off: ["Off", "off"],
   connecting: ["Connecting…", "busy"],
@@ -378,9 +379,10 @@ function WhatsAppSection({ waState, onWhatsApp }) {
       </Row>
       <Guide summary="How it works">
         <span>
-          Replies come back in that chat and the PC stays quiet; anything that needs your approval
-          asks you there (reply yes or no). Voice notes work too. Notes to yourself that don&apos;t start
-          with “Jarvis” are left alone.
+          Replies come back in that chat and the PC stays quiet. Anything beyond a lookup asks you there
+          first (reply yes or no), because nobody may be at the PC to see it. Voice notes work, and a photo
+          or document with a “Jarvis, …” caption comes with the command. Messages that don&apos;t start with
+          “Jarvis” are left alone, unless they reply to one of JARVIS&apos;s.
         </span>
       </Guide>
       <div className="sx-card-body">

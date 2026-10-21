@@ -44,7 +44,8 @@ from llm.groq_bridge import (
     quick_completion, CAPABILITY_INDEX,
 )
 from llm import gemini_bridge, live_audio, live_tools, model_discovery, vertex_auth
-from actions import execute_actions, run_specs, run_action, needs_permission, _BROWSER_READONLY
+from actions import (execute_actions, run_specs, run_action, needs_permission, _BROWSER_READONLY,
+                     consented, grant, remote_turn)
 from actions import skills, fs_access, recorder, computer, browser, app_launcher
 import autopilot
 import tv_operator
@@ -2064,10 +2065,7 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
             consent_kind, f"keep {what} to finish: {task_goal[:60]}")
         await emit("status", "working")
         if granted:
-            if consent_kind == "browser":
-                browser.approve()
-            else:
-                computer.arm()
+            grant(consent_kind)
         await on_step("▶ continuing" if granted else "✗ not re-approved")
         return granted
 
@@ -2195,18 +2193,13 @@ async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]
         # If the user already consented to the browser / computer control earlier
         # in this batch, the consent window is open — don't re-prompt for
         # follow-up actions. One approval covers the whole session.
-        if kind == "browser" and browser.is_approved():
-            approved = True
-        elif kind == "computer" and computer.is_armed():
+        if consented(kind):
             approved = True
         else:
             await emit("status", "idle")
             approved = await request_permission(kind, p.get("description", "that action"))
         if approved:
-            if kind == "browser":
-                browser.approve()
-            elif kind == "computer":
-                computer.arm()
+            grant(kind)
             res = await loop.run_in_executor(None, run_action, p["spec"])
             # An approved see_screen / generate_image / autopilot goal returns a
             # DEFERRED result that still has to be run — route it through the
@@ -2568,13 +2561,15 @@ async def _run_native_audio_turn() -> None:
 
 async def _run_pipeline(text: str, emit_transcription: bool = True,
                         task_tier: str = "", wa_chat=None, tap=None,
-                        shown: str = "") -> None:
+                        shown: str = "", upload=None) -> None:
     """Run the full LLM + TTS pipeline. Serialised by _pipeline_lock.
 
     A WhatsApp turn passes the chat it came from (``wa_chat``): it runs with the PC's
-    voice quiet, approvals are also asked in that chat, and every HUD event of the
-    turn goes to ``tap`` so the reply can be sent back. ``shown`` is the user bubble's
-    text when it differs from what the model gets."""
+    voice quiet, approvals are also asked in that chat (and anything but a lookup needs
+    one: actions.needs_permission), and every HUD event of the turn goes to ``tap`` so
+    the reply can be sent back. ``upload`` is a (name, mime, bytes) file sent with it,
+    read the way the PC chat reads one. ``shown`` is the user bubble's text when it
+    differs from what the model gets."""
     global _wa_chat
     async with _pipeline_lock:
         turn_recorder.begin(text)          # a no-op unless JARVIS_RECORD_TURNS=1
@@ -2585,9 +2580,15 @@ async def _run_pipeline(text: str, emit_transcription: bool = True,
             _wa_chat = wa_chat
             add_tap(tap)
             skills.set_quiet(True)
+            remote_turn(True)
             try:
-                await _pipeline_turn(text, emit_transcription, task_tier, shown)
+                if upload is None:
+                    await _pipeline_turn(text, emit_transcription, task_tier, shown)
+                else:
+                    await emit("transcription", shown or text)
+                    await _upload_turn(*upload, text, task_tier)
             finally:
+                remote_turn(False)
                 remove_tap(tap)
                 skills.set_quiet(False)
                 _wa_chat = None
@@ -2771,18 +2772,13 @@ async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
         for p in pending:
             spoken_msg = ""
             kind = p.get("kind", "action")
-            if kind == "browser" and browser.is_approved():
-                approved = True
-            elif kind == "computer" and computer.is_armed():
+            if consented(kind):
                 approved = True
             else:
                 await emit("status", "idle")
                 approved = await request_permission(kind, p.get("description", "that action"))
             if approved:
-                if kind == "browser":
-                    browser.approve()
-                elif kind == "computer":
-                    computer.arm()
+                grant(kind)
                 res = await loop.run_in_executor(None, run_action, p["spec"])
                 if res.get("needs_vision"):
                     await _handle_vision(res)
@@ -2852,7 +2848,8 @@ async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
 
 # ── WhatsApp channel (whatsapp_channel.py) ─────────────────────────────────────
 
-async def _run_whatsapp_turn(text: str, chat, heard: bool = False) -> None:
+async def _run_whatsapp_turn(text: str, chat, heard: bool = False,
+                             attachment=None) -> None:
     """One WhatsApp command: an ordinary turn with the PC's voice quiet, its reply
     (and any picture it made) sent back to the chat it came from. The HUD shows the
     turn too, marked 📱, so the PC keeps a record of what was asked remotely."""
@@ -2869,8 +2866,9 @@ async def _run_whatsapp_turn(text: str, chat, heard: bool = False) -> None:
         return
     await _wa.typing(chat, True)
     try:
+        shown = f"📱 📎 {attachment[0]} {text}".rstrip() if attachment else f"📱 {text}"
         await _run_pipeline(text, emit_transcription=True, wa_chat=chat, tap=tap,
-                            shown=f"📱 {text}")
+                            shown=shown, upload=attachment)
     finally:
         await _wa.typing(chat, False)
     reply, images = whatsapp_channel.compose(events)
@@ -2884,9 +2882,10 @@ async def _run_whatsapp_turn(text: str, chat, heard: bool = False) -> None:
         await _wa.send_image(chat, blob, caption)
 
 
-async def _on_whatsapp_command(text: str, chat, heard: bool) -> None:
-    print(f"[WhatsApp] command: {text[:80]!r}", flush=True)
-    _track_task(_run_whatsapp_turn(text, chat, heard), "whatsapp turn")
+async def _on_whatsapp_command(text: str, chat, heard: bool, attachment=None) -> None:
+    print(f"[WhatsApp] command: {text[:80]!r}"
+          + (f" with {attachment[0]}" if attachment else ""), flush=True)
+    _track_task(_run_whatsapp_turn(text, chat, heard, attachment), "whatsapp turn")
 
 
 async def _emit_whatsapp(state: "dict | None" = None) -> None:
@@ -3719,42 +3718,47 @@ async def handle_chat_upload(data) -> None:
         await emit("response", upload_error or "I couldn't read that upload, sir.")
         await emit("status", "idle")
         return
+    async with _pipeline_lock:
+        await _upload_turn(name, mime, blob, prompt, task_tier)
+
+
+async def _upload_turn(name: str, mime: str, blob: bytes, prompt: str = "",
+                       task_tier: str = "") -> None:
+    """Answer about one uploaded file; the caller holds _pipeline_lock."""
     b64 = base64.b64encode(blob).decode("ascii")
     data_url = f"data:{mime or 'application/octet-stream'};base64,{b64}"
     is_image = mime.startswith("image/") or name.lower().endswith(_IMAGE_EXTS)
     loop = asyncio.get_running_loop()
-
-    async with _pipeline_lock:
-        try:
-            await emit("status", "thinking")
-            if is_image:
-                image_error = await loop.run_in_executor(None, _validate_image_blob, blob)
-                if image_error:
-                    await emit("response", image_error)
-                    return
-                answer = (await vision_query(data_url, prompt or "Describe this image in "
-                          "detail and note anything notable.", task_tier)
-                          or "I couldn't quite interpret that image, sir.")
-                await emit("response", answer)
-                print(f"[Upload] image {name} → {answer[:80]}", flush=True)
-                if _tts and not skills.is_muted():
-                    await emit("status", "speaking")
-                    await _tts.speak(answer)
+    try:
+        await emit("status", "thinking")
+        if is_image:
+            image_error = await loop.run_in_executor(None, _validate_image_blob, blob)
+            if image_error:
+                await emit("response", image_error)
                 return
+            answer = (await vision_query(data_url, prompt or "Describe this image in "
+                      "detail and note anything notable.", task_tier)
+                      or "I couldn't quite interpret that image, sir.")
+            await emit("response", answer)
+            print(f"[Upload] image {name} → {answer[:80]}", flush=True)
+            if _tts and not skills.is_muted():
+                await emit("status", "speaking")
+                await _tts.speak(answer)
+            return
 
-            text = await loop.run_in_executor(None, _extract_upload_text, name, mime, blob)
-            if not text:
-                msg = f"I couldn't read any text from {name}, sir."
-                await emit("response", msg)
-                return
-            instruction = prompt or (f"This is a file called {name} the user uploaded. "
-                                     "Summarise it and give the key points.")
-            await _agentic_loop([{"name": name, "content": text}], instruction=instruction,
-                                task_tier=task_tier)
-        except Exception as exc:  # noqa: BLE001
-            await _report_pipeline_error(exc, prompt or name)
-        finally:
-            await emit("status", "idle")
+        text = await loop.run_in_executor(None, _extract_upload_text, name, mime, blob)
+        if not text:
+            msg = f"I couldn't read any text from {name}, sir."
+            await emit("response", msg)
+            return
+        instruction = prompt or (f"This is a file called {name} the user uploaded. "
+                                 "Summarise it and give the key points.")
+        await _agentic_loop([{"name": name, "content": text}], instruction=instruction,
+                            task_tier=task_tier)
+    except Exception as exc:  # noqa: BLE001
+        await _report_pipeline_error(exc, prompt or name)
+    finally:
+        await emit("status", "idle")
 
 
 def _best_coords() -> "tuple":

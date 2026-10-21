@@ -157,7 +157,10 @@ for pkg in ("mcp", "mcp_types"):
 for pkg in ("neonize", "magic"):
     try:
         hiddenimports += collect_submodules(pkg)
-        datas += collect_data_files(pkg)
+        # neonize's protobuf modules import each other as top-level packages ("from
+        # waAdv import WAAdv_pb2") after putting neonize/proto on sys.path, which the
+        # import scan can't follow: ship its .py files so that path has them.
+        datas += collect_data_files(pkg, include_py_files=(pkg == "neonize"))
         binaries += collect_dynamic_libs(pkg)
     except Exception:
         pass

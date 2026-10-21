@@ -94,7 +94,93 @@ _DESTRUCTIVE_POWER = {
 }
 
 
+# A command from WhatsApp (main._run_pipeline): nobody may be at the PC to see what
+# happens, so everything but a lookup is asked about in the chat, even inside a consent
+# window opened at the PC. None outside such a command; else the consent kinds
+# ("browser"/"computer") the chat has approved during it.
+_remote: "set | None" = None
+
+# What a WhatsApp command may run without asking: these only read or answer. Reading
+# files, the clipboard or the screen keeps its own ask below.
+_REMOTE_FREE = {
+    "time", "current_time", "clock", "day", "date", "current_day", "ip", "ip_address",
+    "location", "where_am_i", "geolocate", "internet_speed", "speed_test", "speedtest",
+    "weather", "forecast", "temperature", "whats_the_weather", "places", "nearby",
+    "find_places", "find_nearby", "restaurants", "places_nearby", "near_me",
+    "directions", "navigate", "route", "how_to_get_to", "distance_to", "news",
+    "headlines", "get_news", "news_headlines", "web_search", "search_web", "web_answer",
+    "lookup", "look_up", "search", "qr_code", "qr", "qrcode", "generate_image",
+    "gen_image", "create_image", "make_image", "image", "list_dir", "ls", "dir",
+    "list_directory", "browse_dir", "browse_files", "load_tools", "read_skill",
+}
+
+
+def remote_turn(on: bool) -> None:
+    global _remote
+    _remote = set() if on else None
+
+
+def consented(kind: str) -> bool:
+    """An open browser/computer consent window covers `kind` — during a WhatsApp
+    command, only one the chat approved in it."""
+    open_ = browser.is_approved() if kind == "browser" else \
+        computer.is_armed() if kind == "computer" else False
+    return open_ and (_remote is None or kind in _remote)
+
+
+def grant(kind: str) -> None:
+    """The user approved a `kind` prompt: open its consent window."""
+    if kind == "browser":
+        browser.approve()
+    elif kind == "computer":
+        computer.arm()
+    else:
+        return
+    if _remote is not None:
+        _remote.add(kind)
+
+
 def needs_permission(spec: dict) -> "Tuple[bool, str, str]":
+    """(gated, kind, description): the PC's own rules, and during a WhatsApp command
+    an ask for everything that isn't a lookup."""
+    gated, kind, desc = _local_permission(spec)
+    atype = str(spec.get("type", "")).lower().strip()
+    if _remote is None or gated or atype in _REMOTE_FREE:
+        return gated, kind, desc
+    if atype == "mcp":
+        import mcp_client
+        srv, tool = mcp_client.resolve(str(spec.get("tool") or ""))
+        if srv is None or tool["read_only"]:
+            return False, "", ""
+        return True, "mcp", f"let the “{srv.name}” MCP server run {tool['name']}"
+    if atype in ("browser", "web", "webbrowser") + _AUTOPILOT_BROWSER_TYPES:
+        kind = "browser"
+    elif atype in _COMPUTER_TYPES + _AUTOPILOT_COMPUTER_TYPES:
+        kind = "computer"
+    else:
+        kind = "remote"
+    if kind in _remote:
+        return False, "", ""
+    return True, kind, _describe(spec, atype)
+
+
+def _describe(spec: dict, atype: str) -> str:
+    """What an action would do, for an ask that the PC's own rules don't word."""
+    if atype in ("browser", "web", "webbrowser"):
+        do = str(spec.get("do") or spec.get("command") or spec.get("action")
+                 or "").lower().strip().replace(" ", "_")
+        return _describe_browser(spec, do)
+    if atype in _AUTOPILOT_BROWSER_TYPES + _AUTOPILOT_COMPUTER_TYPES:
+        goal = spec.get("goal") or spec.get("task") or spec.get("target") or spec.get("text")
+        where = "browser" if atype in _AUTOPILOT_BROWSER_TYPES else "PC"
+        return f"do this on the {where}: {goal}"
+    args = ", ".join(f"{k} {v}" for k, v in spec.items()
+                     if k != "type" and v not in ("", None, [], {}))
+    args = args if len(args) <= 120 else args[:117] + "…"
+    return f"run {atype.replace('_', ' ')}" + (f" ({args})" if args else "")
+
+
+def _local_permission(spec: dict) -> "Tuple[bool, str, str]":
     """Return (gated, kind, human description) for actions that require approval.
 
     Gated: destructive power (shutdown/restart/hibernate/logoff) and any file

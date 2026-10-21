@@ -78,7 +78,9 @@ does something surprising, record it and keep it.
   user marked the server trusted, and its answer goes back labelled as data.
 - A WhatsApp command is an ordinary pipeline turn (`_run_pipeline(wa_chat=…)`): the
   PC's voice is quiet, every HUD event goes to a tap that builds the reply, and
-  `request_permission` / `request_clarification` also ask in that chat. Never add a
+  `request_permission` / `request_clarification` also ask in that chat. Every action
+  not in `actions._REMOTE_FREE` asks first, open consent windows or not — a new
+  read-only lookup belongs on that list. Never add a
   tool that messages anyone: replies only go to the chat a command came from.
 - The phone app (`AnaaySampat/jarvis`) is a TypeScript port of this backend and now
   leads on some fixes; its `docs/STATUS.md` says what was verified on a device. When

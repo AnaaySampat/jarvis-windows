@@ -155,15 +155,19 @@ starting with JARVIS's name:
 
 - The reply comes back in that chat, and the PC stays quiet. Pictures (screenshots,
   generated images, QR codes) are sent as images, and voice notes are transcribed.
-- Anything that normally asks for approval on screen asks you in the chat too: reply
-  *yes* or *no*.
-- Notes to yourself that don't start with "Jarvis" are left alone. Messages to and
-  from anyone else, and every group, are ignored. If JARVIS is linked to a second
-  number, list your own number under it and message that number instead.
+- Anything beyond a lookup (the time, weather, a web search…) asks you in the chat
+  first, since nobody may be at the PC to see it: reply *yes* or *no*. An approval
+  given at the PC doesn't carry over to WhatsApp.
+- Attach a photo or a document with a "Jarvis, …" caption and it comes with the
+  command ("Jarvis, what does this letter say?").
+- Messages that don't start with "Jarvis" are left alone, unless they reply to one
+  of JARVIS's messages. Messages to and from anyone else, and every group, are
+  ignored. If JARVIS is linked to a second number, list your own number under it and
+  message that number instead (the name rule applies there too).
 - Commands sent while the PC was off aren't run when it comes back; JARVIS says so.
 
 It needs the `neonize` package: `pip install -r requirements.txt` from source; the
-installer includes it from the next release. It uses an unofficial
+installer includes it. It uses an unofficial
 WhatsApp client, the WhatsApp Web protocol through
 [neonize](https://github.com/krypton-byte/neonize)/whatsmeow, the same approach as
 OpenClaw. That isn't covered by WhatsApp's terms, and WhatsApp can restrict accounts

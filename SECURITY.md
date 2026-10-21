@@ -96,8 +96,9 @@ Out of scope:
   JARVIS does as much as anything you type, though every action still goes through
   the same approval prompts.
 - The WhatsApp channel (off by default) makes your WhatsApp account a way to command
-  this PC, as powerful as typing into JARVIS; approvals still apply, and are asked in
-  the chat. Its session lives in `%APPDATA%\Jarvis\whatsapp.db` and is as sensitive as
+  this PC, as powerful as typing into JARVIS. Everything but a lookup is asked about
+  in the chat first, even when a browser or computer-control approval is already open
+  on the PC. Its session lives in `%APPDATA%\Jarvis\whatsapp.db` and is as sensitive as
   a WhatsApp Web login: anyone with that file can read and send your messages. Unlink
   it in Settings when you stop using it. It's an unofficial client; see the README.
 - TV control turns on the TV's network ADB (port 5555 on your home network). If you

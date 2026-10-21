@@ -7,16 +7,20 @@ Settings page says so.
 
 Who can command JARVIS (`admit`):
 - The account's own "Message yourself" chat. Only the owner can write there, from any
-  of their devices, so it needs no list. People keep notes there, so a message counts
-  only when it starts with JARVIS's name ("Jarvis, what's my CPU at?").
+  of their devices, so it needs no list.
 - Direct messages from numbers the user listed (for a JARVIS on a second number).
 - Nothing else: groups, broadcasts, and everyone else are ignored without a reply, and
   the owner's own messages to other people are never commands.
+Even there a message counts only when it starts with JARVIS's name ("Jarvis, what's my
+CPU at?") or replies to one of JARVIS's messages: people keep notes in their own chat
+and chat normally with a listed number. A photo or document counts by its caption, and
+comes with the command.
 
 A message runs as an ordinary chat turn (main._run_whatsapp_turn) with the PC's voice
-quiet; the reply comes back here, approvals are asked here, and everything still goes
-through the same tools and approval prompts. There is no tool for JARVIS to message
-anyone: it only ever answers the chat a command came from.
+quiet; the reply comes back here and approvals are asked here. Anything but a lookup
+asks first (actions.needs_permission), because nobody may be at the PC to see it. There
+is no tool for JARVIS to message anyone: it only ever answers the chat a command came
+from.
 
 Guards: replies start with MARK and a self-chat message that does is JARVIS's own;
 messages older than STALE_S (queued while the PC was off) are skipped; at most RATE_N
@@ -38,6 +42,7 @@ MARK = "🤖"                 # every reply starts with it
 STALE_S = 180               # a command older than this was sent while JARVIS was offline
 RATE_N, RATE_WINDOW_S = 6, 60
 CHUNK = 3500                # WhatsApp takes ~65k, but a wall of text is unreadable
+MAX_ATTACH = 8 * 1024 * 1024  # the PC chat's upload limit too (main._MAX_UPLOAD_BYTES)
 _SETTINGS = "whatsapp.json"
 _DB = "whatsapp.db"         # the linked-device session: as sensitive as WhatsApp Web's
 _DEFAULTS = {"enabled": False, "allow": []}
@@ -128,10 +133,25 @@ _NAME = re.compile(r"^\W*(?:(?:hey|hi|ok(?:ay)?|yo)\W+)?jarvis\b\W*", re.IGNOREC
 
 
 def addressed(text: str) -> "str | None":
-    """The command in a self-chat message that starts with JARVIS's name, without the
-    name; None when it doesn't start with it (a note to self)."""
+    """The command in a message that starts with JARVIS's name, without the name; None
+    when it doesn't start with it (not for JARVIS)."""
     m = _NAME.match(text or "")
     return text[m.end():].strip() if m else None
+
+
+_CARRIERS = ("extendedTextMessage", "imageMessage", "documentMessage", "audioMessage",
+             "videoMessage")
+
+
+def replies_to_jarvis(msg) -> bool:
+    """The message quotes one of JARVIS's own replies (they all start with MARK)."""
+    from neonize.utils.message import extract_text
+    for field in _CARRIERS:
+        if msg.HasField(field):
+            ctx = getattr(msg, field).contextInfo
+            return ctx.HasField("quotedMessage") and \
+                (extract_text(ctx.quotedMessage) or "").lstrip().startswith(MARK)
+    return False
 
 
 class RateLimit:
@@ -250,8 +270,9 @@ def compose(events: list) -> "tuple[str, list[tuple[bytes, str]]]":
 # ── The linked device (neonize) ───────────────────────────────────────────────
 
 class Channel:
-    """One linked WhatsApp account. `on_command(text, chat, heard)` runs a command
-    (heard=True for a voice note); `on_state(state)` reports status to the HUD;
+    """One linked WhatsApp account. `on_command(text, chat, heard, attachment)` runs a
+    command (heard=True for a voice note; attachment is (name, mime, bytes) for a photo
+    or document, else None); `on_state(state)` reports status to the HUD;
     `transcribe(audio_bytes)` turns a voice note into text."""
 
     def __init__(self, on_command, on_state, transcribe):
@@ -280,9 +301,11 @@ class Channel:
                 ConnectedEv, ConnectFailureEv, DisconnectedEv, LoggedOutEv, MessageEv,
                 PairStatusEv, TemporaryBanEv,
             )
-        except ImportError:
+        except ImportError as exc:
+            print(f"[WhatsApp] neonize didn't load: {exc!r}", flush=True)
             await self._set(status="error", error="WhatsApp needs the neonize package — "
-                                                  "pip install neonize, then restart JARVIS.")
+                                                  "pip install neonize, then restart JARVIS. "
+                                                  f"({exc})")
             return
         db = db_path()
         db.parent.mkdir(parents=True, exist_ok=True)
@@ -398,6 +421,8 @@ class Channel:
         info = ev.Info
         src = info.MessageSource
         msg = ev.Message
+        if msg.HasField("documentWithCaptionMessage"):   # a document sent with a caption
+            msg = msg.documentWithCaptionMessage.message
         text = extract_text(msg) or ""
         sent_at = float(info.Timestamp or 0)
         if sent_at > 1e12:                 # milliseconds
@@ -407,8 +432,9 @@ class Channel:
             return
         self._seen.append(info.ID)
         own_chat = bool(src.IsFromMe)
+        to_jarvis = replies_to_jarvis(msg)
         if why == "stale":
-            if not (own_chat and addressed(text) is None):      # a command, not a note
+            if to_jarvis or addressed(text) is not None:       # a command, not a note
                 print("[WhatsApp] skipped a command sent while JARVIS was offline", flush=True)
                 await self.send(src.Chat, "That came in while I was offline, so I didn't run "
                                           "it. Send it again if you still want it.")
@@ -430,20 +456,40 @@ class Channel:
             except Exception as exc:  # noqa: BLE001
                 await self.send(chat, f"I couldn't hear that voice note ({exc}).")
                 return
-        if own_chat:
-            text = addressed(text)
-            if text is None:
-                return                     # a note to self, not for JARVIS
+        text = text.strip() if to_jarvis else addressed(text)
+        if text is None:
+            return                         # a note or a chat, not for JARVIS
         if not self._rate.ok(time.time()):
             print("[WhatsApp] rate limit: dropped a command", flush=True)
             return
-        if not text.strip():
+        attachment = None
+        if msg.HasField("imageMessage") or msg.HasField("documentMessage"):
+            attachment = await self._attachment(client, msg, chat)
+            if attachment is None:
+                return
+        if not text and attachment is None:
             await self.send(chat, "Yes? Send what you'd like after my name, e.g. "
-                                  "“Jarvis, what's on my agenda?”" if own_chat else
-                            "I can read text and voice notes here. For a photo, use the "
-                            "chat on the PC.")
+                                  "“Jarvis, what's on my agenda?”")
             return
-        await self.on_command(text.strip(), chat, heard)
+        await self.on_command(text, chat, heard, attachment)
+
+    async def _attachment(self, client, msg, chat) -> "tuple[str, str, bytes] | None":
+        """(name, mime, bytes) of a photo or document, or None after saying why not."""
+        if msg.HasField("imageMessage"):
+            media, name = msg.imageMessage, "photo.jpg"
+        else:
+            media = msg.documentMessage
+            name = media.fileName or media.title or "document"
+        if media.fileLength > MAX_ATTACH:
+            await self.send(chat, f"That file is too large; I can take up to "
+                                  f"{MAX_ATTACH // (1024 * 1024)} MB.")
+            return None
+        try:
+            data = await client.download_any(msg)
+        except Exception as exc:  # noqa: BLE001
+            await self.send(chat, f"I couldn't download that file ({exc}).")
+            return None
+        return name, media.mimetype or "", data
 
     # ── Sending ───────────────────────────────────────────────────────────────
 

@@ -124,8 +124,17 @@ class FakeClient:
         return b"OggS"
 
 
-def message(chat, sender, text="", from_me=False, voice=False, sent=None, mid="m1"):
-    msg = NS(text=text, HasField=lambda f: voice and f == "audioMessage")
+def message(chat, sender, text="", from_me=False, voice=False, sent=None, mid="m1",
+            quoted=None, photo=None):
+    """A MessageEv: `quoted` is the text of the message it replies to, `photo` the
+    bytes of an attached picture (its caption is `text`)."""
+    has = {"audioMessage": voice, "extendedTextMessage": quoted is not None,
+           "imageMessage": photo is not None}
+    reply = NS(HasField=lambda f: quoted is not None and f == "quotedMessage",
+               quotedMessage=NS(text=quoted))
+    media = NS(contextInfo=reply, fileLength=len(photo or b""), mimetype="image/jpeg")
+    msg = NS(text=text, HasField=lambda f: has.get(f, False), audioMessage=media,
+             extendedTextMessage=NS(contextInfo=reply), imageMessage=media)
     info = NS(MessageSource=src(chat, sender, from_me), ID=mid,
               Timestamp=int(sent or time.time()))
     return NS(Info=info, Message=msg)
@@ -146,8 +155,8 @@ class ChannelTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(p.stop)
         self.commands = []
 
-        async def on_command(text, chat, heard):
-            self.commands.append((text, heard))
+        async def on_command(text, chat, heard, attachment=None):
+            self.commands.append((text, heard) + ((attachment,) if attachment else ()))
 
         async def transcribe(audio):
             return "Jarvis, what's the weather?"
@@ -167,11 +176,35 @@ class ChannelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.commands, [("open notepad", False)])     # m1 not run twice
         self.assertEqual(self.client.sent, [])
 
-    async def test_a_listed_number_needs_no_name_and_strangers_get_nothing(self):
-        await self.ch._on_message(self.client, message(jid(FRIEND), jid(FRIEND), "lights?"))
-        await self.ch._on_message(self.client, message(jid("9111"), jid("9111"), "hi", mid="m2"))
+    async def test_a_listed_number_needs_the_name_too_and_strangers_get_nothing(self):
+        f = jid(FRIEND)
+        await self.ch._on_message(self.client, message(f, f, "dinner at 8?"))
+        await self.ch._on_message(self.client, message(f, f, "Jarvis, lights?", mid="m2"))
+        await self.ch._on_message(self.client, message(jid("9111"), jid("9111"),
+                                                       "Jarvis, hi", mid="m3"))
         self.assertEqual(self.commands, [("lights?", False)])
         self.assertEqual(self.client.sent, [])
+
+    async def test_a_reply_to_jarvis_needs_no_name(self):
+        me = jid(ME)
+        await self.ch._on_message(self.client, message(
+            me, me, "and tomorrow?", True, quoted=f"{wa.MARK} Sunny, 31°."))
+        await self.ch._on_message(self.client, message(
+            me, me, "and tomorrow?", True, quoted="my own note", mid="m2"))
+        self.assertEqual(self.commands, [("and tomorrow?", False)])
+
+    async def test_a_photo_comes_with_its_command(self):
+        me = jid(ME)
+        await self.ch._on_message(self.client, message(
+            me, me, "Jarvis, what plant is this?", True, photo=b"jpg"))
+        await self.ch._on_message(self.client, message(me, me, "", True, photo=b"jpg", mid="m2"))
+        self.assertEqual(self.commands, [("what plant is this?", False,
+                                          ("photo.jpg", "image/jpeg", b"OggS"))])
+        big = message(me, me, "Jarvis, read this", True, photo=b"x" * (wa.MAX_ATTACH + 1),
+                      mid="m3")
+        await self.ch._on_message(self.client, big)
+        self.assertEqual(len(self.commands), 1)
+        self.assertIn("too large", self.client.sent[-1])
 
     async def test_voice_notes_are_transcribed_and_old_commands_explained(self):
         me = jid(ME)
@@ -208,6 +241,37 @@ class ChannelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.client.sent[0].startswith(wa.MARK))
 
 
+class RemoteGateTests(unittest.TestCase):
+    """During a WhatsApp command everything but a lookup asks, consent windows or not."""
+
+    def setUp(self):
+        import actions
+        self.actions = actions
+        self.addCleanup(actions.remote_turn, False)
+        for name, val in (("is_approved", True), ("approve", None)):
+            p = mock.patch.object(actions.browser, name, lambda *a, v=val: v)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_lookups_run_and_everything_else_asks(self):
+        a = self.actions
+        browse = {"type": "browser", "do": "click", "target": "Buy"}
+        self.assertFalse(a.needs_permission(browse)[0])          # at the PC: approved
+        a.remote_turn(True)
+        self.assertFalse(a.needs_permission({"type": "weather"})[0])
+        gated, kind, desc = a.needs_permission({"type": "set_volume", "level": 80})
+        self.assertEqual((gated, kind), (True, "remote"))
+        self.assertIn("level 80", desc)
+        self.assertEqual(a.needs_permission(browse)[:2], (True, "browser"))
+        self.assertFalse(a.consented("browser"))
+        a.grant("browser")                                       # yes in the chat
+        self.assertTrue(a.consented("browser"))
+        self.assertFalse(a.needs_permission(browse)[0])
+        self.assertTrue(a.needs_permission({"type": "set_volume", "level": 80})[0])
+        a.remote_turn(False)
+        self.assertFalse(a.needs_permission({"type": "set_volume", "level": 80})[0])
+
+
 class TurnTests(unittest.IsolatedAsyncioTestCase):
     """main._run_whatsapp_turn: quiet on the PC, reply and approvals in the chat."""
 
@@ -233,6 +297,8 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
         async def fake_turn(text, emit_transcription, task_tier, shown_text=""):
             shown.append(shown_text)
             quiet.append(main.skills.is_muted())
+            asked_first = main.needs_permission({"type": "open_app", "target": "notepad"})[0]
+            quiet.append(asked_first)
             approved = await main.request_permission("computer", "shut the PC down")
             await main.emit("response_end", {"text": f"Approved: {approved}", "actions": []})
 
@@ -241,11 +307,34 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(main, "_pipeline_turn", fake_turn):
             await main._run_whatsapp_turn("shut down the PC", chat)
         self.assertEqual(shown, ["📱 shut down the PC"])
-        self.assertEqual(quiet, [True])
+        self.assertEqual(quiet, [True, True])
+        self.assertFalse(main.needs_permission({"type": "open_app", "target": "notepad"})[0])
         self.assertFalse(main.skills.is_muted())          # quiet ends with the turn
         self.assertIn("shut the PC down", asked[0])
         self.assertEqual(sent, ["Approved: True"])
         self.assertIsNone(main._wa_chat)
+
+    async def test_a_file_is_read_like_a_pc_upload(self):
+        import main
+        got, sent = [], []
+
+        class FakeWa:
+            async def typing(self, c, on):
+                pass
+
+            async def send(self, c, text):
+                sent.append(text)
+
+        async def fake_upload(name, mime, blob, prompt, task_tier=""):
+            got.append((name, mime, blob, prompt))
+            await main.emit("response", "A fern.")
+
+        main._pipeline_lock = asyncio.Lock()
+        with mock.patch.object(main, "_wa", FakeWa()),              mock.patch.object(main, "_upload_turn", fake_upload):
+            await main._run_whatsapp_turn("what plant is this?", jid(ME),
+                                          attachment=("photo.jpg", "image/jpeg", b"jpg"))
+        self.assertEqual(got, [("photo.jpg", "image/jpeg", b"jpg", "what plant is this?")])
+        self.assertEqual(sent, ["A fern."])
 
 
 if __name__ == "__main__":
