@@ -1,5 +1,42 @@
 # Windows version — to-do
 
+## 0. 2026-10-21 — seeing what JARVIS does, connectors, the phone through the PC, agent mode
+
+Built and unit-tested here (backend `python -m unittest` → **506**, the Windows-only
+`test_files` one aside; GUI `npm test` 14, `npm run lint` 0 errors / 22 warnings, `npm
+run build`), Settings ▸ Connectors and ▸ Autopilot and the home screen checked in
+Chromium against a stand-in backend. Nothing here has run against real WhatsApp, a real
+mailbox, a paired phone or a live model yet.
+
+- [ ] **A phone task on the HUD.** Send a task from the phone app: the home screen says
+  "Working on it… From your phone: …" and Agent Activity shows its steps and
+  screenshots, tagged *From your phone*. (Before, the HUD showed nothing.)
+- [ ] **WhatsApp progress.** "Jarvis, open YouTube and play lofi": one ⏳ message that
+  is edited as steps land (neonize `edit_message`), ending ✅/⚠️, then the reply.
+  "typing…" stays up the whole time. Watch for `[WhatsApp] edit failed` in the log;
+  if edits never take, progress falls back to a new message at most every 30 s.
+- [ ] **"Jarvis, status"** mid-task: answered at once with the latest steps and a
+  screenshot; and a second command sent mid-task gets "I'm busy with … Yours is next".
+- [ ] **Gmail**: Settings ▸ Connectors ▸ Gmail with a real app password; "any unread
+  email?", "read the one from …" (stays unread in Gmail), "draft a reply saying …"
+  (lands in Drafts, threaded). From WhatsApp each asks first. A wrong password says
+  to use an app password.
+- [ ] **An MCP connector** (Notion or GitHub): connect from its card, check MCP
+  Servers shows it Connected, ask about it by name; reconnect with a new token keeps
+  *Trusted*. Google Calendar's one-time sign-in ("sign in to Google Calendar").
+  Home Assistant with a long-lived token: its MCP endpoint is documented with OAuth;
+  a Bearer token is expected to work like the rest of its API — check.
+- [ ] **"Set an alarm on my phone for 7"** at the PC, with the phone app open: the
+  alarm appears in the phone's Clock, the phone's chat shows "💻 From your PC: …",
+  and the PC says what the phone reported. Again from an allowed WhatsApp number
+  (asks yes/no in that chat first). With the phone app closed for a few minutes: the
+  PC says the phone didn't answer in 45 s.
+- [ ] **Agent mode**: turn it on; "what's the weather" (chat, no plan), "play lofi on
+  YouTube" (browser agent straight away), "find the cheapest flight to Goa on Friday
+  on Google Flights and write it in Notepad" (a two-step plan; the desktop agent gets
+  the flight in its hint). Watch `[Agents]` in the log for how each was routed, and
+  whether the planner over-plans simple requests on the live model.
+
 ## 0. 2026-10-20 menu overhaul — checked in Chromium against a mock backend, not in the app
 
 Every menu was rebuilt and screenshotted in a browser (Vite + a stand-in WebSocket

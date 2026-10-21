@@ -40,7 +40,9 @@ landed, and corrects itself when it didn't.
 | 🌐 **Browser autopilot** | Goal in, result out. Sandboxed to a browser JARVIS owns, with approvals for anything risky. Watch every step and screenshot in the Agent Activity panel. |
 | 🖥️ **Desktop control** | Opens, closes and operates Windows apps through UI Automation. Off until you arm it, with a live "JARVIS CONTROLLING" bar to pause or correct it. |
 | 📱 **Phone remote** | QR + PIN pairing, signed messages, WebRTC screen streaming. A phone can run tasks but can never touch the PC's keys or settings. |
-| 💬 **WhatsApp** | Optional: link JARVIS to your WhatsApp and message it from anywhere ("Jarvis, send me a screenshot"). Replies and approvals come back in the chat; voice notes work. |
+| 💬 **WhatsApp** | Optional: link JARVIS to your WhatsApp and message it from anywhere ("Jarvis, send me a screenshot"). Replies and approvals come back in the chat; voice notes work. A long task shows its steps as it goes, and "Jarvis, status" says what it's doing right now. |
+| 🧭 **Agent mode** | Optional: a coordinator sends each request to a chat, browser or desktop agent, and plans a task that needs more than one ("find the cheapest flight to Goa and write it in Notepad"); the agents hand each other what they found. |
+| 🔌 **Connectors** | Gmail (read, search, write drafts; never sends) with just an app password, plus one-form set-up for GitHub, Notion, Google Calendar, Todoist, Home Assistant, Brave Search, your folders and Zapier. |
 | 📺 **TV** | Control an Android TV over its own network ADB: play a show on Netflix or YouTube, pause, volume, power, and multi-step tasks by sight. |
 | 📊 **Rich answers** | Charts, tables, timelines and flowcharts render inline in the chat. |
 | 💾 **Memory & playbooks** | "Remember that…" keeps facts across sessions. Teach a multi-step routine once and it reuses it. Everything is stored locally and viewable in the Memory panel. |
@@ -165,6 +167,17 @@ starting with JARVIS's name:
   ignored. If JARVIS is linked to a second number, list your own number under it and
   message that number instead (the name rule applies there too).
 - Commands sent while the PC was off aren't run when it comes back; JARVIS says so.
+- A browser or desktop task gets one status message that JARVIS edits as its steps
+  land, so you can watch it work. **"Jarvis, status"** (or "what are you doing?")
+  is answered at once, even mid-task, with the last screen the task saw. A command
+  sent while another is running is told what it's waiting for. Tasks sent from the
+  paired phone show on the PC's home screen and in Agent Activity too.
+- **Your phone, through the PC.** With a phone paired (below), "Jarvis, set an alarm
+  on my phone for 7" works from the PC and from WhatsApp, including from another
+  number you allowed: WhatsApp → this PC → the phone. The phone runs it with its
+  alarms, timers, reminders and switches only, and JARVIS on it has to be open or
+  recently used to answer. The phone can also answer WhatsApp itself while the PC is
+  off: see the phone app's Settings ▸ PC & WhatsApp.
 
 It needs the `neonize` package: `pip install -r requirements.txt` from source; the
 installer includes it. It uses an unofficial
@@ -203,6 +216,40 @@ asks you first, unless the server says the tool only reads or you mark the serve
 **trusted**. What a server returns is treated as data, never as instructions. It needs
 `pip install mcp`; servers started with `npx` or `uvx` also need Node.js or uv. Each
 server is a program running on your PC, so add only ones you trust.
+
+## Connectors: Gmail, GitHub, Notion…
+
+Settings → **Connectors** lists the services people connect most, each with its own
+steps and one or two fields:
+
+- **Gmail** (or Yahoo, iCloud, any IMAP mailbox) is built in. Make an app password
+  (Google Account → 2-Step Verification → App passwords), paste it with your address,
+  and ask "any new emails from Asha?", "read the one about the invoice", "draft a
+  reply saying Friday works". JARVIS reads without marking anything read, and writes
+  **drafts** in your Drafts folder; it never sends. The password stays in
+  `%APPDATA%\Jarvis\secrets.json`.
+- **GitHub, Notion, Google Calendar, Todoist, Home Assistant, Brave Search, Folders,
+  Zapier** each build an MCP server entry for you (below) from a token or a link, so
+  the same rules apply: tools load when you name the service, and one that changes
+  something asks first. Most need Node.js; Google Calendar also needs its own Google
+  Cloud OAuth client (the steps are on the card).
+
+## Agent mode
+
+Settings → Autopilot → **How JARVIS works** (or "Switch to agent mode" in Ctrl+K).
+In agent mode each typed or spoken request goes to a specialist:
+
+- the **chat agent** answers and does one-step things (timers, music, email, lookups) —
+  it's JARVIS as usual, so anything unclear lands here;
+- the **browser agent** does whole tasks on websites;
+- the **desktop agent** does whole tasks in Windows apps and your files.
+
+A request that needs both gets a short plan, shown in the chat and run in order. Each
+agent works from what the earlier ones found, and when one needs something mid-task
+("what's the price to write down?") it asks the other agent before it asks you. A step
+that fails or that you don't approve stops the plan, and the reply says where. Every
+step asks for browser or computer control exactly like a normal task. The live voice
+session (Gemini Live) stays in simple mode.
 
 ## Two routers at home?
 
