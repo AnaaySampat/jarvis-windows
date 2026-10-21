@@ -25,6 +25,11 @@ from.
 Guards: replies start with MARK and a self-chat message that does is JARVIS's own;
 messages older than STALE_S (queued while the PC was off) are skipped; at most RATE_N
 commands a minute.
+
+Seeing what JARVIS is doing from the chat: a browser/desktop task gets one status
+message that is edited in place as its steps land (Progress), "Jarvis, status" is
+answered at once even mid-task (`on_status`, from activity.py), and a command that has
+to wait for another one is told so (main._on_whatsapp_command).
 """
 
 from __future__ import annotations
@@ -172,6 +177,18 @@ _YES = re.compile(r"^\s*(?:(?:y|yes|yeah|yep|ok(?:ay)?|sure|approve[d]?|allow(?:
                   r"go(?: ahead)?|do it|confirm(?:ed)?)\b|👍)", re.IGNORECASE)
 
 
+_STATUS = re.compile(
+    r"^\W*(?:status|progress|update|what(?:'?s| is) (?:the )?(?:status|progress)|"
+    r"what(?: are|'?re) you (?:doing|up to|working on)|are you (?:busy|done|there)|"
+    r"how(?:'?s| is) it going|(?:any )?news)\W*$", re.IGNORECASE)
+
+
+def is_status_request(text: str) -> bool:
+    """"Jarvis, status" / "what are you doing?" — the whole message, so "status of my
+    Amazon order" stays an ordinary command."""
+    return bool(_STATUS.match(text or ""))
+
+
 def is_yes(answer: str) -> bool:
     """An approval reply. Anything that isn't plainly yes is a no."""
     return bool(_YES.match(answer or "")) and not re.search(r"\b(?:no|don'?t|not)\b",
@@ -273,10 +290,12 @@ class Channel:
     """One linked WhatsApp account. `on_command(text, chat, heard, attachment)` runs a
     command (heard=True for a voice note; attachment is (name, mime, bytes) for a photo
     or document, else None); `on_state(state)` reports status to the HUD;
-    `transcribe(audio_bytes)` turns a voice note into text."""
+    `transcribe(audio_bytes)` turns a voice note into text; `on_status(chat)`, when
+    given, answers "Jarvis, status" without running a turn."""
 
-    def __init__(self, on_command, on_state, transcribe):
+    def __init__(self, on_command, on_state, transcribe, on_status=None):
         self.on_command, self.on_state, self.transcribe = on_command, on_state, transcribe
+        self.on_status = on_status
         self.client = None
         self.state = {"status": "off", "qr": "", "number": "", "error": ""}
         self._me: "set[str]" = set()
@@ -462,6 +481,10 @@ class Channel:
         if not self._rate.ok(time.time()):
             print("[WhatsApp] rate limit: dropped a command", flush=True)
             return
+        if self.on_status is not None and is_status_request(text) and not (
+                msg.HasField("imageMessage") or msg.HasField("documentMessage")):
+            await self.on_status(chat)
+            return
         attachment = None
         if msg.HasField("imageMessage") or msg.HasField("documentMessage"):
             attachment = await self._attachment(client, msg, chat)
@@ -494,15 +517,37 @@ class Channel:
     # ── Sending ───────────────────────────────────────────────────────────────
 
     async def send(self, chat, text: str) -> bool:
+        return await self.send_id(chat, text) is not None
+
+    async def send_id(self, chat, text: str) -> "str | None":
+        """Send `text` (in chunks); the id of the last message sent, None on failure
+        ('' when the client gave no id)."""
         client = self.client
         if client is None or not (text or "").strip():
-            return False
+            return None
         try:
+            mid = ""
             for part in chunks(text):
-                await client.send_message(chat, f"{MARK} {part}")
-            return True
+                resp = await client.send_message(chat, f"{MARK} {part}")
+                mid = str(getattr(resp, "ID", "") or "")
+            return mid
         except Exception as exc:  # noqa: BLE001
             print(f"[WhatsApp] send failed: {exc}", flush=True)
+            return None
+
+    async def edit(self, chat, message_id: str, text: str) -> bool:
+        """Replace the text of one of JARVIS's own messages (WhatsApp allows it for
+        15 minutes after sending)."""
+        client = self.client
+        if client is None or not message_id or not (text or "").strip():
+            return False
+        try:
+            from neonize.proto.waE2E.WAWebProtobufsE2E_pb2 import Message
+            await client.edit_message(chat, message_id,
+                                      Message(conversation=f"{MARK} {text[:CHUNK]}"))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WhatsApp] edit failed: {exc}", flush=True)
             return False
 
     async def send_image(self, chat, data: bytes, caption: str = "") -> bool:
@@ -544,6 +589,109 @@ class Channel:
         finally:
             if self._waiting and self._waiting[1] is fut:
                 self._waiting = None
+
+
+# ── Live progress for a long task (one message, edited in place) ──────────────
+
+EDIT_EVERY_S = 3.0          # at most one edit this often
+FALLBACK_EVERY_S = 30.0     # when edits don't take, a fresh message at most this often
+_PROGRESS_LINES = 5
+
+
+def progress_text(goal: str, lines: "list[str]", state: str = "running",
+                  summary: str = "") -> str:
+    """The status message for a task: its goal, the last few steps, and how it ended."""
+    head = {"running": "⏳ Working on it", "done": "✅ Finished",
+            "failed": "⚠️ Didn't finish", "stopped": "⏹ Stopped",
+            "ended": "⏹ Ended"}.get(state, "⏳ Working on it")
+    out = [f"{head}: {' '.join(str(goal or '').split())[:200]}"]
+    shown = lines[-_PROGRESS_LINES:]
+    if len(lines) > len(shown):
+        out.append(f"… {len(lines) - len(shown)} earlier step{'s' if len(lines) - len(shown) > 1 else ''}")
+    out += [f"→ {' '.join(str(line).split())[:160]}" for line in shown]
+    if state != "running" and summary:
+        out.append(summary.strip()[:300])
+    elif state == "running":
+        out.append("(Send “Jarvis, status” any time.)")
+    return "\n".join(out)
+
+
+class Progress:
+    """One task's live status message in a chat. `step`/`finish` are cheap and safe to
+    call from an event tap; a single flusher sends the first message, then edits it at
+    most every EDIT_EVERY_S. If an edit fails (too old, or the client can't), the
+    progress goes out as a fresh message instead, at most every FALLBACK_EVERY_S."""
+
+    def __init__(self, channel: "Channel", chat, goal: str, task_id=None,
+                 clock=time.monotonic):
+        self.channel, self.chat, self.goal, self.clock = channel, chat, goal, clock
+        self.task_id = task_id
+        self.lines: "list[str]" = []
+        self.state, self.summary = "running", ""
+        self.mid: "str | None" = None
+        self._shown = ""
+        self._last = -1e9
+        self._fresh = -1e9
+        self._wake = asyncio.Event()
+        self._task = asyncio.ensure_future(self._run())
+
+    def step(self, line: str) -> None:
+        if line and self.state == "running":
+            self.lines.append(str(line))
+            self._wake.set()
+
+    def finish(self, ok: bool, summary: str = "", stopped: bool = False) -> None:
+        self.state = "stopped" if stopped else ("done" if ok else "failed")
+        self.summary = summary
+        self._wake.set()
+
+    def text(self) -> str:
+        return progress_text(self.goal, self.lines, self.state, self.summary)
+
+    async def _run(self) -> None:
+        try:
+            while True:
+                await self._wake.wait()
+                self._wake.clear()
+                wait = EDIT_EVERY_S - (self.clock() - self._last)
+                if wait > 0 and self.state == "running":
+                    await asyncio.sleep(wait)
+                    self._wake.clear()
+                await self._show(self.text())
+                if self.state != "running":
+                    return
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:  # noqa: BLE001 — progress is a courtesy, never a failure
+            print(f"[WhatsApp] progress failed: {exc}", flush=True)
+
+    async def _show(self, text: str) -> None:
+        if text == self._shown:
+            return
+        now = self.clock()
+        self._last = now
+        if self.mid and await self.channel.edit(self.chat, self.mid, text):
+            self._shown = text
+            return
+        if self.mid is None or now - self._fresh >= FALLBACK_EVERY_S or self.state != "running":
+            mid = await self.channel.send_id(self.chat, text)
+            if mid is not None:
+                self.mid, self._shown, self._fresh = mid or None, text, now
+
+    def start(self) -> None:
+        """Send the first message now (the goal, before any step)."""
+        self._wake.set()
+
+    async def close(self, timeout: float = 10.0) -> None:
+        """Wait for the last update to go out (or give up after `timeout`). A task that
+        never reported how it ended is shown as ended, never as done."""
+        if self.state == "running":
+            self.state = "ended"
+            self._wake.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(self._task), timeout)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            self._task.cancel()
 
 
 def _key(jid) -> str:

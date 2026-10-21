@@ -19,7 +19,8 @@ class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
         main._remote_pending_question = None
         main._remote_finished.clear()
 
-    async def _submit(self, *, busy=False, submit=None, result=None, calls=None, subscribe=None):
+    async def _submit(self, *, busy=False, submit=None, result=None, calls=None, subscribe=None,
+                      run_task=None):
         ran = {"v": False}
         events = []  # (task_id, event, data) captured from emit_task_event
         calls = calls if calls is not None else []  # consent/run call order
@@ -51,9 +52,33 @@ class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
              patch.object(main.computer, "is_armed", lambda: False), \
              patch.object(main.computer, "arm", lambda m=None: (calls.append("arm"), (True, "armed"))[1]), \
              patch.object(main.computer, "disarm", lambda: (calls.append("disarm"), (True, ""))[1]), \
-             patch.object(main.autopilot, "run_task", fake_run_task):
+             patch.object(main.autopilot, "run_task", run_task or fake_run_task):
             await main.handle_task_submit(submit or {"goal": "open notepad", "kind": "computer"})
         return ran["v"], events
+
+    async def test_the_hud_draws_a_phone_task_like_its_own(self):
+        # Before, the HUD got only task.* events, which it never drew: a phone task ran
+        # with nothing on the PC's screen.
+        hud = []
+
+        async def fake_hud_emit(event, data):
+            hud.append((event, data))
+
+        async def stepping_run_task(kind, goal, **kw):
+            await kw["on_step"]("Opened Notepad")
+            return {"ok": True, "summary": "Notepad is open.", "findings": []}
+
+        with patch.object(main, "emit", fake_hud_emit):
+            await self._submit(submit={"goal": "open notepad", "kind": "computer",
+                                       "task_id": "task-hud1"},
+                               run_task=stepping_run_task)
+        events = [e for e, _ in hud]
+        self.assertEqual(events[:1], ["agent_task"])
+        self.assertEqual(hud[0][1], {"id": "task-hud1", "kind": "computer",
+                                     "goal": "open notepad", "source": "phone"})
+        self.assertIn(("agent_step", {"id": "task-hud1", "line": "Opened Notepad", "ok": True}), hud)
+        end = next(d for e, d in hud if e == "agent_task_end")
+        self.assertEqual((end["id"], end["ok"], end["summary"]), ("task-hud1", True, "Notepad is open."))
 
     async def test_authenticated_task_runs_without_a_pc_prompt(self):
         # Approval is on the phone; the desktop trusts an authenticated task.

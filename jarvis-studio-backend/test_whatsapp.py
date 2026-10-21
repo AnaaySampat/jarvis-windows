@@ -84,6 +84,26 @@ class TextTests(unittest.TestCase):
         self.assertTrue(all(len(p) <= 500 for p in parts))
         self.assertEqual(" ".join(parts).split(), ["word"] * 2000)
 
+    def test_status_is_the_whole_message_only(self):
+        for text in ("status", "Status?", "what are you doing?", "what're you up to",
+                     "how's it going", "progress", "are you busy?"):
+            self.assertTrue(wa.is_status_request(text), text)
+        for text in ("status of my amazon order", "what are you doing tonight at 8",
+                     "update windows", ""):
+            self.assertFalse(wa.is_status_request(text), text)
+
+    def test_progress_text_shows_the_last_steps_and_the_end(self):
+        lines = [f"step {i}" for i in range(8)]
+        text = wa.progress_text("book a table", lines)
+        self.assertTrue(text.startswith("⏳ Working on it: book a table"))
+        self.assertIn("… 3 earlier steps", text)
+        self.assertIn("→ step 7", text)
+        self.assertNotIn("step 2", text)
+        self.assertIn("Jarvis, status", text)
+        done = wa.progress_text("book a table", lines, "failed", "The site was down.")
+        self.assertTrue(done.startswith("⚠️ Didn't finish"))
+        self.assertTrue(done.endswith("The site was down."))
+
     def test_rate_limit(self):
         r = wa.RateLimit(2, 60)
         self.assertEqual([r.ok(0), r.ok(1), r.ok(2), r.ok(61.5)], [True, True, False, True])
@@ -114,14 +134,35 @@ class ComposeTests(unittest.TestCase):
 
 class FakeClient:
     def __init__(self):
-        self.sent, self.downloads = [], 0
+        self.sent, self.downloads, self.edits = [], 0, []
+        self.edit_ok = True
 
     async def send_message(self, chat, text):
         self.sent.append(text)
+        return NS(ID=f"id{len(self.sent)}")
+
+    async def edit_message(self, chat, message_id, new_message):
+        if not self.edit_ok:
+            raise RuntimeError("too old to edit")
+        self.edits.append((message_id, new_message.conversation))
 
     async def download_any(self, msg):
         self.downloads += 1
         return b"OggS"
+
+
+class Clock:
+    def __init__(self):
+        self.t = 100.0
+
+    def __call__(self):
+        return self.t
+
+
+async def settle():
+    """Let the progress flusher run (it sleeps for real only when throttled)."""
+    for _ in range(5):
+        await asyncio.sleep(0)
 
 
 def message(chat, sender, text="", from_me=False, voice=False, sent=None, mid="m1",
@@ -140,13 +181,23 @@ def message(chat, sender, text="", from_me=False, voice=False, sent=None, mid="m
     return NS(Info=info, Message=msg)
 
 
+def fake_neonize() -> dict:
+    """The bits of neonize the channel imports, as plain modules."""
+    fake = types.ModuleType("neonize.utils.message")
+    fake.extract_text = lambda msg: msg.text
+    proto = types.ModuleType("neonize.proto.waE2E.WAWebProtobufsE2E_pb2")
+    proto.Message = lambda conversation="": NS(conversation=conversation)
+    return {"neonize": types.ModuleType("neonize"),
+            "neonize.utils": types.ModuleType("neonize.utils"),
+            "neonize.utils.message": fake,
+            "neonize.proto": types.ModuleType("neonize.proto"),
+            "neonize.proto.waE2E": types.ModuleType("neonize.proto.waE2E"),
+            "neonize.proto.waE2E.WAWebProtobufsE2E_pb2": proto}
+
+
 class ChannelTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        fake = types.ModuleType("neonize.utils.message")
-        fake.extract_text = lambda msg: msg.text
-        for name, mod in (("neonize", types.ModuleType("neonize")),
-                          ("neonize.utils", types.ModuleType("neonize.utils")),
-                          ("neonize.utils.message", fake)):
+        for name, mod in fake_neonize().items():
             p = mock.patch.dict(sys.modules, {name: mod})
             p.start()
             self.addCleanup(p.stop)
@@ -164,9 +215,67 @@ class ChannelTests(unittest.IsolatedAsyncioTestCase):
         async def on_state(_s):
             pass
 
-        self.ch = wa.Channel(on_command, on_state, transcribe)
+        self.statuses = []
+
+        async def on_status(chat):
+            self.statuses.append(chat.User)
+
+        self.ch = wa.Channel(on_command, on_state, transcribe, on_status=on_status)
         self.ch._me = {ME}
         self.client = self.ch.client = FakeClient()
+
+    async def test_status_is_answered_without_running_a_turn(self):
+        me = jid(ME)
+        await self.ch._on_message(self.client, message(me, me, "Jarvis, status?", True))
+        await self.ch._on_message(self.client, message(me, me, "Jarvis, status of order 12",
+                                                       True, mid="m2"))
+        self.assertEqual(self.statuses, [ME])
+        self.assertEqual(self.commands, [("status of order 12", False)])
+
+    async def test_a_task_gets_one_message_edited_as_it_goes(self):
+        clock = Clock()
+        me = jid(ME)
+        p = wa.Progress(self.ch, me, "find a flight to Goa", "t1", clock=clock)
+        p.start()
+        await settle()
+        self.assertEqual(len(self.client.sent), 1)
+        self.assertIn("find a flight to Goa", self.client.sent[0])
+        p.step("Opened Google Flights")
+        p.step("Typed Goa")                      # inside EDIT_EVERY_S: one edit for both
+        clock.t += wa.EDIT_EVERY_S
+        await settle()
+        self.assertEqual(len(self.client.edits), 1)
+        mid, text = self.client.edits[0]
+        self.assertEqual(mid, "id1")
+        self.assertIn("→ Opened Google Flights\n→ Typed Goa", text)
+        p.finish(True)
+        await p.close()
+        self.assertTrue(self.client.edits[-1][1].startswith(f"{wa.MARK} ✅ Finished"))
+        self.assertEqual(len(self.client.sent), 1)          # never a message per step
+
+    async def test_when_edits_fail_progress_comes_as_a_new_message_now_and_then(self):
+        clock = Clock()
+        self.client.edit_ok = False
+        p = wa.Progress(self.ch, jid(ME), "tidy my desktop", clock=clock)
+        p.start()
+        await settle()
+        p.step("Listed the Desktop")
+        clock.t += wa.EDIT_EVERY_S
+        await settle()
+        self.assertEqual(len(self.client.sent), 1)          # not yet: FALLBACK_EVERY_S
+        p.step("Made a folder")
+        clock.t += wa.FALLBACK_EVERY_S
+        await settle()
+        self.assertEqual(len(self.client.sent), 2)
+        self.assertIn("→ Made a folder", self.client.sent[1])
+
+    async def test_a_task_that_never_reports_its_end_is_not_called_done(self):
+        p = wa.Progress(self.ch, jid(ME), "open notepad", clock=Clock())
+        p.start()
+        await settle()
+        await p.close()
+        self.assertIn("⏹ Ended", self.client.sent[-1] if not self.client.edits
+                      else self.client.edits[-1][1])
 
     async def test_self_chat_commands_need_the_name_and_notes_are_left_alone(self):
         me = jid(ME)
@@ -335,6 +444,62 @@ class TurnTests(unittest.IsolatedAsyncioTestCase):
                                           attachment=("photo.jpg", "image/jpeg", b"jpg"))
         self.assertEqual(got, [("photo.jpg", "image/jpeg", b"jpg", "what plant is this?")])
         self.assertEqual(sent, ["A fern."])
+
+    async def test_a_task_shows_its_progress_before_the_reply(self):
+        import main
+        client = FakeClient()
+        ch = wa.Channel(None, None, None)
+        ch.client = client
+        typing = []
+        ch.typing = lambda c, on: typing.append(on) or asyncio.sleep(0)
+
+        async def fake_turn(text, emit_transcription, task_tier, shown_text=""):
+            await main.emit("agent_task", {"id": "t9", "kind": "browser", "goal": "play lofi",
+                                           "source": "whatsapp"})
+            await settle()
+            await main.emit("agent_step", {"id": "t9", "line": "Opened YouTube"})
+            await main.emit("agent_task_end", {"id": "t9", "ok": True, "summary": "Playing."})
+            await main.emit("response_end", {"text": "Lofi is playing.", "actions": []})
+
+        main._pipeline_lock = asyncio.Lock()
+        with mock.patch.dict(sys.modules, fake_neonize()), \
+             mock.patch.object(main, "_wa", ch), \
+             mock.patch.object(main, "_pipeline_turn", fake_turn):
+            await main._run_whatsapp_turn("play lofi on youtube", jid(ME))
+        self.assertIn("⏳ Working on it: play lofi", client.sent[0])
+        self.assertTrue(client.edits[-1][1].startswith(f"{wa.MARK} ✅ Finished: play lofi"))
+        self.assertIn("→ Opened YouTube", client.edits[-1][1])
+        self.assertEqual(client.sent[-1], f"{wa.MARK} Lofi is playing.")   # the reply last
+        self.assertEqual((typing[0], typing[-1]), (True, False))
+
+    async def test_a_command_that_has_to_wait_is_told_what_for(self):
+        import main
+        sent, ran = [], []
+
+        class FakeWa:
+            async def send(self, c, text):
+                sent.append(text)
+
+        async def fake_turn(text, chat, heard=False, attachment=None):
+            ran.append(text)
+
+        main._pipeline_lock = asyncio.Lock()
+        await main._pipeline_lock.acquire()
+        tracker = main.activity.Activity()
+        tracker.on_event("agent_task", {"id": "x", "kind": "computer", "goal": "tidy my desktop"})
+        try:
+            with mock.patch.object(main, "_wa", FakeWa()), \
+                 mock.patch.object(main.activity, "tracker", tracker), \
+                 mock.patch.object(main, "_run_whatsapp_turn", fake_turn):
+                await main._on_whatsapp_command("what's the time", jid(ME), False)
+                await settle()
+                self.assertIn("I'm busy with a desktop task: “tidy my desktop”", sent[0])
+                self.assertIn("Jarvis, status", sent[0])
+                await main._whatsapp_status(jid(ME))
+        finally:
+            main._pipeline_lock.release()
+        self.assertEqual(ran, ["what's the time"])
+        self.assertIn("Working on a desktop task", sent[1])
 
 
 if __name__ == "__main__":

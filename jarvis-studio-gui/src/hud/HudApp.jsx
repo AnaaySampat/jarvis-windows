@@ -19,6 +19,7 @@ import {
   useCardDrop,
 } from "./widgets";
 import { SkillsOverlay, CapabilitiesOverlay, PowerOverlay, ChatOverlay, MemoryOverlay } from "./HudPanels";
+import { SOURCE_LABEL } from "../utils/taskSource";
 
 /* Theme defaults (App recolours them from the user's screen settings). */
 export const DIRECTIONS = [
@@ -102,7 +103,7 @@ export function JarvisHUD({
   toolbar,                      // the quick controls (App owns their state)
   // live data
   status = "idle",
-  activeTask,                   // goal of the running autopilot task, if any
+  activeTask,                   // the running autopilot task {goal, source, …}, if any
   telemetry,
   weather,
   netInfo,
@@ -198,9 +199,15 @@ export function JarvisHUD({
     return drop?.side === side && !cards.includes(drop.before) ? [...out, line] : out;
   };
 
-  const [title, orbHint] = STATUS_TEXT[status] || STATUS_TEXT.idle;
+  // A task from the phone runs without a turn of its own here, so the status can be
+  // idle while it works: the running task still says what JARVIS is doing.
+  const shownStatus = status === "idle" && activeTask ? "working" : status;
+  const [title, orbHint] = STATUS_TEXT[shownStatus] || STATUS_TEXT.idle;
   const hint = reactor ? orbHint.replace("the orb", "the reactor") : orbHint;
-  const busy = status !== "idle";
+  const busy = shownStatus !== "idle";
+  const taskLine = activeTask
+    ? `${SOURCE_LABEL[activeTask.source] ? `${SOURCE_LABEL[activeTask.source]}: ` : ""}${activeTask.goal}`
+    : "";
   const lastReplyAt = messages.map((m) => m.role !== "user").lastIndexOf(true);
   const lastReply = lastReplyAt >= 0 ? messages[lastReplyAt] : null;
   const lastAsk = [...messages.slice(0, lastReplyAt >= 0 ? lastReplyAt : messages.length)].reverse()
@@ -242,12 +249,12 @@ export function JarvisHUD({
 
         <section className="home-hero" aria-label="JARVIS">
           <HeroClock />
-          <Core status={status} rgb={c.rgb} onClick={busy ? onStop : onListen}
+          <Core status={shownStatus} rgb={c.rgb} onClick={busy ? onStop : onListen}
                 label={busy ? "Stop" : "Talk to JARVIS"} />
           <div className="hero-status" role="status">
-            {hudCards && <Waveform status={status} />}
-            <div className={`hero-title hero-title--${status}`}><span className="hero-dot" />{title}</div>
-            <div className="hero-hint">{status === "working" && activeTask ? activeTask : hint}</div>
+            {hudCards && <Waveform status={shownStatus} />}
+            <div className={`hero-title hero-title--${shownStatus}`}><span className="hero-dot" />{title}</div>
+            <div className="hero-hint">{shownStatus === "working" && taskLine ? taskLine : hint}</div>
           </div>
 
           {lastReply && (

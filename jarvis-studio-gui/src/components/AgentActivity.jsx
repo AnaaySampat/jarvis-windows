@@ -6,6 +6,7 @@
 
 import { useState, useEffect } from "react";
 import { Icon } from "../hud/icons";
+import { SOURCE_LABEL } from "../utils/taskSource";
 
 // A rough verb icon for a step line ("Opened YouTube", "clicked (1,2)", …).
 function stepIcon(line) {
@@ -86,6 +87,7 @@ export default function AgentActivity({ tasks, onClose, onClear }) {
                   <summary className="activity-task-hd">
                     <span className="activity-task-ico"><Icon name={KIND_ICON[t.kind] || "globe"} size={16} /></span>
                     <span className="activity-task-goal">{t.goal}</span>
+                    {SOURCE_LABEL[t.source] && <span className="tag tag--off">{SOURCE_LABEL[t.source]}</span>}
                     <span className="activity-task-n">
                       {steps} step{steps === 1 ? "" : "s"}{shots ? ` · ${shots} shot${shots === 1 ? "" : "s"}` : ""}
                     </span>

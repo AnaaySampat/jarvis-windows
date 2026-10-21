@@ -58,6 +58,7 @@ import reminders
 import playbooks
 import places
 import whatsapp_channel
+import activity
 # First-run asset provisioning is OPTIONAL. If the module is missing from a frozen
 # build, or fails to import for any reason, the backend MUST still start — the
 # assets then fall back to lazy download-on-first-use. Never let it brick startup.
@@ -499,10 +500,20 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
                 {"task_id": task_id, "state": "accepted", "goal": goal,
                  "v": REMOTE_PROTOCOL_VERSION})
 
+    # The HUD draws a phone's task like one of its own: the Agent Activity feed (steps
+    # and screenshots) and the home screen's "Working on it…". It used to get only the
+    # task.* events, which it never drew, so a task from the phone ran with nothing on
+    # the PC's screen. (emit is loopback-only: these never reach a phone.)
+    await emit("agent_task", {"id": task_id, "kind": kind, "goal": goal, "source": "phone"})
+
     async def on_step(line: str) -> None:
         await _emit("task.event",
                     {"task_id": task_id, "kind": "step", "message": line,
                      "ok": not line.lstrip().startswith("✗")})
+        await emit("agent_step", {"id": task_id, "line": line,
+                                  "ok": not line.lstrip().startswith("✗")})
+
+    on_shot = _agent_shot_feed(task_id)
 
     async def ask(question: str) -> str:
         # Mid-task clarify round-trip: emit the question to the phone, then WAIT for
@@ -543,6 +554,8 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
             await _emit("task.status",
                         {"task_id": task_id, "state": "failed",
                          "summary": arm_msg, "v": REMOTE_PROTOCOL_VERSION})
+            await emit("agent_task_end", {"id": task_id, "ok": False, "stopped": False,
+                                          "summary": arm_msg})
             return
 
     # Keep the phone's idle watchdog fed while the PC is legitimately busy but
@@ -582,7 +595,7 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
     hb = asyncio.create_task(_heartbeat())
     try:
         res = await autopilot.run_task(
-            kind, goal, on_step=on_step, ask=ask,
+            kind, goal, on_step=on_step, on_shot=on_shot, ask=ask,
             hint=playbooks.autopilot_hint(goal), interrupted=_interrupted,
         )
         ok = bool(res.get("ok"))
@@ -602,12 +615,16 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
             terminal["proof"] = {"passed": True,
                                  "evidence_ids": findings or [task_id]}
         await _emit("task.status", terminal)
+        await emit("agent_task_end", {"id": task_id, "ok": ok, "stopped": stopped,
+                                      "summary": summary or ("Done." if ok else "Didn't finish.")})
         print(f"[Remote] task {task_id} ({kind}) {'✓' if ok else '✗'} {goal!r}", flush=True)
     except Exception as exc:  # noqa: BLE001
         _audit({"event": "task.error", "device_id": device_id, "task_id": task_id, "error": str(exc)[:200]})
         await _emit("task.status",
                     {"task_id": task_id, "state": "failed",
                      "summary": f"error: {exc}", "v": REMOTE_PROTOCOL_VERSION})
+        await emit("agent_task_end", {"id": task_id, "ok": False, "stopped": False,
+                                      "summary": f"Failed: {exc}"})
         print(f"[Remote] task {task_id} failed: {exc}", flush=True)
     finally:
         hb.cancel()
@@ -2002,6 +2019,24 @@ async def _run_autopilot_task(result: dict, *, speak: bool = True,
         _autopilot_owner = ""
 
 
+def _agent_shot_feed(task_id: str):
+    """An operator's on_shot for the Agent Activity panel: each screenshot it saw,
+    downscaled to a light thumbnail (off the event loop); an unchanged frame isn't
+    re-sent when the same page is observed again."""
+    last = {"v": ""}
+
+    async def on_shot(b64: str) -> None:
+        if not b64:
+            return
+        loop = asyncio.get_running_loop()
+        thumb = await loop.run_in_executor(None, skills.thumbnail_data_url, b64)
+        if not thumb or thumb == last["v"]:
+            return
+        last["v"] = thumb
+        await emit("agent_shot", {"id": task_id, "image": thumb})
+    return on_shot
+
+
 async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
                                     speak: bool) -> str:
     """The body of _run_autopilot_task, run while this process owns the autopilot."""
@@ -2018,7 +2053,8 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
     # the operator saw (the browser page for browser tasks; the screen for desktop
     # tasks, when autopilot vision is on). These rows are read-only auditability;
     # they never bypass the consent gates.
-    await emit("agent_task", {"id": sid, "kind": kind, "goal": goal})
+    await emit("agent_task", {"id": sid, "kind": kind, "goal": goal,
+                              "source": "whatsapp" if _wa_chat is not None else ""})
     lines = [f"{icon} On it, sir — {goal}"]
     await emit("stream_delta", {"sid": sid, "text": "\n".join(lines)})
 
@@ -2032,20 +2068,7 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
         await emit("agent_step", {"id": sid, "line": line,
                                   "ok": not line.lstrip().startswith("✗")})
 
-    _shot_sig = {"v": ""}
-
-    async def on_shot(b64: str) -> None:
-        # A page screenshot the operator saw this step → downscale to a light
-        # thumbnail (off the event loop) and stream it to the activity panel.
-        # Skip an unchanged frame so re-observing the same page isn't re-sent.
-        if not b64:
-            return
-        loop = asyncio.get_running_loop()
-        thumb = await loop.run_in_executor(None, skills.thumbnail_data_url, b64)
-        if not thumb or thumb == _shot_sig["v"]:
-            return
-        _shot_sig["v"] = thumb
-        await emit("agent_shot", {"id": sid, "image": thumb})
+    on_shot = _agent_shot_feed(sid)
 
     async def ask(question: str) -> str:
         await on_step(f"❓ {question}")
@@ -2574,6 +2597,8 @@ async def _run_pipeline(text: str, emit_transcription: bool = True,
     async with _pipeline_lock:
         turn_recorder.begin(text)          # a no-op unless JARVIS_RECORD_TURNS=1
         try:
+            if wa_chat is not None:
+                activity.tracker.dequeued(text)   # it's running, not waiting, now
             if wa_chat is None:
                 await _pipeline_turn(text, emit_transcription, task_tier, shown)
                 return
@@ -2848,29 +2873,55 @@ async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
 
 # ── WhatsApp channel (whatsapp_channel.py) ─────────────────────────────────────
 
+_WA_TYPING_EVERY_S = 20     # WhatsApp drops a "typing…" after ~25 s without a refresh
+
+
 async def _run_whatsapp_turn(text: str, chat, heard: bool = False,
                              attachment=None) -> None:
     """One WhatsApp command: an ordinary turn with the PC's voice quiet, its reply
     (and any picture it made) sent back to the chat it came from. The HUD shows the
-    turn too, marked 📱, so the PC keeps a record of what was asked remotely."""
+    turn too, marked 📱, so the PC keeps a record of what was asked remotely.
+
+    So the chat isn't left looking at nothing while it runs: "typing…" stays up for
+    the whole turn, and a browser/desktop task gets one status message that is edited
+    as its steps land (whatsapp_channel.Progress)."""
     events: list = []
+    progress: "list[whatsapp_channel.Progress]" = []
 
     def tap(event: str, data) -> None:
         if event in ("response_end", "response", "action"):
             events.append((event, data))
-        elif event == "agent_task" and isinstance(data, dict) and _wa is not None:
-            # A browser/desktop task takes a while: say it has started.
-            _track_task(_wa.send(chat, f"On it: {data.get('goal', '')}"), "whatsapp ack")
+        elif not isinstance(data, dict) or _wa is None:
+            return
+        elif event == "agent_task":
+            p = whatsapp_channel.Progress(_wa, chat, str(data.get("goal") or ""),
+                                          data.get("id"))
+            p.start()
+            progress.append(p)
+        elif progress and progress[-1].task_id == data.get("id"):
+            if event == "agent_step":
+                progress[-1].step(str(data.get("line") or ""))
+            elif event == "agent_task_end":
+                progress[-1].finish(bool(data.get("ok")), "", bool(data.get("stopped")))
 
     if _wa is None:
         return
-    await _wa.typing(chat, True)
+
+    async def keep_typing() -> None:
+        while True:
+            await _wa.typing(chat, True)
+            await asyncio.sleep(_WA_TYPING_EVERY_S)
+
+    typing = asyncio.create_task(keep_typing())
     try:
         shown = f"📱 📎 {attachment[0]} {text}".rstrip() if attachment else f"📱 {text}"
         await _run_pipeline(text, emit_transcription=True, wa_chat=chat, tap=tap,
                             shown=shown, upload=attachment)
     finally:
+        typing.cancel()
         await _wa.typing(chat, False)
+        for p in progress:
+            await p.close()
     reply, images = whatsapp_channel.compose(events)
     if not reply and not images:
         reply = ("I'm on standby, sir. Send “Jarvis, wake up” to wake me."
@@ -2885,7 +2936,33 @@ async def _run_whatsapp_turn(text: str, chat, heard: bool = False,
 async def _on_whatsapp_command(text: str, chat, heard: bool, attachment=None) -> None:
     print(f"[WhatsApp] command: {text[:80]!r}"
           + (f" with {attachment[0]}" if attachment else ""), flush=True)
-    _track_task(_run_whatsapp_turn(text, chat, heard, attachment), "whatsapp turn")
+    # Turns run one at a time. A command that has to wait says so at once, with what
+    # it's waiting for, instead of the chat hearing nothing until its turn comes.
+    if _wa is not None and (_pipeline_lock is not None and _pipeline_lock.locked()
+                            or _autopilot_owner):
+        doing = activity.tracker.headline() or "another request"
+        await _wa.send(chat, f"I'm busy with {doing}. Yours is next in line — send "
+                             "“Jarvis, status” to see how it's going.")
+    _track_task(_queued_whatsapp_turn(text, chat, heard, attachment), "whatsapp turn")
+
+
+async def _queued_whatsapp_turn(text: str, chat, heard: bool, attachment=None) -> None:
+    activity.tracker.queued(text)
+    try:
+        await _run_whatsapp_turn(text, chat, heard, attachment)
+    finally:
+        activity.tracker.dequeued(text)
+
+
+async def _whatsapp_status(chat) -> None:
+    """ "Jarvis, status": what's running, from the activity tracker, with the last
+    screen the running task saw. Answered at once — it doesn't wait for the turn."""
+    if _wa is None:
+        return
+    await _wa.send(chat, activity.tracker.describe())
+    shot = whatsapp_channel._data_url_bytes(activity.tracker.screenshot())
+    if shot:
+        await _wa.send_image(chat, shot, "What the task saw last.")
 
 
 async def _emit_whatsapp(state: "dict | None" = None) -> None:
@@ -2898,7 +2975,7 @@ async def _start_whatsapp() -> None:
     global _wa
     if _wa is None:
         _wa = whatsapp_channel.Channel(_on_whatsapp_command, _emit_whatsapp,
-                                       transcribe_voice_note)
+                                       transcribe_voice_note, on_status=_whatsapp_status)
     await _wa.start()
 
 
@@ -4423,6 +4500,8 @@ async def main(use_text: bool) -> None:
     # So the browser worker thread (which owns Playwright) can marshal a HUD
     # state update back onto this loop.
     _main_loop = asyncio.get_running_loop()
+    # What JARVIS is doing, from every HUD event: WhatsApp "status" answers from it.
+    add_tap(activity.tracker.on_event)
     browser.set_state_callback(_on_browser_state)
     computer.set_state_callback(_on_control_state)
     # Warm the Playwright driver in the background now (no window opens), so the

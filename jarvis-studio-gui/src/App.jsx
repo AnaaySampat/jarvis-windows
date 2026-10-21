@@ -445,7 +445,7 @@ export default function App() {
       <JarvisHUD
         config={hudConfig}
         toolbar={toolbar}
-        activeTask={(agentTasks.find((t) => t.status === "running") || {}).goal}
+        activeTask={agentTasks.find((t) => t.status === "running")}
         screen={screen}
         onArrange={(order) => sendScreen({ order })}
         status={status}
