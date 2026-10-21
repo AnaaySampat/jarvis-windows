@@ -548,7 +548,7 @@ class Tv:
         self.sh(f"am start -a android.intent.action.VIEW -d "
                 f"{shell_quote('https://www.netflix.com/' + path)} "
                 f"-f 0x30000000 -e source 30 -n {NETFLIX}/.MainActivity")
-        pressed_ok = saw_stop = False
+        pressed_ok = pressed_play = saw_stop = False
         elapsed = 0.0
         while elapsed < 45:
             self.wait(2.5)
@@ -556,6 +556,13 @@ class Tv:
             s = self.sessions().get(NETFLIX)
             if not s or s[0] != 3:
                 saw_stop = True
+                # Nothing playing or loading 10 s on: Netflix sits on the show's page, its
+                # Play button focused — it autoplays only a show the profile is partway
+                # through (2026-10-20, "play The Big Bang Theory"). One OK plays it.
+                if (not pressed_play and elapsed >= 10 and (not s or s[0] in (0, 1, 2))
+                        and self.focused_package() == NETFLIX):
+                    self.keyevent(_KEYS["ok"])
+                    pressed_play = True
                 continue
             # ponytail: the profile gate is recognised by its signature (state 3 stuck
             # at position 0) and only after a cold start; one OK picks the last profile.

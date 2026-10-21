@@ -82,6 +82,21 @@ class TvControlTest(unittest.TestCase):
         self.assertTrue(run(t, "play", "Stranger Things", "netflix")[0])
         self.assertEqual(sent.count("input keyevent 23"), 1)
 
+    def test_a_show_page_that_doesnt_autoplay_gets_one_ok(self):
+        # Live 2026-10-20: "play The Big Bang Theory" (never started on that profile)
+        # opened the show's page, Play focused, and waited: Netflix stayed stopped.
+        t, sent = fake_tv([(r"^pidof", "9812"), (r"mCurrentFocus", focus("com.netflix.ninja")),
+                           (r"media_session", [nf(1, 0)] * 5 + [nf(3, 4000), nf(3, 4000), nf(3, 6500)])])
+        self.assertEqual(run(t, "play", "stranger things", "netflix"),
+                         (True, "Playing Stranger Things on Netflix."))
+        self.assertEqual(sent.count("input keyevent 23"), 1)
+
+    def test_no_ok_unless_netflix_is_in_front(self):
+        t, sent = fake_tv([(r"^pidof", "9812"), (r"mCurrentFocus", focus("com.google.android.tvlauncher")),
+                           (r"media_session", nf(1, 0))])
+        self.assertFalse(run(t, "play", "stranger things", "netflix")[0])
+        self.assertNotIn("input keyevent 23", sent)
+
     def test_netflix_never_starts(self):
         t, _ = fake_tv([(r"^pidof", ""), (r"media_session", nf(3, 0))])
         ok, msg = run(t, "play", "Stranger Things", "netflix")
