@@ -53,6 +53,7 @@ import storage
 import memory_store
 import routines
 import mcp_client
+import connectors
 import turn_recorder
 import reminders
 import playbooks
@@ -3623,6 +3624,32 @@ async def handle_tv_set_mac(data) -> None:
 
 async def _emit_mcp() -> None:
     await emit("mcp.state", mcp_client.state())
+    await emit("connectors.state", connectors.state())
+
+
+# ── Connectors (connectors.py): Gmail and preset MCP servers, set up from a form ──
+
+async def handle_connectors_state(_data) -> None:
+    await emit("connectors.state", connectors.state())
+
+
+async def handle_connectors_connect(data) -> None:
+    """Settings ▸ Connectors: sign in to one (email: one IMAP login first, off the
+    loop) and save it. The form's values are secrets and are never sent back."""
+    data = data if isinstance(data, dict) else {}
+    loop = asyncio.get_running_loop()
+    ok, msg = await connectors.connect(
+        str(data.get("id") or ""), data.get("values") or {},
+        lambda fn, *a: loop.run_in_executor(None, fn, *a))
+    print(f"[Connectors] {data.get('id')}: {'✓' if ok else '✗'} {msg}", flush=True)
+    await emit("connectors.state", connectors.state())
+    await emit("mcp.state", mcp_client.state())
+
+
+async def handle_connectors_disconnect(data) -> None:
+    await connectors.disconnect(str((data or {}).get("id") or ""))
+    await emit("connectors.state", connectors.state())
+    await emit("mcp.state", mcp_client.state())
 
 
 async def handle_mcp_state(_data) -> None:
@@ -4568,6 +4595,9 @@ async def main(use_text: bool) -> None:
     register_handler("mcp.save", handle_mcp_save)
     register_handler("mcp.remove", handle_mcp_remove)
     register_handler("mcp.restart", handle_mcp_restart)
+    register_handler("connectors.state", handle_connectors_state)
+    register_handler("connectors.connect", handle_connectors_connect)
+    register_handler("connectors.disconnect", handle_connectors_disconnect)
     from actions import tv as _tv
     _tv.attach_loop(_main_loop)
     # ── Remote mobile control ────────────────────────────────────────────────

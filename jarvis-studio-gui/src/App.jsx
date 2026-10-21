@@ -29,6 +29,7 @@ const SETTINGS_PAGES = [
   ["interface", "Interface", "layout", "overlay pill shortcuts"],
   ["files", "Files & Location", "folder", "storage folders location skills"],
   ["devices", "Devices", "phone", "phone pairing tv whatsapp"],
+  ["connectors", "Connectors", "plug", "connect gmail email github notion calendar todoist home assistant zapier apps integrations"],
   ["mcp", "MCP Servers", "plug", "tools integrations"],
   ["system", "System", "wrench", "repair components ram"],
 ];
@@ -69,7 +70,7 @@ export default function App() {
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     overlay, agentTasks, conversations, setupProgress,
-    devicePairing, devices, tvState, waState, mcpState,
+    devicePairing, devices, tvState, waState, mcpState, connState,
     createPairing, listDevices, revokeDevice,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage,
     resetConversation, newConversation, openConversation, deleteConversation, listConversations, clearConversations,
@@ -328,6 +329,10 @@ export default function App() {
       cmd("customize", "Panels", "Customize the home screen", "palette", () => setCustomizeOpen(true),
         { keywords: "theme preset colour color accent font glow corners background picture image layout panels cards drag arrange iron man" }),
       cmd("settings", "Panels", "Settings", "settings", () => openSettings(), { keys: ["Ctrl", ","] }),
+      cmd("connect-gmail", "Connections", "Connect Gmail", "message", () => openSettings("connectors"),
+        { keywords: "email mail inbox connector app password" }),
+      cmd("connectors", "Connections", "Connect an app (GitHub, Notion, Calendar…)", "plug", () => openSettings("connectors"),
+        { keywords: "connectors integrations github notion google calendar todoist home assistant zapier brave folders" }),
 
       cmd("listen", "Voice", "Start listening", "mic", triggerListen, { keywords: "talk speak microphone", keys: ["Ctrl", "Space"] }),
       cmd("stop", "Voice", "Stop speaking", "stop", stopSpeech, { keywords: "silence quiet interrupt" }),
@@ -549,6 +554,7 @@ export default function App() {
           tvState={tvState}
           waState={waState}
           mcpState={mcpState}
+          connState={connState}
           onTv={(type, data) => wsSend({ type, data })}
         />
       )}

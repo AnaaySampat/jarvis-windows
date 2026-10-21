@@ -174,6 +174,14 @@ def _describe(spec: dict, atype: str) -> str:
         goal = spec.get("goal") or spec.get("task") or spec.get("target") or spec.get("text")
         where = "browser" if atype in _AUTOPILOT_BROWSER_TYPES else "PC"
         return f"do this on the {where}: {goal}"
+    if atype == "email_search":
+        q = spec.get("query")
+        return "look through your email" + (f" for “{q}”" if q else "")
+    if atype == "email_read":
+        return "read one of your emails"
+    if atype == "email_draft":
+        to = spec.get("to")
+        return "save an email draft" + (f" to {to}" if to else "") + " (it won't be sent)"
     args = ", ".join(f"{k} {v}" for k, v in spec.items()
                      if k != "type" and v not in ("", None, [], {}))
     args = args if len(args) <= 120 else args[:117] + "…"
@@ -1090,6 +1098,15 @@ def _run_one(spec: dict) -> dict:
     elif atype == "mcp":
         import mcp_client
         return mcp_client.run(spec)
+    elif atype in ("email_search", "email_read", "email_draft"):
+        from actions import email_box
+        if atype == "email_search":
+            return email_box.search(spec.get("query") or "", bool(spec.get("unread")),
+                                    spec.get("limit") or 8)
+        if atype == "email_read":
+            return email_box.read(spec.get("id") or target)
+        return email_box.draft(spec.get("to") or "", spec.get("subject") or "",
+                               spec.get("body") or "", spec.get("reply_to") or "")
     elif atype == "read_skill":
         import skill_files
         ok, text = skill_files.read(spec.get("name") or target)

@@ -80,6 +80,7 @@ export function useWebSocket() {
   const [devices, setDevices] = useState([]);              // paired-phone roster
   const [tvState, setTvState] = useState(null);
   const [mcpState, setMcpState] = useState(null);          // MCP servers {available, config, servers, result}
+  const [connState, setConnState] = useState(null);        // Connectors {connectors:[…], mcp_available}
   const [waState, setWaState] = useState(null);            // WhatsApp channel {status, qr, number, error, enabled, allow}            // {config:{host,model}|null, result:{ok,summary}|null}
 
   const wsRef      = useRef(null);
@@ -299,6 +300,9 @@ export function useWebSocket() {
             break;
           case "whatsapp.state":
             setWaState(msg.data || null);
+            break;
+          case "connectors.state":
+            setConnState(msg.data || null);
             break;
           // ── Agent Activity feed (autopilot steps + page screenshots) ──────
           case "agent_task": {
@@ -653,7 +657,7 @@ export function useWebSocket() {
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     activeApp, overlay, agentTasks, conversations, setupProgress,
-    devicePairing, devices, tvState, waState, mcpState,
+    devicePairing, devices, tvState, waState, mcpState, connState,
     createPairing, listDevices, revokeDevice,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand, triggerListen, stopSpeech,
     stopControl, pauseControl, sendCorrection, finishListen, pttStart,

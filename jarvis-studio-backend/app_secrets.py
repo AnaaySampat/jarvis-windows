@@ -49,6 +49,8 @@ _KEYS: "dict[str, tuple[str, ...]]" = {
     "google_maps_key": ("GOOGLE_MAPS_API_KEY", "GOOGLE_MAPS_KEY", "MAPS_API_KEY"),
     # Web search backup, used only when Gemini grounding can't answer.
     "tavily_api_key": ("TAVILY_API_KEY",),
+    # The email connector's app password (actions/email_box.py, Settings ▸ Connectors).
+    "email_app_password": (),
 }
 
 # Keys we treat as genuinely sensitive when deciding whether onboarding is needed.

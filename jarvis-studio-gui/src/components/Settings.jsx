@@ -327,6 +327,132 @@ function McpSection({ mcpState, onMcp }) {
   </>);
 }
 
+/**
+ * Connectors (backend: connectors.py). Gmail is built in (an IMAP sign-in with an app
+ * password); the rest fill in an MCP server entry from one token, so they also show
+ * under MCP Servers. The form's values are secrets: the backend never sends them back.
+ */
+const CONN_STATUS = { connected: ["Connected", "ok"], connecting: ["Connecting…", "busy"],
+                      failed: ["Failed", "err"], off: ["Not connected", "off"] };
+
+function ConnectorForm({ c, onSend, pending, setPending }) {
+  const [values, setValues] = useState({});
+  const set = (k, v) => setValues((cur) => ({ ...cur, [k]: v }));
+  const fields = (c.fields || []).filter((f) => f.key !== "host" || values.provider === "custom");
+  const missing = fields.some((f) => !f.optional && !String(values[f.key] ?? (f.options ? f.options[0][0] : "")).trim());
+  const submit = (e) => {
+    e.preventDefault();
+    if (missing || pending) return;
+    const withDefaults = Object.fromEntries(fields.map((f) => [f.key, values[f.key] ?? (f.options ? f.options[0][0] : "")]));
+    setPending(c.id);
+    onSend("connectors.connect", { id: c.id, values: withDefaults });
+  };
+  return (
+    <form className="sx-card-body" onSubmit={submit}>
+      <ol className="steps">{(c.steps || []).map((s, i) => <li key={i}>{s}</li>)}</ol>
+      {c.link && (
+        <div>
+          <button type="button" className="btn btn--sm btn--ghost"
+                  onClick={() => onSend("run_action", { spec: { type: "open_url", url: c.link } })}>
+            <Icon name="external" size={14} />Open {c.link.replace(/^https?:\/\//, "").split("/")[0]}
+          </button>
+        </div>
+      )}
+      {fields.map((f) => (
+        <div key={f.key}>
+          <label className="field-label" htmlFor={`conn-${c.id}-${f.key}`}>
+            {f.label}{f.optional && <span className="muted"> — optional</span>}
+          </label>
+          {f.type === "select" ? (
+            <select id={`conn-${c.id}-${f.key}`} className="field" value={values[f.key] ?? f.options[0][0]}
+                    onChange={(e) => set(f.key, e.target.value)}>
+              {f.options.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+            </select>
+          ) : (
+            <input id={`conn-${c.id}-${f.key}`} className={`field${f.secret ? " field--mono" : ""}`}
+                   type={f.secret ? "password" : f.type === "email" ? "email" : "text"}
+                   autoComplete="off" spellCheck={false} placeholder={f.placeholder}
+                   value={values[f.key] || ""} onChange={(e) => set(f.key, e.target.value)} />
+          )}
+        </div>
+      ))}
+      <div className="form-foot">
+        <span className="muted">{c.kind === "email" ? "Checked by signing in once." : "Saved on this PC only."}</span>
+        <button type="submit" className="btn btn--primary" disabled={missing || !!pending}>
+          <Icon name="plug" size={14} />{pending === c.id ? "Connecting…" : `Connect ${c.name}`}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ConnectorsSection({ connState, onSend }) {
+  const st = connState || { connectors: [], mcp_available: true };
+  const [open, setOpen] = useState(null);
+  // {id, at}: a connect is in flight until the backend's next state (≠ `at`) arrives.
+  const [sent, setSent] = useState(null);
+  const pending = sent && sent.at === connState ? sent.id : null;
+  const setPending = (id) => setSent({ id, at: connState });
+  useEffect(() => { onSend && onSend("connectors.state"); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  const list = st.connectors || [];
+  const cur = list.find((c) => c.id === open);
+
+  return (<>
+    {!st.mcp_available && (
+      <Note tone="warn">
+        Connectors other than email run as MCP servers, which need the <b>mcp</b> Python package:
+        <code> pip install mcp</code>, then restart JARVIS.
+      </Note>
+    )}
+    <div className="conn-grid">
+      {list.map((c) => {
+        const [label, tone] = CONN_STATUS[c.status] || [c.status, "off"];
+        return (
+          <button key={c.id} type="button" className={`conn-tile${open === c.id ? " is-on" : ""}`}
+                  onClick={() => setOpen(open === c.id ? null : c.id)} aria-expanded={open === c.id}>
+            <span className="conn-hd">
+              <Icon name={c.icon || "plug"} size={17} /><b>{c.name}</b>
+              <span className={`tag tag--${tone}`}>{label}</span>
+            </span>
+            <span className="conn-d">{c.detail ? `${c.detail} · ` : ""}{c.blurb}</span>
+          </button>
+        );
+      })}
+    </div>
+    {cur && (
+      <Card title={<><Icon name={cur.icon || "plug"} size={15} />{cur.name}</>}
+            status={<span className={`tag tag--${(CONN_STATUS[cur.status] || [0, "off"])[1]}`}>
+              {(CONN_STATUS[cur.status] || [cur.status])[0]}</span>}
+            sub={cur.blurb}
+            actions={cur.status !== "off" && (
+              <ConfirmButton onConfirm={() => onSend("connectors.disconnect", { id: cur.id })}>Disconnect</ConfirmButton>
+            )}>
+        {(cur.needs || cur.error || cur.result) && (
+          <div className="sx-card-body">
+            {cur.needs && <Note tone="warn">{cur.needs}</Note>}
+            {cur.error && <Note tone="err">{cur.error}</Note>}
+            {cur.result && !cur.error && <Note tone={cur.result.ok ? "ok" : "err"}>{cur.result.summary}</Note>}
+          </div>
+        )}
+        {cur.status === "connected" ? (
+          <Guide summary="Use a new key or password">
+            <ConnectorForm c={cur} onSend={onSend} pending={pending} setPending={setPending} />
+          </Guide>
+        ) : (
+          <ConnectorForm c={cur} onSend={onSend} pending={pending} setPending={setPending} />
+        )}
+      </Card>
+    )}
+    <div className="sx-card-body sx-inline">
+      <Note>
+        A connected app&apos;s tools that change something (a new issue, a light) ask you first, unless
+        you trust it under MCP Servers. JARVIS reads email and writes drafts, but never sends one.
+        Anything else with an MCP server can be added under MCP Servers.
+      </Note>
+    </div>
+  </>);
+}
+
 function WhatsAppSection({ waState, onWhatsApp }) {
   const st = waState || { status: "off", enabled: false, allow: [] };
   const [allow, setAllow] = useState(null);            // null = show the saved list
@@ -726,6 +852,8 @@ const SECTIONS = [
     words: "storage folder directories files read location weather pin skills terminal" },
   { id: "devices", label: "Devices", icon: "phone", desc: "Your phone, Android TV and WhatsApp.",
     words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix whatsapp message chat wake lan" },
+  { id: "connectors", label: "Connectors", icon: "plug", desc: "Gmail, GitHub, Notion, Google Calendar and more — set up in a minute.",
+    words: "connectors connect gmail email mail inbox imap app password github notion google calendar todoist home assistant brave search zapier slack folders integrations apps" },
   { id: "mcp", label: "MCP Servers", icon: "plug", desc: "Extra tools from Model Context Protocol servers.",
     words: "mcp model context protocol servers tools plugins integrations connectors github notion" },
   { id: "system", label: "System", icon: "wrench", desc: "Resources and the components JARVIS ships with.",
@@ -734,7 +862,7 @@ const SECTIONS = [
 const NAV_GROUPS = [
   { label: "Intelligence", ids: ["ai", "keys", "routing", "autopilot"] },
   { label: "Experience", ids: ["voice", "interface", "files"] },
-  { label: "Connections", ids: ["devices", "mcp"] },
+  { label: "Connections", ids: ["devices", "connectors", "mcp"] },
   { label: "System", ids: ["system"] },
 ];
 let lastSection = "ai";   // reopen where the user left off (per app session)
@@ -748,7 +876,7 @@ const SHORTCUTS = [
 ];
 
 export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocation, onRefreshModels, onRerankModels, onRepairSetup,
-  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState, mcpState,
+  devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState, mcpState, connState,
   onOpenCustomize, initialSection }) {
   // Re-discover models when the panel opens so the dropdown is current (e.g. a
   // local Ollama model pulled since launch, or a key just added in another client).
@@ -868,6 +996,10 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
     keys: llmConnected ? [llmConnected] : null,
     routing: benched ? [benched, "warn"] : null,
     mcp: mcpFailed ? [mcpFailed, "warn"] : mcpReady ? [mcpReady] : null,
+    connectors: (() => {
+      const n = (connState?.connectors || []).filter((c) => c.status === "connected").length;
+      return n ? [n] : null;
+    })(),
   };
   const current = SECTIONS.find((s) => s.id === section) || SECTIONS[0];
   const ttsOpt = TTS_OPTS.find((o) => o.value === tts);
@@ -1256,6 +1388,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                               onListDevices={onListDevices} onRevokeDevice={onRevokeDevice}
                               tvState={tvState} waState={waState} onTv={onTv} />
             )}
+            {current.id === "connectors" && <ConnectorsSection connState={connState} onSend={onTv} />}
             {current.id === "mcp" && <McpSection mcpState={mcpState} onMcp={onTv} />}
 
             {current.id === "system" && (<>

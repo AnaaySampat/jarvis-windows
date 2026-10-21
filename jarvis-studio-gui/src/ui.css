@@ -275,12 +275,28 @@ label.sx-row:hover { background: color-mix(in oklab, var(--accent) 3%, transpare
 .opt.is-on .opt-radio { border-color: var(--accent); box-shadow: inset 0 0 0 3.5px var(--bg-elevated); background: var(--accent); }
 .opt-d { font-size: 12px; line-height: 1.45; flex: 1; }
 
+/* Connectors: a tile per service; the open one's form sits below the grid */
+.conn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.conn-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px 14px; text-align: left;
+  cursor: pointer; border-radius: var(--r); color: var(--text-sec); font-family: var(--body);
+  background: var(--bg-elevated); border: 1px solid var(--border-soft); transition: border-color .15s, background .15s;
+}
+.conn-tile:hover { border-color: var(--border); color: var(--text-pri); }
+.conn-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conn-tile.is-on { border-color: color-mix(in oklab, var(--accent) 60%, transparent);
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-elevated)); }
+.conn-hd { display: flex; align-items: center; gap: 8px; width: 100%; color: var(--text-pri); font-size: 13.5px; }
+.conn-hd > svg { color: var(--accent-soft); flex-shrink: 0; }
+.conn-hd b { font-weight: 600; flex: 1; min-width: 0; }
+.conn-d { font-size: 12px; line-height: 1.45; }
+
 /* Key cards: buttons from the shared set */
 .kc-field { align-items: stretch; }
 .kc-field .btn { height: auto; min-height: 33px; align-self: stretch; }
 
 @media (max-width: 720px) {
-  .opt-grid, .form-grid { grid-template-columns: 1fr; }
+  .opt-grid, .form-grid, .conn-grid { grid-template-columns: 1fr; }
   .sx-navgroup { flex-direction: row; }
   .sx-navgroup + .sx-navgroup { margin-top: 0; }
   .sx-navgroup-l { display: none; }
