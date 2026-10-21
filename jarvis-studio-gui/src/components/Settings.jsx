@@ -842,8 +842,8 @@ const SECTIONS = [
     words: "api keys groq gemini nvidia openrouter mistral claude anthropic openai gpt grok xai meta llama elevenlabs maps tavily web search credentials" },
   { id: "routing", label: "Routing & Quota", icon: "route", desc: "How requests are spread across your models and keys.",
     words: "smart routing rank tiers quota rate limit benched free" },
-  { id: "autopilot", label: "Autopilot", icon: "cursor", desc: "The operator that drives the browser and desktop for multi-step tasks.",
-    words: "autopilot browser desktop operator reasoning vision screenshot" },
+  { id: "autopilot", label: "Autopilot", icon: "cursor", desc: "Agent mode, and the operator that drives the browser and desktop for multi-step tasks.",
+    words: "autopilot browser desktop operator reasoning vision screenshot agent mode agents simple mode coordinator plan specialist" },
   { id: "voice", label: "Voice", icon: "volume", desc: "How JARVIS sounds, wakes up and speaks up on its own.",
     words: "voice speech tts piper elevenlabs chirp wake word alerts heartbeat checklist digest nightly proactive" },
   { id: "interface", label: "Interface", icon: "layout", desc: "The floating pill, the home screen and keyboard shortcuts.",
@@ -859,6 +859,14 @@ const SECTIONS = [
   { id: "system", label: "System", icon: "wrench", desc: "Resources and the components JARVIS ships with.",
     words: "system ram resources repair components" },
 ];
+// Settings ▸ Autopilot: simple mode (one chat model, as always) or agent mode (agents.py).
+const AGENT_MODES = [
+  { id: "simple", on: false, icon: "chat", title: "Simple",
+    desc: "One assistant with every tool decides what to do — quick for everyday requests." },
+  { id: "agents", on: true, icon: "route", title: "Agents",
+    desc: "A coordinator sends each request to the chat, browser or desktop agent, and plans tasks that need more than one." },
+];
+
 const NAV_GROUPS = [
   { label: "Intelligence", ids: ["ai", "keys", "routing", "autopilot"] },
   { label: "Experience", ids: ["voice", "interface", "files"] },
@@ -913,6 +921,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   const [autopilotThinking, setAutopilotThinking] = useState(
     (sysInfo.autopilot_thinking ?? -1) === 0 ? "off" : "dynamic");
   const [autopilotVision, setAutopilotVision] = useState(sysInfo.autopilot_vision !== false);
+  const [agentMode, setAgentMode] = useState(!!sysInfo.agent_mode);
   const [ovlEnabled, setOvlEnabled] = useState(sysInfo.overlay?.enabled !== false);
   const [ovlApps, setOvlApps] = useState(sysInfo.overlay?.apps ?? []);
   // Preserve whatever mode is in effect (it can be changed by voice via
@@ -938,6 +947,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
     autopilot_model: autopilotModel.trim(),
     autopilot_thinking: autopilotThinking === "off" ? 0 : -1,
     autopilot_vision: autopilotVision,
+    agent_mode: agentMode,
     provider_mode: providerMode,
   };
   // Offline-only fields — sent just for the offline edition so switching modes
@@ -1261,7 +1271,33 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
               </Card>
             </>)}
 
-            {current.id === "autopilot" && (
+            {current.id === "autopilot" && (<>
+              <Card title="How JARVIS works"
+                    sub="Agent mode hands each request to a specialist, and lets them hand each other what they found.">
+                <div className="sx-card-body">
+                  <div className="opt-grid opt-grid--2" role="radiogroup" aria-label="How JARVIS works">
+                    {AGENT_MODES.map((m) => (
+                      <button key={m.id} type="button" role="radio" aria-checked={agentMode === m.on}
+                              className={`opt${agentMode === m.on ? " is-on" : ""}`}
+                              onClick={() => setAgentMode(m.on)}>
+                        <span className="opt-hd"><Icon name={m.icon} size={16} /><b>{m.title}</b><span className="opt-radio" /></span>
+                        <span className="opt-d">{m.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <Guide summary="What the agents do">
+                    <span>
+                      The <b>chat agent</b> answers and does one-step things (timers, music, email, lookups). The
+                      <b> browser agent</b> does whole tasks on websites; the <b>desktop agent</b> does them in Windows
+                      apps and your files. A request that needs both — “find the cheapest flight to Goa and write it in
+                      Notepad” — gets a short plan, run in order: each agent gets what the last one found, and an agent
+                      that needs something mid-task asks the other before asking you. A step that fails stops the plan.
+                      Anything unclear goes to the chat agent, exactly as in simple mode. Typed and wake-word requests
+                      only; the live voice session stays simple.
+                    </span>
+                  </Guide>
+                </div>
+              </Card>
               <Card title="Operator" sub="The model that silently drives multi-step browser and desktop tasks. It picks every click internally — you only hear the outcome.">
                 <Row stack title="Operator model"
                      desc={<>Leave blank for automatic. Use <code>ollama:&lt;model&gt;</code> to run it fully offline.
@@ -1285,7 +1321,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                   <Switch checked={autopilotVision} onChange={setAutopilotVision} label="Look at screenshots when stuck" />
                 </Row>
               </Card>
-            )}
+            </>)}
 
             {current.id === "interface" && (<>
               <Card title="Floating status pill">

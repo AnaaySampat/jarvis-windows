@@ -310,7 +310,7 @@ export function useWebSocket() {
             if (!d.id) break;
             setAgentTasks(prev => [
               ...prev.filter(t => t.id !== d.id),
-              { id: d.id, kind: d.kind, goal: d.goal || "", source: d.source || "", items: [], status: "running", summary: "" },
+              { id: d.id, kind: d.kind, goal: d.goal || "", source: d.source || "", agent: d.agent || "", items: [], status: "running", summary: "" },
             ].slice(-AGENT_TASK_CAP));
             break;
           }

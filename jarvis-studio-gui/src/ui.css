@@ -257,6 +257,7 @@ label.sx-row:hover { background: color-mix(in oklab, var(--accent) 3%, transpare
 
 /* Radio tiles (provider picker) */
 .opt-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.opt-grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .opt {
   display: flex; flex-direction: column; align-items: flex-start; gap: 7px; padding: 13px 14px; text-align: left;
   cursor: pointer; border-radius: var(--r); color: var(--text-sec); font-family: var(--body);

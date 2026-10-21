@@ -88,6 +88,7 @@ export default function AgentActivity({ tasks, onClose, onClear }) {
                     <span className="activity-task-ico"><Icon name={KIND_ICON[t.kind] || "globe"} size={16} /></span>
                     <span className="activity-task-goal">{t.goal}</span>
                     {SOURCE_LABEL[t.source] && <span className="tag tag--off">{SOURCE_LABEL[t.source]}</span>}
+                    {t.agent && <span className="tag tag--busy tag--plain">{t.agent}</span>}
                     <span className="activity-task-n">
                       {steps} step{steps === 1 ? "" : "s"}{shots ? ` · ${shots} shot${shots === 1 ? "" : "s"}` : ""}
                     </span>

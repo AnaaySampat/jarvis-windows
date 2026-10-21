@@ -329,6 +329,9 @@ export default function App() {
       cmd("customize", "Panels", "Customize the home screen", "palette", () => setCustomizeOpen(true),
         { keywords: "theme preset colour color accent font glow corners background picture image layout panels cards drag arrange iron man" }),
       cmd("settings", "Panels", "Settings", "settings", () => openSettings(), { keys: ["Ctrl", ","] }),
+      cmd("agent-mode", "Assistant", sysInfo.agent_mode ? "Switch to simple mode" : "Switch to agent mode", "route",
+        () => { sendConfig({ agent_mode: !sysInfo.agent_mode }); notify(sysInfo.agent_mode ? "Simple mode" : "Agent mode: specialists on each request"); },
+        { keywords: "agents agent mode simple mode coordinator browser desktop specialist plan", state: sysInfo.agent_mode ? "Agents" : null }),
       cmd("connect-gmail", "Connections", "Connect Gmail", "message", () => openSettings("connectors"),
         { keywords: "email mail inbox connector app password" }),
       cmd("connectors", "Connections", "Connect an app (GitHub, Notion, Calendar…)", "plug", () => openSettings("connectors"),
@@ -362,7 +365,8 @@ export default function App() {
     ];
   }, [recordings, runAction, newConversation, running, openSettings, triggerListen, stopSpeech, muted, setMute,
       alwaysOn, setAlwaysOnMode, conversationMode, setConversationModeOn, browserState.available, browserState.open,
-      setBrowserOpen, setAllPanels, panels.terminal, togglePanel, memory?.routines, runRoutine, notify]);
+      setBrowserOpen, setAllPanels, panels.terminal, togglePanel, memory?.routines, runRoutine, notify,
+      sysInfo.agent_mode, sendConfig]);
 
   // Quick controls, shown in the home screen's header.
   const toolbar = (
@@ -451,6 +455,7 @@ export default function App() {
         config={hudConfig}
         toolbar={toolbar}
         activeTask={agentTasks.find((t) => t.status === "running")}
+        agentMode={!!sysInfo.agent_mode}
         screen={screen}
         onArrange={(order) => sendScreen({ order })}
         status={status}

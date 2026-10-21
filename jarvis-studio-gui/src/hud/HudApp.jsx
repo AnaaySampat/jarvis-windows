@@ -104,6 +104,7 @@ export function JarvisHUD({
   // live data
   status = "idle",
   activeTask,                   // the running autopilot task {goal, source, …}, if any
+  agentMode = false,            // agent mode (agents.py) is on: a pill by the name says so
   telemetry,
   weather,
   netInfo,
@@ -232,6 +233,7 @@ export function JarvisHUD({
           <span className="home-logo" aria-hidden />
           <span className="home-name">JARVIS</span>
           <span className={`home-conn${isConnected ? " is-on" : ""}`}>{isConnected ? "Online" : "Offline"}</span>
+          {agentMode && <span className="home-conn is-on" title="Agent mode: each request goes to a specialist agent">Agents</span>}
         </div>
         <nav className="home-nav" aria-label="Menus">
           {NAV.map((n) => (

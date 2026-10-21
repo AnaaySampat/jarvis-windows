@@ -39,7 +39,7 @@ from llm.groq_bridge import (
     model_leaks_reasoning, reply_is_quote_wrapped, summarize_error, get_model,
     routing_note, get_history, set_skill_context, get_screen, set_screen,
     get_manual_location, set_manual_location,
-    get_always_on, set_always_on, set_conversation_mode,
+    get_always_on, set_always_on, set_conversation_mode, get_agent_mode, set_agent_mode,
     get_system_alerts, set_system_alerts, get_overlay, set_overlay,
     quick_completion, CAPABILITY_INDEX,
 )
@@ -61,6 +61,7 @@ import playbooks
 import places
 import whatsapp_channel
 import activity
+import agents
 # First-run asset provisioning is OPTIONAL. If the module is missing from a frozen
 # build, or fails to import for any reason, the backend MUST still start — the
 # assets then fall back to lazy download-on-first-use. Never let it brick startup.
@@ -1976,7 +1977,9 @@ async def _handle_image_gen(result: dict) -> None:
 
 
 async def _run_autopilot_task(result: dict, *, speak: bool = True,
-                              repeat_guard: bool = True) -> str:
+                              repeat_guard: bool = True, context: str = "",
+                              consult=None, report: "dict | None" = None,
+                              label: str = "") -> str:
     """Run one deferred autopilot goal (browser_task / computer_task) and report
     ONCE at the end — this is the cure for "JARVIS reads out the button numbers":
     every internal step (observe → decide → click/type) is silent; the HUD shows a
@@ -1986,6 +1989,12 @@ async def _run_autopilot_task(result: dict, *, speak: bool = True,
     the tool response instead of speaking it itself — pass ``speak=False`` there).
     ``repeat_guard`` refuses a task of a kind that already acted and failed during
     this chat request (_acted_and_failed).
+
+    Agent mode (_run_agent_plan) adds ``context`` (what the other agents found, added
+    to the operator's hint), ``consult`` (async question -> answer or "": put an
+    operator's mid-task question to the other agent before the user), ``report``
+    (filled with ok/stopped/summary/findings) and ``label`` (the agent and step, for
+    the Agent Activity panel).
     """
     kind = result.get("kind") or \
         ("computer" if str(result.get("type", "")).startswith(("computer", "desktop"))
@@ -2016,7 +2025,9 @@ async def _run_autopilot_task(result: dict, *, speak: bool = True,
         return busy
     _autopilot_owner = "local"
     try:
-        return await _run_autopilot_task_owned(result, kind, goal, speak=speak)
+        return await _run_autopilot_task_owned(result, kind, goal, speak=speak,
+                                               context=context, consult=consult,
+                                               report=report, label=label)
     finally:
         _autopilot_owner = ""
 
@@ -2040,7 +2051,8 @@ def _agent_shot_feed(task_id: str):
 
 
 async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
-                                    speak: bool) -> str:
+                                    speak: bool, context: str = "", consult=None,
+                                    report: "dict | None" = None, label: str = "") -> str:
     """The body of _run_autopilot_task, run while this process owns the autopilot."""
     global _control_paused, _pending_corrections
     # Start each task un-paused with an empty correction queue, so a stale pause or
@@ -2056,7 +2068,8 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
     # tasks, when autopilot vision is on). These rows are read-only auditability;
     # they never bypass the consent gates.
     await emit("agent_task", {"id": sid, "kind": kind, "goal": goal,
-                              "source": "whatsapp" if _wa_chat is not None else ""})
+                              "source": "whatsapp" if _wa_chat is not None else "",
+                              **({"agent": label} if label else {})})
     lines = [f"{icon} On it, sir — {goal}"]
     await emit("stream_delta", {"sid": sid, "text": "\n".join(lines)})
 
@@ -2074,6 +2087,12 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
 
     async def ask(question: str) -> str:
         await on_step(f"❓ {question}")
+        if consult is not None:
+            # Agent mode: the other agent may know (a price on the web, a file here).
+            answer = (await consult(question) or "").strip()
+            if answer:
+                await on_step(f"↔ {answer[:160]}")
+                return answer
         await emit("status", "idle")
         answer = await request_clarification(question)
         await emit("status", "working")
@@ -2102,12 +2121,12 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
                                              paused=_control_is_paused,
                                              corrections=_pop_corrections)
         else:
+            hint = "\n\n".join(h for h in (playbooks.autopilot_hint(goal), context) if h)
             res = await autopilot.run_task(kind, goal, interrupted=_interrupted,
                                            on_step=on_step, on_shot=on_shot, ask=ask,
                                            paused=_control_is_paused,
                                            corrections=_pop_corrections,
-                                           reconsent=reconsent,
-                                           hint=playbooks.autopilot_hint(goal))
+                                           reconsent=reconsent, hint=hint)
         summary = (res.get("summary") or "").strip()
         if res.get("stopped"):
             final = "Stopped, sir."
@@ -2121,6 +2140,10 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
         card = {"type": f"{kind}_task", "ok": bool(res.get("ok")), "message": goal[:80],
                 "target": goal[:60]}
         findings = res.get("findings") or []
+        if report is not None:
+            report.update(ok=bool(res.get("ok")) and not res.get("stopped"),
+                          stopped=bool(res.get("stopped")), summary=final,
+                          findings=[str(f)[:300] for f in findings[:12]])
         if findings:
             card["findings"] = [str(f)[:200] for f in findings[:12]]
         await emit("action", [card])
@@ -2647,6 +2670,21 @@ async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
     if emit_transcription:
         await emit("transcription", shown or text)
 
+    # Agent mode (agents.py): a coordinator picks the agent; the chat agent is the rest
+    # of this function, unchanged.
+    if get_agent_mode():
+        plan = await _agent_plan_for(text)
+        if plan is not None:
+            try:
+                await _run_agent_plan(text, plan)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                await _report_pipeline_error(exc, text)
+            finally:
+                await emit("status", "idle")
+            return
+
     sid = f"{time.time()}"          # stream id so the UI can finalize idempotently
     full_raw = ""
     cursor = 0
@@ -3012,6 +3050,137 @@ async def handle_whatsapp_unlink(_data) -> None:
             p = whatsapp_channel.db_path()
             p.with_name(p.name + suffix).unlink(missing_ok=True)
     await _emit_whatsapp()
+
+
+# ── Agent mode (agents.py) ──────────────────────────────────────────────────────
+
+async def _agent_plan_for(text: str) -> "agents.Plan | None":
+    """Which agents a request needs; None = the chat agent (the ordinary turn)."""
+    await emit("status", "thinking")
+    loop = asyncio.get_running_loop()
+    try:
+        kind = await loop.run_in_executor(None, agents.route, text)
+        plan = await agents.plan_for(kind, text, lambda system, user: quick_completion(
+            system, user, max_tokens=300, task_tier="moderate"))
+    except Exception as exc:  # noqa: BLE001 — no plan: the chat agent answers
+        print(f"[Agents] routing failed ({exc}); chat agent", flush=True)
+        return None
+    print(f"[Agents] {kind} → " + (" → ".join(f"{s.agent}: {s.task[:50]!r}" for s in plan.steps)
+                                   if plan else "chat"), flush=True)
+    return plan
+
+
+async def _agent_step_task(kind: str, goal: str) -> "dict | None":
+    """A browser/desktop step through the same gate as a task the chat model starts —
+    an open consent window, or the Approve dialog. The deferred autopilot result, or
+    None when it was refused or isn't an autopilot task after all."""
+    loop = asyncio.get_running_loop()
+    spec = {"type": f"{kind}_task", "goal": goal}
+    res = (await loop.run_in_executor(None, run_specs, [spec]))[0]
+    if res.get("needs_permission"):
+        pkind = res.get("kind", kind)
+        if not consented(pkind):
+            await emit("status", "idle")
+            if not await request_permission(pkind, res.get("description") or f"use the {kind}"):
+                await emit("response", _spoken_refusal(res.get("description")))
+                return None
+        grant(pkind)
+        res = await loop.run_in_executor(None, run_action, res["spec"])
+    return res if res.get("needs_autopilot") else None
+
+
+def _agent_consult(asking: str):
+    """An operator's mid-task question goes to the other agent when it can answer it
+    (one tiny model call decides); "" sends it on to the user as before."""
+    async def consult(question: str) -> str:
+        raw = await quick_completion(agents.CONSULT_SYSTEM,
+                                     f"Asked by the {agents.NAMES[asking]}: {question}",
+                                     max_tokens=5, task_tier="dumb")
+        target = agents.consult_target(raw, asking)
+        if target is None:
+            return ""
+        return await _consult_agent(target, question, asking)
+    return consult
+
+
+async def _consult_agent(kind: str, question: str, asking: str) -> str:
+    """Run the other agent on one question, inside the asking agent's task (which is
+    waiting on the answer), and return what it found ("" if it didn't)."""
+    gated, pkind, _desc = needs_permission({"type": f"{kind}_task", "goal": question})
+    if gated and not consented(pkind):
+        if not await request_permission(
+                pkind, f"let the {agents.NAMES[kind].lower()} look this up: {question[:80]}"):
+            return ""
+        grant(pkind)
+    tid = f"{time.time()}"
+    await emit("agent_task", {"id": tid, "kind": kind, "goal": question,
+                              "agent": f"{agents.NAMES[kind]} · asked by the "
+                                       f"{agents.NAMES[asking].lower()}"})
+
+    async def on_step(line: str) -> None:
+        await emit("agent_step", {"id": tid, "line": line,
+                                  "ok": not line.lstrip().startswith("✗")})
+    res = await autopilot.run_task(kind, agents.consult_goal(question),
+                                   interrupted=_interrupted, on_step=on_step,
+                                   on_shot=_agent_shot_feed(tid), max_steps=12)
+    ok = bool(res.get("ok")) and not res.get("stopped")
+    summary = (res.get("summary") or "").strip()
+    await emit("agent_task_end", {"id": tid, "ok": ok, "stopped": bool(res.get("stopped")),
+                                  "summary": summary or ("Found it." if ok else "Couldn't find it.")})
+    if not ok:
+        return ""
+    findings = [str(f)[:200] for f in (res.get("findings") or [])[:6]]
+    return "; ".join(x for x in [summary, *findings] if x)
+
+
+async def _run_agent_plan(text: str, plan: "agents.Plan") -> None:
+    """Run a plan's steps in order: each agent gets what the earlier ones found, and a
+    failed or refused step ends the plan (later ones would build on something that
+    didn't happen). Speaks once, at the end."""
+    multi = len(plan.steps) > 1
+    if multi:
+        await emit("response", agents.plan_text(plan))
+    results: "list[agents.StepResult]" = []
+    for i, step in enumerate(plan.steps):
+        if _interrupted():
+            break
+        context = agents.handover(results)
+        if step.agent == "chat":
+            # A chat step inside a plan answers from what the agents found.
+            answer = (await quick_completion(
+                "You are JARVIS. Answer the user's request in a few sentences, using "
+                "only what the other agents found. Never claim anything they didn't report.",
+                f"{context}\n\nRequest: {step.task}", max_tokens=400,
+                task_tier="moderate") or "").strip()
+            results.append(agents.StepResult("chat", step.task, bool(answer),
+                                             answer or "I couldn't put that together, sir."))
+            if not answer:
+                break
+            await emit("response", answer)
+            continue
+        res = await _agent_step_task(step.agent, step.task)
+        if res is None:
+            results.append(agents.StepResult(step.agent, step.task, False,
+                                             "Not approved, so I didn't start it."))
+            break
+        kind = res.get("kind") or step.agent
+        report: dict = {}
+        label = agents.NAMES.get(kind, "Agent") +             (f" · step {i + 1} of {len(plan.steps)}" if multi else "")
+        hint = "\n\n".join(x for x in (context, agents.ask_note(kind)) if x)
+        final = await _run_autopilot_task(res, speak=False, context=hint,
+                                          consult=_agent_consult(kind), report=report,
+                                          label=label)
+        results.append(agents.StepResult(kind, step.task, bool(report.get("ok")), final,
+                                         list(report.get("findings") or [])))
+        if not report.get("ok"):
+            break
+    bubble, say = agents.outcome(plan, results)
+    if multi:
+        await emit("response", bubble)
+    remember_turn_outcome(text, say)
+    if say and _tts and not skills.is_muted() and not _interrupted():
+        await emit("status", "speaking")
+        await _tts.speak(say)
 
 
 def _autopilot_record(task: dict, outcome: str) -> dict:
@@ -3476,6 +3645,8 @@ async def handle_set_config(data) -> None:
     if "autopilot_vision" in data:
         from llm.groq_bridge import set_autopilot_vision
         set_autopilot_vision(data["autopilot_vision"])
+    if "agent_mode" in data:
+        set_agent_mode(bool(data["agent_mode"]))
     if "native_tools" in data:
         from llm.groq_bridge import set_native_tools
         set_native_tools(data["native_tools"])

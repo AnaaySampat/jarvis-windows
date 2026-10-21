@@ -717,6 +717,18 @@ def set_conversation_mode(on: bool) -> bool:
     return _config["conversation_mode"]
 
 
+def get_agent_mode() -> bool:
+    """Agent mode (agents.py): a coordinator routes each request to the chat, browser
+    or desktop agent. Off = simple mode, the one chat model as always."""
+    return bool(_config.get("agent_mode"))
+
+
+def set_agent_mode(on: bool) -> bool:
+    _config["agent_mode"] = bool(on)
+    _save_config(_config)
+    return _config["agent_mode"]
+
+
 def get_system_alerts() -> bool:
     return bool(_config.get("system_alerts"))
 
@@ -1983,6 +1995,7 @@ def get_sysinfo() -> dict:
         "autopilot_thinking": int(_config.get("autopilot_thinking",
                                               _AUTOPILOT_THINKING_DEFAULT)),
         "autopilot_vision": autopilot_vision_enabled(),
+        "agent_mode": get_agent_mode(),
     }
 
 
