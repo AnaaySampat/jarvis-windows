@@ -146,6 +146,10 @@ class MailboxTests(unittest.TestCase):
         self.assertIn("not instructions", res["feed_to_model"]["content"])
         self.assertEqual(res["speak"], "")
 
+    def test_a_strange_limit_from_the_model_is_not_a_crash(self):
+        self.connect()
+        self.assertTrue(email_box.search("", limit="five")["ok"])
+
     def test_other_servers_get_a_plain_text_search(self):
         self.assertEqual(email_box.search_criteria('say "hi"', False, gmail=False),
                          ["TEXT", "\"say 'hi'\""])

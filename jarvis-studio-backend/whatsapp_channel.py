@@ -460,9 +460,14 @@ class Channel:
             return
         chat = src.Chat
         waiting = self._waiting
+        # "Jarvis, status" while a question is open is a status request, not the answer
+        # (taken as one it would have been a "no").
+        named = addressed(text)
+        asks_status = self.on_status is not None and is_status_request(
+            named if named is not None else text)
         # The answer to a question asked in this chat. The own chat may come addressed
         # by the account's other id (phone number vs LID), so any own-chat reply counts.
-        if waiting and not waiting[1].done() and (
+        if waiting and not waiting[1].done() and not asks_status and (
                 waiting[0] == _key(chat) or (own_chat and waiting[0].split("@")[0] in self._me)):
             waiting[1].set_result(text)
             return

@@ -232,6 +232,16 @@ class ChannelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.statuses, [ME])
         self.assertEqual(self.commands, [("status of order 12", False)])
 
+    async def test_status_while_a_question_is_open_is_not_its_answer(self):
+        me = jid(ME)
+        asking = asyncio.create_task(self.ch.ask(me, "Approve? Reply yes or no.", 5))
+        await asyncio.sleep(0)
+        await self.ch._on_message(self.client, message(me, me, "Jarvis, status?", True))
+        self.assertEqual(self.statuses, [ME])
+        self.assertFalse(asking.done())
+        await self.ch._on_message(self.client, message(me, me, "yes", True, mid="m2"))
+        self.assertEqual(await asking, "yes")
+
     async def test_a_task_gets_one_message_edited_as_it_goes(self):
         clock = Clock()
         me = jid(ME)

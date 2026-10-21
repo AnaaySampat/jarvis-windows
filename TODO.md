@@ -2,7 +2,7 @@
 
 ## 0. 2026-10-21 — seeing what JARVIS does, connectors, the phone through the PC, agent mode
 
-Built and unit-tested here (backend `python -m unittest` → **506**, the Windows-only
+Built and unit-tested here (backend `python -m unittest` → **508**, the Windows-only
 `test_files` one aside; GUI `npm test` 14, `npm run lint` 0 errors / 22 warnings, `npm
 run build`), Settings ▸ Connectors and ▸ Autopilot and the home screen checked in
 Chromium against a stand-in backend. Nothing here has run against real WhatsApp, a real

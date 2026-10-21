@@ -258,7 +258,10 @@ def search(query: str = "", unread: bool = False, limit: int = 8) -> dict:
             return {"type": "email_search", "ok": False,
                     "message": f"The mail server couldn't search for that ({typ})."}
         uids = (data[0] or b"").split()
-        limit = max(1, min(int(limit or 8), _LIST_MAX))
+        try:
+            limit = max(1, min(int(limit or 8), _LIST_MAX))
+        except (TypeError, ValueError):
+            limit = 8
         rows = _fetch_headers(conn, list(reversed(uids[-limit:])))
     except UnicodeError:
         return {"type": "email_search", "ok": False,
