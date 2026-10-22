@@ -92,5 +92,29 @@ class WhoMayConnectTests(unittest.TestCase):
         self.assertEqual(self.check(Conn(), Request("/cdp/guess")), 404)
 
 
+class OpenTheirChromeTests(unittest.TestCase):
+    def test_chrome_opens_on_the_extensions_profile_not_the_picker(self):
+        import json, os, tempfile
+        from unittest import mock
+        from actions import browser
+        with tempfile.TemporaryDirectory() as tmp:
+            data = os.path.join(tmp, "Google", "Chrome", "User Data")
+            for name, ids in (("Default", ["other"]), ("Profile 3", [chrome_relay.EXTENSION_ID])):
+                os.makedirs(os.path.join(data, name))
+                with open(os.path.join(data, name, "Secure Preferences"), "w") as f:
+                    json.dump({"extensions": {"settings": {i: {} for i in ids}}}, f)
+            linked = []
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": tmp}), \
+                    mock.patch.object(chrome_relay, "start"), \
+                    mock.patch.object(chrome_relay, "connected", lambda: bool(linked)), \
+                    mock.patch.object(chrome_relay, "ever_connected", lambda: True), \
+                    mock.patch.object(browser, "_chrome_running", lambda: False), \
+                    mock.patch.object(browser, "_find_chrome_exe", lambda: "chrome.exe"), \
+                    mock.patch.object(browser.subprocess, "Popen",
+                                      lambda args, **_: linked.append(args)):
+                self.assertEqual(browser.ensure_personal_available(), (True, ""))
+        self.assertIn("--profile-directory=Profile 3", linked[0])
+
+
 if __name__ == "__main__":
     unittest.main()

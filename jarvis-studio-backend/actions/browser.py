@@ -898,38 +898,60 @@ def _chrome_running() -> bool:
     return False
 
 
+def _extension_profile() -> str:
+    """The Chrome profile folder the JARVIS extension is installed in, or ''. Chrome
+    started without one shows its profile picker when there are several profiles, and
+    the extension only loads once a profile opens — so the task gave up waiting on a
+    click (2026-10-22)."""
+    from actions import chrome_relay
+    import json
+    root = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "User Data")
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return ""
+    for name in names:
+        for prefs in ("Secure Preferences", "Preferences"):   # unpacked ones sit in Secure
+            try:
+                with open(os.path.join(root, name, prefs), encoding="utf-8") as f:
+                    if chrome_relay.EXTENSION_ID in json.load(f)["extensions"]["settings"]:
+                        return name
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+    return ""
+
+
 NO_EXTENSION = ("The JARVIS extension isn't connected in your Chrome, sir, so I used my own "
                 "browser — Settings ▸ Connectors ▸ Chrome shows how to add it.")
 
 
 def ensure_personal_available() -> "tuple[bool, str]":
     """Make the user's Chrome reachable for 'personal': the JARVIS extension connected to
-    chrome_relay. Chrome not running → start it (it opens on the profile they used
-    last) and give the extension a moment. Returns (ok, message); on False the caller
-    uses JARVIS's own browser. Blocking — call it OFF the event loop."""
+    chrome_relay. Not connected → open Chrome on the extension's profile and wait for
+    it. Returns (ok, message); on False the caller uses JARVIS's own browser.
+    Blocking — call it OFF the event loop."""
     from actions import chrome_relay
     chrome_relay.start()
     if chrome_relay.connected():
         return True, ""
     if not chrome_relay.ever_connected():
         return False, NO_EXTENSION   # never added: don't open their Chrome for nothing
-    wait = 3.0                      # running: the extension may be mid-reconnect
-    if not _chrome_running():
-        exe = _find_chrome_exe()
-        if not exe:
-            return False, "I couldn't find Google Chrome on this PC, sir, so I used my own browser."
-        try:
-            import subprocess
-            subprocess.Popen([exe, "--no-first-run", "--no-default-browser-check"], close_fds=True)
-        except Exception as exc:  # noqa: BLE001
-            return False, f"I couldn't start your Chrome, sir ({exc}), so I used my own browser."
-        wait = 15.0
-    deadline = time.monotonic() + wait
-    while time.monotonic() < deadline:
-        if chrome_relay.connected():
-            return True, ""
-        time.sleep(0.3)
-    return False, NO_EXTENSION
+    # A Chrome already open on the extension's profile reconnects on its next alarm, so
+    # just after JARVIS starts, wait that out rather than open a second window on it.
+    if _chrome_running() and chrome_relay.wait(
+            max(3.0, chrome_relay.RETRY_S + 2 - chrome_relay.up_for())):
+        return True, ""
+    exe = _find_chrome_exe()
+    if not exe:
+        return False, "I couldn't find Google Chrome on this PC, sir, so I used my own browser."
+    profile = _extension_profile()
+    try:
+        subprocess.Popen([exe, "--no-first-run", "--no-default-browser-check",
+                          *([f"--profile-directory={profile}"] if profile else [])],
+                         close_fds=True)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"I couldn't start your Chrome, sir ({exc}), so I used my own browser."
+    return (True, "") if chrome_relay.wait(20.0) else (False, NO_EXTENSION)
 
 
 def _connect_personal_cdp(pw):

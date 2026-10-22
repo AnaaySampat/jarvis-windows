@@ -33,6 +33,7 @@ ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 CDP_PATH = f"/cdp/{secrets.token_urlsafe(18)}"
 PING_S = 20                 # keeps the extension's service worker awake
 CALL_TIMEOUT_S = 30
+RETRY_S = 30                # the extension's reconnect alarm (background.js; Chrome's minimum)
 
 
 def extension_dir() -> Path:
@@ -160,6 +161,7 @@ class Relay:
         self.cdp = None                  # Playwright's connection (one at a time)
         self.model: "Model | None" = None
         self.error = ""
+        self.started = 0.0
         self._ids = itertools.count(1)
         self._pending: "dict[int, asyncio.Future]" = {}
 
@@ -303,11 +305,27 @@ def start() -> None:
         except Exception as exc:  # noqa: BLE001 — e.g. the port is taken
             _relay.error = f"Couldn't listen on 127.0.0.1:{PORT} ({exc})"
             print(f"[Chrome] {_relay.error}", flush=True)
+    _relay.started = time.monotonic()
     threading.Thread(target=main, name="jarvis-chrome-relay", daemon=True).start()
 
 
 def connected() -> bool:
     return _relay.ext is not None
+
+
+def up_for() -> float:
+    """Seconds since the relay started listening."""
+    return time.monotonic() - _relay.started
+
+
+def wait(seconds: float) -> bool:
+    """Block up to `seconds` for the extension to connect. Call it OFF the event loop."""
+    deadline = time.monotonic() + seconds
+    while not connected():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.3)
+    return True
 
 
 def _seen_marker() -> Path:
