@@ -37,11 +37,11 @@ landed, and corrects itself when it didn't.
 |---|---|
 | 🎙️ **Hands-free voice** | Local wake word ("Hey Jarvis") and local Whisper transcription. Push-to-talk with **Ctrl+Space** from any app. Full-duplex voice mode via Gemini Live. |
 | 🧠 **Any model, routed for you** | Bring keys for Groq, Gemini, OpenRouter, NVIDIA NIM, Mistral, Claude, OpenAI, Grok or Meta Llama. **Auto** ranks your models by benchmark and picks per request, falling back when one is rate-limited. Vertex AI (Google Cloud login) and offline Ollama work too. |
-| 🌐 **Browser autopilot** | Goal in, result out. Sandboxed to a browser JARVIS owns, with approvals for anything risky. Watch every step and screenshot in the Agent Activity panel. |
+| 🌐 **Browser autopilot** | Goal in, result out. Runs in your own signed-in Chrome through the JARVIS extension (in its own tabs, never yours), or in a browser JARVIS owns, with approvals for anything risky. Watch every step and screenshot in the Agent Activity panel. |
 | 🖥️ **Desktop control** | Opens, closes and operates Windows apps through UI Automation. Off until you arm it, with a live "JARVIS CONTROLLING" bar to pause or correct it. |
 | 📱 **Phone remote** | QR + PIN pairing, signed messages, WebRTC screen streaming. A phone can run tasks but can never touch the PC's keys or settings. |
 | 💬 **WhatsApp** | Optional: link JARVIS to your WhatsApp and message it from anywhere ("Jarvis, send me a screenshot"). Replies and approvals come back in the chat; voice notes work. A long task shows its steps as it goes, and "Jarvis, status" says what it's doing right now. |
-| 🧭 **Agent mode** | Optional: a coordinator sends each request to a chat, browser or desktop agent, and plans a task that needs more than one ("find the cheapest flight to Goa and write it in Notepad"); the agents hand each other what they found. |
+| 🧭 **Agent mode** | Optional: seven agents — chat, desktop, browser, research, files, scheduler, content. Pick one on the agent row or with `@files …`, or let the coordinator plan a task that needs several ("find the cheapest flight to Goa and write it in Notepad"). The chat shows them working together: what each hands the next, and the questions they ask each other. |
 | 🔌 **Connectors** | Gmail (read, search, write drafts; never sends) with just an app password, plus one-form set-up for GitHub, Notion, Google Calendar, Todoist, Home Assistant, Brave Search, your folders and Zapier. |
 | 📺 **TV** | Control an Android TV over its own network ADB: play a show on Netflix or YouTube, pause, volume, power, and multi-step tasks by sight. |
 | 📊 **Rich answers** | Charts, tables, timelines and flowcharts render inline in the chat. |
@@ -241,8 +241,16 @@ In agent mode each typed or spoken request goes to a specialist:
 
 - the **chat agent** answers and does one-step things (timers, music, email, lookups) —
   it's JARVIS as usual, so anything unclear lands here;
-- the **browser agent** does whole tasks on websites;
-- the **desktop agent** does whole tasks in Windows apps and your files.
+- the **browser agent** does whole tasks on websites, in your own Chrome where you're
+  signed in (see below);
+- the **research agent** reads several sites in a background browser you never see and
+  reports back with its sources;
+- the **desktop agent** does whole tasks in Windows apps and your files;
+- the **files**, **scheduler** and **content** agents go through your files, set
+  reminders and agenda entries, and write drafts, posts and images.
+
+Pick one on the agent row above the chat box (or type `@research …`, or say "tell the
+files agent to …"); Auto lets the coordinator choose.
 
 A request that needs both gets a short plan, shown in the chat and run in order. Each
 agent works from what the earlier ones found, and when one needs something mid-task
@@ -253,6 +261,13 @@ and the answer it got. A step
 that fails or that you don't approve stops the plan, and the reply says where. Every
 step asks for browser or computer control exactly like a normal task. The live voice
 session (Gemini Live) stays in simple mode.
+
+**Your own Chrome.** Browser tasks run in your Chrome, signed in as you left it, through
+the JARVIS extension: Settings ▸ Connectors ▸ Chrome shows the folder; in Chrome open
+`chrome://extensions`, turn on Developer mode and **Load unpacked** that folder. JARVIS
+works in its own tabs and never touches yours; Chrome's "started debugging this browser"
+bar has a Cancel that takes the tab back at once. Without the extension, browser tasks
+use JARVIS's own browser. Say "in your browser" to send one there anyway.
 
 ## Two routers at home?
 
