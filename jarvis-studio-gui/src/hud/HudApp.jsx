@@ -18,7 +18,9 @@ import {
   DEFAULT_TELEMETRY, SystemWidget, PowerWidget, AgendaWidget, WeatherWidget, NetworkWidget, LogWidget,
   useCardDrop,
 } from "./widgets";
-import { SkillsOverlay, CapabilitiesOverlay, PowerOverlay, ChatOverlay, MemoryOverlay } from "./HudPanels";
+import { SkillsOverlay, CapabilitiesOverlay, PowerOverlay, ChatOverlay, MemoryOverlay,
+  AgentRow } from "./HudPanels";
+import { agentPick } from "./agents";
 import { SOURCE_LABEL } from "../utils/taskSource";
 
 /* Theme defaults (App recolours them from the user's screen settings). */
@@ -64,7 +66,7 @@ function HeroClock() {
 }
 
 /* The ask box: a message goes straight to JARVIS and the reply appears above it. */
-function AskBar({ inputRef, onSend, onListen, status }) {
+function AskBar({ inputRef, onSend, onListen, status, placeholder = "Ask JARVIS anything…" }) {
   const [text, setText] = useState("");
   const submit = (e) => {
     e.preventDefault();
@@ -76,7 +78,7 @@ function AskBar({ inputRef, onSend, onListen, status }) {
   return (
     <form className="ask" onSubmit={submit}>
       <input ref={inputRef} value={text} onChange={(e) => setText(e.target.value)}
-             placeholder="Ask JARVIS anything…" aria-label="Ask JARVIS" />
+             placeholder={placeholder} aria-label="Ask JARVIS" />
       {!text && <kbd className="ask-kbd" title="Press / to type here">/</kbd>}
       <button type="button" className={`ask-btn${status === "listening" ? " is-on" : ""}`}
               onClick={onListen} aria-label="Talk" title="Talk (or hold Ctrl+Space)">
@@ -104,7 +106,10 @@ export function JarvisHUD({
   // live data
   status = "idle",
   activeTask,                   // the running autopilot task {goal, source, …}, if any
-  agentMode = false,            // agent mode (agents.py) is on: a pill by the name says so
+  agentMode = false,            // agent mode (agents.py): the Agents switch and the agent row
+  activeAgent = "auto",         // the agent picked on the row ("auto" = the coordinator)
+  onToggleAgents,
+  onPickAgent,
   telemetry,
   weather,
   netInfo,
@@ -131,6 +136,8 @@ export function JarvisHUD({
   onReset,
   onUpload,
   taskModelTiers = [],
+  taskTier = "auto",            // the saved model level (chat picker ↔ Settings)
+  onTaskTier,
   runAction,
   onSaveDirs,
   // conversation history ("Recents")
@@ -233,7 +240,10 @@ export function JarvisHUD({
           <span className="home-logo" aria-hidden />
           <span className="home-name">JARVIS</span>
           <span className={`home-conn${isConnected ? " is-on" : ""}`}>{isConnected ? "Online" : "Offline"}</span>
-          {agentMode && <span className="home-conn is-on" title="Agent mode: each request goes to a specialist agent">Agents</span>}
+          <button type="button" className={`home-conn home-conn--btn${agentMode ? " is-on" : ""}`}
+                  onClick={onToggleAgents} aria-pressed={agentMode}
+                  title={agentMode ? "Agent mode: each request goes to a specialist agent. Click for simple mode."
+                                   : "Simple mode. Click to turn on agent mode."}>Agents</button>
         </div>
         <nav className="home-nav" aria-label="Menus">
           {NAV.map((n) => (
@@ -272,7 +282,10 @@ export function JarvisHUD({
             </button>
           )}
 
-          <AskBar inputRef={askRef} onSend={(t) => onSend(t)} onListen={onListen} status={status} />
+          {agentMode && <AgentRow active={activeAgent} onPick={onPickAgent} />}
+          <AskBar inputRef={askRef} onSend={(t) => onSend(t)} onListen={onListen} status={status}
+                  placeholder={agentMode && activeAgent !== "auto"
+                    ? `Ask the ${agentPick(activeAgent).name} agent…` : "Ask JARVIS anything…"} />
 
           {messages.length === 0 && (
             <div className="hero-starters">
@@ -307,6 +320,8 @@ export function JarvisHUD({
         open={chatOpen} onClose={() => setChatOpen(false)}
         status={status} messages={messages} onSend={onSend} onStop={onStop} onReset={onReset}
         onUpload={onUpload} taskModelTiers={taskModelTiers} runAction={runAction} onNotify={onNotify}
+        taskTier={taskTier} onTaskTier={onTaskTier}
+        agentMode={agentMode} activeAgent={activeAgent} onPickAgent={onPickAgent}
         conversations={conversations} onNewChat={onNewChat}
         onOpenConversation={onOpenConversation} onDeleteConversation={onDeleteConversation}
         onRefreshConversations={onRefreshConversations} onClearConversations={onClearConversations}

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "JARVIS in Chrome",
+  "version": "1.0.0",
+  "description": "Lets JARVIS's browser agent work in tabs it opens in your Chrome, where you're signed in. Talks only to JARVIS on this PC.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvjNn8XbktAQtrrjpclrcH7TUzsDh1X625STXiGLvLuTPPKGMbZUBsRlzUrO7L/AOPnQRZxE/DN7hxuTZ198pWtzaG50OXZK171ue4T5YpX62E/A2+euVq4U7o+1s9pCXHNJvCdNNEZIDRnErG5AhQ7kKSh4SQNnO5K+YNLKtkzRGFVTiqD+oRdKV8Zq7XQcO8qVrjVZVAvdiBbg4o0kPmGBFnYd6W9CMTvpbLzSXKAJ7QSeTHLMEs/ticOlE5bbV4wugy5+LKNNZKIm2FZqoQoHNaDKlBFUvEij5dfrJnhZYHqhPs2rY4eTPWoP2wGf7s1RXmfrbwEGNr8RMGIfWxQIDAQAB",
+  "permissions": ["debugger", "tabs", "tabGroups", "alarms"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "JARVIS isn't running" },
+  "minimum_chrome_version": "116"
+}

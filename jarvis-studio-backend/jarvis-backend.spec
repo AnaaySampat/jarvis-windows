@@ -123,7 +123,7 @@ hiddenimports = [
 ]
 
 # ── Data files & native libs the above packages load at runtime ─────────────
-datas = []
+datas = [("chrome-extension", "chrome-extension")]   # Settings ▸ Connectors ▸ Chrome
 binaries = []
 
 # openWakeWord ships its melspectrogram / embedding / "hey_jarvis" ONNX models as

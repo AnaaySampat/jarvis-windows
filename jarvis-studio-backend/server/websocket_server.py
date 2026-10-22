@@ -27,6 +27,7 @@ from autonomy.device_identity import (
 # Suppress spurious "opening handshake failed" tracebacks that fire when
 # Vite HMR or browsers briefly probe the port with non-WebSocket requests.
 logging.getLogger("websockets.server").setLevel(logging.CRITICAL)
+logging.getLogger("httpx").setLevel(logging.WARNING)   # its INFO lines print Gemini URLs, ?key=… and all
 
 _clients: set[WebSocketServerProtocol] = set()
 _client_ids: dict[WebSocketServerProtocol, str] = {}

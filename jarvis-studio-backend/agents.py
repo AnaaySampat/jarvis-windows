@@ -3,17 +3,32 @@ each other what they found.
 
 Simple mode (the default) is JARVIS as it always was: one chat model with every tool,
 which decides for itself when to hand a whole task to the browser or desktop autopilot.
-Agent mode puts a coordinator in front of it, with three agents:
+Agent mode puts a coordinator in front of it, with these agents:
 
-    chat     answers, lookups and one-step actions — the ordinary pipeline turn
-    browser  whole tasks on websites (autopilot, browser surface)
-    computer whole tasks in Windows apps and the user's files (autopilot, desktop)
+    chat       answers, lookups and one-step actions — the ordinary pipeline turn
+    computer   whole tasks in Windows apps (autopilot, desktop) — "Desktop agent"
+    browser    whole tasks on websites, in the user's own Chrome (autopilot, browser)
+    research   a topic across several sites, in a headless browser (autopilot, browser)
+    files      going through the user's files and folders     ┐ chat turns with their
+    scheduling the agenda, reminders, alarms, routines        │ tool groups always
+    content    writing and images                             ┘ loaded and a brief
+
+Agents are split by what they can reach, not by topic: the three operators each drive
+something different, and the other three are the chat turn with a narrower focus
+(TURN_AGENTS), which costs nothing extra to run.
+
+The user can pick the agent: "@files …" anywhere in a request, a spoken "tell the
+browser agent to …" (mention), or the agent row on the HUD (main's active agent) —
+picked_plan. Otherwise the coordinator decides (Auto).
 
 The coordinator (main._run_agent_plan) classifies each typed or spoken request: a
 cheap look at its words first (route), one small model call only when that isn't
 clear (plan_prompt / parse_plan). A request that spans the web and the desktop gets a
 short plan of at most MAX_STEPS steps, run in order. Each step is told what the earlier
-ones found (handover, through the operator's hint), and an operator that needs to know
+ones found (handover, through the operator's hint or the turn's context). When the
+planned steps are done and the request had more to it (may_continue), the coordinator
+looks once more and may hand the rest to another agent (NEXT_SYSTEM / parse_next) —
+an agent's work can show what's needed next. An operator that needs to know
 something mid-task ("what's the price to write down?") asks the coordinator, which
 puts the question to the other agent before it ever bothers the user (consult_prompt).
 A failed step stops the plan: later steps would build on something that didn't happen.
@@ -33,9 +48,33 @@ from dataclasses import dataclass, field
 
 import task_router
 
-AGENTS = ("chat", "browser", "computer")
-NAMES = {"chat": "Chat agent", "browser": "Browser agent", "computer": "Desktop agent"}
-ICONS = {"chat": "💬", "browser": "🌐", "computer": "🖱"}
+AGENTS = ("chat", "computer", "browser", "research", "files", "scheduling", "content")
+NAMES = {"chat": "Chat agent", "computer": "Desktop agent", "browser": "Browser agent",
+         "research": "Research agent", "files": "Files agent",
+         "scheduling": "Scheduling agent", "content": "Content agent"}
+ICONS = {"chat": "💬", "computer": "🖱", "browser": "🌐", "research": "🔎",
+         "files": "📁", "scheduling": "📅", "content": "✍"}
+# Whole tasks the autopilot does by looking and clicking. Every other agent is a chat
+# turn: (the tool groups it always has, its brief).
+OPERATORS = ("computer", "browser", "research")
+TURN_AGENTS = {
+    "chat": ((), ""),
+    "files": (("files",),
+              "You are JARVIS's Files agent: you work in the user's files and folders. To "
+              "go through a folder, list it first, then read every file that matters (PDFs "
+              "with read_pdf) — never describe a file you didn't read. A summary names each "
+              "file. If part of the request needs an app or a website, do your part and say "
+              "plainly what's left."),
+    "scheduling": (("planner", "phone"),
+                   "You are JARVIS's Scheduling agent: timers, reminders, alarms, the agenda "
+                   "and routines. Turn the times the user gives into exact ones, look at the "
+                   "agenda before adding something that could clash, and confirm what you set "
+                   "in one sentence."),
+    "content": (("media", "files", "email"),
+                "You are JARVIS's Content agent: you write — messages, email drafts, posts, "
+                "summaries, documents (saved as a PDF when asked) — and make images. Match the "
+                "tone asked for and give the finished piece itself, not a description of it."),
+}
 MAX_STEPS = 4
 _TASK_MAX = 400
 
@@ -120,10 +159,28 @@ def _default_installed(name: str) -> str:
     return app_launcher.installed_app_name(name)
 
 
+# A topic to look into across several sites, not one fact (that's chat's web search).
+_RESEARCH = re.compile(
+    r"\b(research|deep[- ]dive|investigate|look into|find out (?:everything|all|more) about|"
+    r"(?:write|make|give) (?:me )?a (?:report|brief(?:ing)?) (?:on|about)|with sources|"
+    r"pros and cons of|compare (?:the )?(?:reviews|options))\b", re.IGNORECASE)
+
+# Going through the user's files, not doing a chore on them (that's the desktop agent).
+_FILE_READ = re.compile(
+    r"\b(summar(?:y|i[sz]e)|read|go through|look through|what'?s in|contents of)\b.*"
+    r"\b(files|folders?|downloads|my documents|documents folder|pdfs|desktop)\b",
+    re.IGNORECASE | re.DOTALL)
+
+
 def route(text: str, installed=_default_installed) -> str:
-    """"chat", "browser", "computer", "multi" (both the web and the desktop), or
-    "unsure" (an action whose surface the words don't show: the model decides)."""
+    """"chat", "browser", "computer", "research", "files", "multi" (more than one
+    surface), or "unsure" (an action whose surface the words don't show: the model
+    decides)."""
     t = (text or "").strip()
+    if _RESEARCH.search(t):
+        return "research"
+    if _FILE_READ.search(t):
+        return "multi" if _web(t) else "files"
     if not t or not _ACTION.search(t):
         return "chat"
     web = _web(t)
@@ -143,22 +200,33 @@ def route(text: str, installed=_default_installed) -> str:
 
 # ── Planning with a model (prompt + strict parsing; unit-tested) ──────────────
 
-PLAN_SYSTEM = (
-    "You route one request for JARVIS, a Windows assistant with three agents:\n"
+_AGENT_LIST = (
     "- chat: answers questions and does one-step things itself — timers, reminders, "
     "weather, news, facts from a web search, music, volume, the TV, the user's phone, "
-    "email, reading a file.\n"
-    "- browser: does a whole task on websites in its own browser — open a site, search "
-    "on it, play a video, fill a form, compare prices, read pages.\n"
-    "- computer: does a whole task in Windows apps and the user's files — open an app, "
-    "type into it, save, rename, move or copy files.\n"
-    "Reply with ONLY JSON: {\"steps\":[{\"agent\":\"chat|browser|computer\",\"task\":\""
+    "email drafts, a screenshot, sending something to the user themself (their own "
+    "WhatsApp or email — never anyone else).\n"
+    "- files: goes through the user's files and folders — lists and reads them (PDFs "
+    "too), summarises them, saves text as a PDF.\n"
+    "- research: researches a topic across several websites in its own background "
+    "browser and reports what it found, with sources.\n"
+    "- browser: does a whole task on websites in the user's own Chrome, where they're "
+    "signed in — open a site, search on it, play a video, fill a form, compare prices.\n"
+    "- computer: does a whole task in Windows apps — open an app, type into it, save, "
+    "rename, move or copy files.\n"
+    "- scheduling: several reminders, alarms, agenda entries or routines at once.\n"
+    "- content: writes — posts, letters, documents — and makes images.\n")
+_AGENT_ENUM = "|".join(AGENTS)
+
+PLAN_SYSTEM = (
+    "You route one request for JARVIS, a Windows assistant with these agents:\n"
+    + _AGENT_LIST +
+    "Reply with ONLY JSON: {\"steps\":[{\"agent\":\"" + _AGENT_ENUM + "\",\"task\":\""
     "a complete instruction for that agent\"}]}\n"
     "One step whenever one agent can do all of it — most requests are one chat step. "
-    "Several steps only when the work really spans the web and the desktop, in the "
-    "order they must happen; a later task may refer to \"what the previous step "
-    "found\". At most 4 steps. Keep every detail the user gave (names, numbers, file "
-    "names). Never add a step the user didn't ask for.")
+    "Several steps only when the work really needs different agents, in the order "
+    "they must happen; a later task may refer to \"what the previous step found\". "
+    "At most 4 steps. Keep every detail the user gave (names, numbers, file names, "
+    "addresses). Never add a step the user didn't ask for.")
 
 
 def plan_prompt(text: str) -> "tuple[str, str]":
@@ -185,7 +253,7 @@ def parse_plan(raw: str) -> "Plan | None":
         if not isinstance(row, dict):
             continue
         agent = str(row.get("agent") or "").strip().lower()
-        agent = {"desktop": "computer", "pc": "computer", "web": "browser"}.get(agent, agent)
+        agent = _ALIASES.get(agent, agent)
         task = " ".join(str(row.get("task") or "").split())[:_TASK_MAX]
         if agent in AGENTS and task:
             steps.append(Step(agent, task))
@@ -207,14 +275,52 @@ async def plan_for(r: str, text: str, complete) -> "Plan | None":
     installed-app lookup can take a moment the first time)."""
     if r == "chat":
         return None
-    if r in ("browser", "computer"):
+    if r in ("browser", "computer", "research"):
         return Plan([Step(r, text.strip()[:_TASK_MAX])], "words")
+    if r == "files":
+        return Plan([Step(r, text.strip())], "words")
     system, user = plan_prompt(text)
     try:
         raw = await complete(system, user)
     except Exception:  # noqa: BLE001 — no plan: the chat agent answers
         return None
     return parse_plan(raw)
+
+
+# ── The user picks the agent (pure; unit-tested) ─────────────────────────────
+
+_ALIASES = {"desktop": "computer", "computer": "computer", "pc": "computer",
+            "browser": "browser", "web": "browser", "chrome": "browser",
+            "research": "research", "researcher": "research",
+            "files": "files", "file": "files",
+            "scheduling": "scheduling", "schedule": "scheduling", "scheduler": "scheduling",
+            "calendar": "scheduling", "content": "content", "writer": "content",
+            "writing": "content", "chat": "chat", "jarvis": "chat", "auto": "auto"}
+_AT = re.compile(r"(?:^|\s)@([a-z]+)\b[,:]?", re.IGNORECASE)    # not inside an address
+_SPOKEN = re.compile(r"^\s*(?:(?:ask|tell|use|get) (?:the |my |your )?)?([a-z]+) agent\b"
+                     r"(?:\s*[,:]|\s+to\b)?\s*", re.IGNORECASE)
+
+
+def mention(text: str) -> "tuple[str, str]":
+    """(agent, the request without the mention) for "@files …" anywhere in it, or a
+    spoken "tell the browser agent to …" / "research agent, …"; ("", text) otherwise.
+    "auto" sends a request back to the coordinator from a picked agent."""
+    t = text or ""
+    m = _AT.search(t)
+    if m and m.group(1).lower() in _ALIASES:
+        rest = " ".join((t[:m.start()] + " " + t[m.end():]).split())
+        return (_ALIASES[m.group(1).lower()], rest) if rest else ("", t)
+    m = _SPOKEN.match(t)
+    if m and m.group(1).lower() in _ALIASES and t[m.end():].strip():
+        return _ALIASES[m.group(1).lower()], t[m.end():].strip()
+    return "", t
+
+
+def picked_plan(agent: str, text: str) -> "Plan | None":
+    """The user chose the agent: one step for it, in their own words (never cut)."""
+    if agent not in AGENTS or not (text or "").strip():
+        return None
+    return Plan([Step(agent, text.strip())], "picked")
 
 
 # ── Agents talking to each other (pure; unit-tested) ──────────────────────────
@@ -229,6 +335,46 @@ def handover(earlier: "list[StepResult]") -> str:
                      f"{'done' if r.ok else 'NOT done'}: {r.summary[:300]}")
         lines += [f"    · {f[:200]}" for f in r.findings[:8]]
     return "\n".join(lines)
+
+
+NEXT_SYSTEM = (
+    "JARVIS's agents are working through a user's request. Given the request and what "
+    "they have done so far, is any part of it still not done? Agents:\n" + _AGENT_LIST +
+    "If everything asked for is done, reply {\"next\":null}. Otherwise reply with the ONE "
+    "next step: {\"next\":{\"agent\":\"" + _AGENT_ENUM + "\",\"task\":\"a complete "
+    "instruction, including what the earlier agents found that it needs\"}}. Reply with "
+    "ONLY JSON. Never repeat work that was done; never add work the user didn't ask for.")
+
+# A second thing to DO ("… and email it to me"), not a two-part question ("when was it
+# built and how tall is it"): worth one look at what's left once the plan is done.
+_MORE = re.compile(
+    r"\b(?:and|then|after(?:wards| that)?|also|plus)\s+(?:then\s+)?(?:send|e-?mail|mail|"
+    r"whatsapp|message|text|share|post|upload|save|write|put|paste|note|open|play|book|"
+    r"order|buy|add|fill|download|create|make|draft|reply|remind|schedule|set|summari[sz]e|"
+    r"rename|move|copy|print|compare|research|find|look up|search)\b", re.IGNORECASE)
+
+
+def may_continue(text: str, results: "list[StepResult]") -> bool:
+    return bool(_MORE.search(text or "")) and len(results) < MAX_STEPS \
+        and all(r.ok for r in results)
+
+
+def next_prompt(text: str, results: "list[StepResult]") -> "tuple[str, str]":
+    return NEXT_SYSTEM, f"Request: {text.strip()[:1000]}\n\n{handover(results)}"
+
+
+def parse_next(raw: str, results: "list[StepResult]") -> "Step | None":
+    """The step to hand the rest to, or None (all done, junk, or a repeat)."""
+    nxt = (_json_object(raw) or {}).get("next")
+    if not isinstance(nxt, dict):
+        return None
+    agent = _ALIASES.get(str(nxt.get("agent") or "").strip().lower(), "")
+    task = " ".join(str(nxt.get("task") or "").split())[:_TASK_MAX]
+    if agent not in AGENTS or not task:
+        return None
+    if any(r.agent == agent and r.task.lower() == task.lower() for r in results):
+        return None
+    return Step(agent, task)
 
 
 def ask_note(agent: str) -> str:
@@ -253,6 +399,15 @@ def consult_target(answer: str, asking: str) -> "str | None":
     word = words[0] if words else ""
     target = {"web": "browser", "desktop": "computer", "pc": "computer"}.get(word, word)
     return target if target in ("browser", "computer") and target != asking else None
+
+
+def research_goal(topic: str) -> str:
+    """The research agent's goal for the browser operator (in a headless browser)."""
+    return ("Research this and report back: " + topic.strip()[:600] + "\nSearch the web, "
+            "open two or three good sources (not only the results page) and read them — "
+            "more only when they disagree. "
+            "Put each key fact in your findings with the page it came from. Change nothing "
+            "and sign in nowhere; your summary answers the question.")
 
 
 def consult_goal(question: str) -> str:

@@ -386,6 +386,41 @@ function ConnectorForm({ c, onSend, pending, setPending }) {
   );
 }
 
+// Settings ▸ Connectors ▸ Chrome: browser tasks in the user's own signed-in Chrome,
+// through the JARVIS extension (backend actions/chrome_relay.py; status rides on
+// connectors.state).
+function ChromeCard({ chrome, onSend, onSave }) {
+  const c = chrome || {};
+  const [copied, setCopied] = useState(false);
+  const copy = () => navigator.clipboard?.writeText(c.folder || "").then(() => setCopied(true)).catch(() => {});
+  return (
+    <Card title="Chrome"
+          sub="Browser tasks run in your own Chrome, where you're signed in. JARVIS opens its own tabs there, in a “JARVIS” group, and never touches yours.">
+      <Row title={c.connected ? "Connected" : c.installed ? "Added, but not connected right now" : "Not added yet"}
+           desc={c.error || (c.connected ? "The JARVIS extension is talking to JARVIS."
+             : "Until it is, browser tasks use JARVIS's own browser. Chrome must be open for it to connect.")}>
+        <button className="btn btn--sm" onClick={() => onSend && onSend("connectors.state")}>Check again</button>
+      </Row>
+      <div className="sx-card-body">
+        <Guide summary="Add the extension (one minute)">
+          <ol>
+            <li>In Chrome, open <code>chrome://extensions</code> and turn on <b>Developer mode</b> (top right).</li>
+            <li>Click <b>Load unpacked</b> and choose the folder below.</li>
+            <li>The JARVIS icon shows <b>ON</b> once it's connected. While JARVIS works in a tab, Chrome shows a
+              “started debugging this browser” bar — <b>Cancel</b> on it takes the tab back at once.</li>
+          </ol>
+        </Guide>
+      </div>
+      <Row stack title="Extension folder" desc={<code>{c.folder || "…"}</code>}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn--sm" onClick={copy}>{copied ? "Copied" : "Copy path"}</button>
+          <button className="btn btn--sm" onClick={() => onSave({ chrome_extension_open: true })}>Open folder</button>
+        </div>
+      </Row>
+    </Card>
+  );
+}
+
 function ConnectorsSection({ connState, onSend }) {
   const st = connState || { connectors: [], mcp_available: true };
   const [open, setOpen] = useState(null);
@@ -922,6 +957,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
     (sysInfo.autopilot_thinking ?? -1) === 0 ? "off" : "dynamic");
   const [autopilotVision, setAutopilotVision] = useState(sysInfo.autopilot_vision !== false);
   const [agentMode, setAgentMode] = useState(!!sysInfo.agent_mode);
+  const [taskTier, setTaskTier] = useState(sysInfo.task_tier || "auto");   // shared with the chat picker
   const [ovlEnabled, setOvlEnabled] = useState(sysInfo.overlay?.enabled !== false);
   const [ovlApps, setOvlApps] = useState(sysInfo.overlay?.apps ?? []);
   // Preserve whatever mode is in effect (it can be changed by voice via
@@ -948,6 +984,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
     autopilot_thinking: autopilotThinking === "off" ? 0 : -1,
     autopilot_vision: autopilotVision,
     agent_mode: agentMode,
+    task_tier: taskTier === "auto" ? "" : taskTier,
     provider_mode: providerMode,
   };
   // Offline-only fields — sent just for the offline edition so switching modes
@@ -1129,6 +1166,15 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                       </optgroup>
                     ))}
                     {!allValues.includes(model) && <option value="__custom">Custom: {model}</option>}
+                  </select>
+                </Row>
+                <Row title="Model level" desc="The same choice as the picker in chat. Auto lets the model above decide per request; a level uses that tier's best model.">
+                  <select className="field" value={taskTier} aria-label="Model level"
+                          onChange={(e) => setTaskTier(e.target.value)}>
+                    <option value="auto">Auto</option>
+                    <option value="dumb">Dumb</option>
+                    <option value="moderate">Moderate</option>
+                    <option value="very_smart">Very smart</option>
                   </select>
                 </Row>
                 <Row stack title="Exact model id" desc="Override with any model id your keys can reach.">
@@ -1424,7 +1470,10 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
                               onListDevices={onListDevices} onRevokeDevice={onRevokeDevice}
                               tvState={tvState} waState={waState} onTv={onTv} />
             )}
-            {current.id === "connectors" && <ConnectorsSection connState={connState} onSend={onTv} />}
+            {current.id === "connectors" && (<>
+              <ChromeCard chrome={connState?.chrome} onSend={onTv} onSave={onSave} />
+              <ConnectorsSection connState={connState} onSend={onTv} />
+            </>)}
             {current.id === "mcp" && <McpSection mcpState={mcpState} onMcp={onTv} />}
 
             {current.id === "system" && (<>

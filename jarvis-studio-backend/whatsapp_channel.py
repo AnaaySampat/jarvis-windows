@@ -19,8 +19,8 @@ comes with the command.
 A message runs as an ordinary chat turn (main._run_whatsapp_turn) with the PC's voice
 quiet; the reply comes back here and approvals are asked here. Anything but a lookup
 asks first (actions.needs_permission), because nobody may be at the PC to see it. There
-is no tool for JARVIS to message anyone: it only ever answers the chat a command came
-from.
+is no tool for JARVIS to message anyone else: it answers the chat a command came from,
+and send_to_me (actions/send_me.py) writes only to the owner's own chat (own_chat).
 
 Guards: replies start with MARK and a self-chat message that does is JARVIS's own;
 messages older than STALE_S (queued while the PC was off) are skipped; at most RATE_N
@@ -521,6 +521,14 @@ class Channel:
 
     # ── Sending ───────────────────────────────────────────────────────────────
 
+    def own_chat(self):
+        """The owner's "Message yourself" chat, or None until WhatsApp is connected."""
+        number = self.state.get("number")
+        if self.client is None or self.state.get("status") != "connected" or not number:
+            return None
+        from neonize.utils.jid import build_jid
+        return build_jid(number)
+
     async def send(self, chat, text: str) -> bool:
         return await self.send_id(chat, text) is not None
 
@@ -564,6 +572,19 @@ class Channel:
             return True
         except Exception as exc:  # noqa: BLE001
             print(f"[WhatsApp] image send failed: {exc}", flush=True)
+            return False
+
+    async def send_file(self, chat, data: bytes, name: str, mime: str,
+                        caption: str = "") -> bool:
+        client = self.client
+        if client is None:
+            return False
+        try:
+            await client.send_document(chat, data, caption=f"{MARK} {caption}".strip(),
+                                       filename=name, mimetype=mime)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WhatsApp] file send failed: {exc}", flush=True)
             return False
 
     async def typing(self, chat, on: bool) -> None:

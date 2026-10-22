@@ -230,7 +230,9 @@ def state() -> dict:
         if c["id"] in _last:
             row["result"] = _last[c["id"]]
         out.append(row)
-    return {"connectors": out, "mcp_available": mcp_client.available()}
+    from actions import chrome_relay      # the user's Chrome, through the JARVIS extension
+    return {"connectors": out, "mcp_available": mcp_client.available(),
+            "chrome": chrome_relay.state()}
 
 
 def mcp_config(cid: str, values: dict) -> dict:

@@ -247,6 +247,16 @@ def function_declarations(places_ok: "bool | None" = None,
             {"command": _str("Playback command.", ["play", "pause", "next", "previous", "current"]),
              "query": _str("Optional song or artist to play (only for the 'play' command).")},
             ["command"]),
+        _fn("send_to_me",
+            "Send something to the USER THEMSELF — their own WhatsApp chat or their own "
+            "connected mailbox. It can't reach anyone else (there is no recipient). Use it "
+            "for 'send me…', 'WhatsApp me…', 'email me…'. If the user names an address, "
+            "it still goes to their connected mailbox — say which address it went to.",
+            {"text": _str("The message (or the body of the email)."),
+             "attach": _str("Optional: a file path to send with it, or 'screenshot' to take "
+                            "one now and send it."),
+             "via": _str("Where to send it; leave empty for WhatsApp if linked, else email.",
+                         ["whatsapp", "email"])}, []),
         _fn("make_qr_code", "Generate a QR code image for a URL or text.",
             {"text": _str("The EXACT url or text to encode.")}, ["text"]),
         _fn("generate_image", "Generate an image from a text description.",
@@ -575,6 +585,8 @@ GROUPS = {
                "time or date, forgetting a remembered fact",
                ("power_control", "get_ip", "get_location", "internet_speed", "get_news",
                 "get_time", "get_day", "forget_fact")),
+    "send": ("Sending something to the user themself: their own WhatsApp or email",
+             ("send_to_me",)),
 }
 
 # Cheap word cues that pre-load a group, so the common turn never pays load_tools.
@@ -602,6 +614,8 @@ _CUES = {
     "system": r"\b(shut ?down|restart|reboot|hibernate|log ?off|sign out|ip|speed ?test|"
               r"internet speed|bandwidth|news|headlines|time|date|what day|where am i|"
               r"forget)\b",
+    "send": r"\b(send|whatsapp|e-?mail|mail|text|message) (?:it |this |that |them )?(?:to )?me\b|"
+            r"\bto (?:my|me on) (?:whatsapp|e-?mail|inbox|mail)\b",
 }
 _CUE_RE = {g: re.compile(p, re.IGNORECASE) for g, p in _CUES.items()}
 _TOOL_GROUP = {t: g for g, (_d, tools) in GROUPS.items() for t in tools}
@@ -661,6 +675,7 @@ def _mcp_cue(text: str) -> bool:
 
 _active: "set[str]" = set(GROUPS) | {"mcp", "email", "phone"}   # until the first turn: everything
 _used: "set[str]" = set()           # groups this turn called or loaded
+_forced: "set[str]" = set()         # an agent's own groups (agents.TURN_AGENTS) this turn
 _recent: "list[set[str]]" = []      # what the last two turns used (newest last)
 
 
@@ -681,8 +696,15 @@ def begin_turn(text: str) -> "set[str]":
     _recent.append(_used)               # even an empty one, so old use ages out
     del _recent[:-2]
     _used = set()
-    _active = groups_for(text).union(*_recent)
+    _active = groups_for(text).union(*_recent) | _forced
     return set(_active)
+
+
+def force(names) -> None:
+    """Keep these groups loaded on every turn until force(()) — a Files, Scheduling or
+    Content agent's turn always has its own tools."""
+    _forced.clear()
+    _forced.update(names)
 
 
 def activate(names) -> "list[str]":
@@ -788,6 +810,8 @@ _SPEC = {
                                     "new_task": a.get("new_task", "")},
     "load_tools":        lambda a: {"type": "load_tools", "groups": _group_list(a.get("groups"))},
     "phone_command":     lambda a: {"type": "phone_command", "request": a.get("request", "")},
+    "send_to_me":        lambda a: {"type": "send_to_me", "text": a.get("text", ""),
+                                    "attach": a.get("attach", ""), "via": a.get("via", "")},
     "check_email":       lambda a: {"type": "email_search", "query": a.get("query", ""),
                                     "unread": bool(a.get("unread")), "limit": a.get("limit") or 8},
     "read_email":        lambda a: {"type": "email_read", "id": str(a.get("id", ""))},

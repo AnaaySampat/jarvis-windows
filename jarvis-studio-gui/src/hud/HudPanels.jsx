@@ -5,6 +5,27 @@ import { useState, useEffect, useRef, useCallback, memo } from "react";
 import ResponseRenderer from "../components/ResponseRenderer";
 import { Icon } from "./icons";
 import { ChipList, AddField } from "../components/controls";
+import { AGENT_PICKS, agentPick } from "./agents";
+
+export function AgentRow({ active = "auto", onPick }) {
+  const rowRef = useRef(null);
+  useEffect(() => {   // keep the picked chip in view when the row is narrower than it
+    const row = rowRef.current, chip = row?.querySelector(".is-on");
+    if (chip) row.scrollLeft = Math.max(0, chip.offsetLeft - (row.clientWidth - chip.offsetWidth) / 2);
+  }, [active]);
+  return (
+    <div className="agent-row" role="radiogroup" aria-label="Agent" ref={rowRef}>
+      {AGENT_PICKS.map((a) => (
+        <button key={a.id} type="button" role="radio" aria-checked={active === a.id}
+                className={`agent-chip${active === a.id ? " is-on" : ""}`}
+                style={{ "--agent": a.color }} title={`${a.hint} — or type @${a.handle}`}
+                onClick={() => onPick?.(a.id)}>
+          <span className="agent-dot" aria-hidden="true" />{a.name}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /* Shared header for the slide-over panels. */
 function SideHeader({ title, sub, onClose }) {
@@ -629,9 +650,10 @@ const CHAT_STARTERS = [
 
 export function ChatOverlay({ open, onClose, status, messages = [], onSend, onStop, onReset, onUpload, runAction,
                               conversations = [], onNewChat, onOpenConversation, onDeleteConversation,
-                              onRefreshConversations, onClearConversations, taskModelTiers = [], onNotify }) {
+                              onRefreshConversations, onClearConversations, taskModelTiers = [], onNotify,
+                              taskTier = "auto", onTaskTier,
+                              agentMode = false, activeAgent = "auto", onPickAgent }) {
   const [draft, setDraft] = useState("");
-  const [taskTier, setTaskTier] = useState("moderate");
   const [histOpen, setHistOpen] = useState(false);
   const [histQuery, setHistQuery] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
@@ -639,11 +661,13 @@ export function ChatOverlay({ open, onClose, status, messages = [], onSend, onSt
   const bodyRef = useRef(null);
   const fileRef = useRef(null);
   const inputRef = useRef(null);
-  const tierOptions = taskModelTiers.length === 3 ? taskModelTiers : [
+  // The level is saved (shared with Settings ▸ AI); "auto" goes out as "" = the saved one.
+  const tierOptions = [{ value: "auto", label: "Auto" }, ...(taskModelTiers.length === 3 ? taskModelTiers : [
     { value: "dumb", label: "Dumb" },
     { value: "moderate", label: "Moderate" },
     { value: "very_smart", label: "Very smart" },
-  ];
+  ])];
+  const sentTier = taskTier === "auto" ? "" : taskTier;
 
   const startNewChat = () => { onNewChat?.(); setHistOpen(false); inputRef.current?.focus({ preventScroll: true }); };
   const toggleHist = () => {
@@ -668,7 +692,7 @@ export function ChatOverlay({ open, onClose, status, messages = [], onSend, onSt
 
   const pickFile = (e) => {
     const file = e.target.files?.[0];
-    if (file && onUpload) onUpload(file, draft.trim(), taskTier);
+    if (file && onUpload) onUpload(file, draft.trim(), sentTier);
     setDraft("");
     e.target.value = ""; // allow re-selecting the same file
   };
@@ -696,7 +720,7 @@ export function ChatOverlay({ open, onClose, status, messages = [], onSend, onSt
   const send = (text = draft) => {
     const t = text.trim();
     if (!t) return;
-    onSend(t, taskTier);
+    onSend(t, sentTier);
     setDraft("");
   };
   const copy = useCallback((text) => {
@@ -808,6 +832,7 @@ export function ChatOverlay({ open, onClose, status, messages = [], onSend, onSt
           )}
         </div>
         <div className="chatov-compose">
+          {agentMode && <AgentRow active={activeAgent} onPick={onPickAgent} />}
           <div className="chatov-input">
             {onUpload && (
               <>
@@ -834,7 +859,8 @@ export function ChatOverlay({ open, onClose, status, messages = [], onSend, onSt
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }}
-              placeholder="Message Jarvis…"
+              placeholder={agentMode && activeAgent !== "auto"
+                ? `Message the ${agentPick(activeAgent).name} agent…` : "Message Jarvis… (@ picks an agent)"}
               aria-label="Message"
             />
             {busy && onStop ? (
@@ -853,7 +879,7 @@ export function ChatOverlay({ open, onClose, status, messages = [], onSend, onSt
               <select
                 className="chatov-tier"
                 value={taskTier}
-                onChange={(e) => setTaskTier(e.target.value)}
+                onChange={(e) => onTaskTier?.(e.target.value)}
                 aria-label="Model capability for this task"
               >
                 {tierOptions.map((tier) => (

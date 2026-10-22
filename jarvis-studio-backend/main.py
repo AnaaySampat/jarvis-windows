@@ -39,7 +39,8 @@ from llm.groq_bridge import (
     model_leaks_reasoning, reply_is_quote_wrapped, summarize_error, get_model,
     routing_note, get_history, set_skill_context, get_screen, set_screen,
     get_manual_location, set_manual_location,
-    get_always_on, set_always_on, set_conversation_mode, get_agent_mode, set_agent_mode,
+    get_always_on, set_always_on, set_conversation_mode, get_agent_mode, set_agent_mode, get_task_tier, set_task_tier,
+    get_active_agent, set_active_agent,
     get_system_alerts, set_system_alerts, get_overlay, set_overlay,
     quick_completion, CAPABILITY_INDEX,
 )
@@ -546,8 +547,9 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
     # unarmed, a remote task dies at step 0 with "control expired mid-task".
     # Arm the right window for the task, and restore the PC's prior posture after
     # so a remote task never leaves a consent window open the user didn't grant.
-    was_consented = browser.is_approved() if kind == "browser" else computer.is_armed()
-    if kind == "browser":
+    web = kind in ("browser", "research")
+    was_consented = browser.is_approved() if web else computer.is_armed()
+    if web:
         browser.approve(15)
     else:
         armed_ok, arm_msg = computer.arm(15)
@@ -582,23 +584,18 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
     # first so a STOP from the PREVIOUS task can't abort this fresh one at step 0.
     if _interrupt is not None:
         _interrupt.clear()
-    # Route a web task the user explicitly aimed at THEIR browser (their real Chrome,
-    # over CDP) instead of JARVIS's dedicated one. Deterministic keyword match — the
-    # model dropping a flag is exactly why "do it in my browser" kept using the wrong
-    # one. Falls back to the own browser (with a heads-up) if Chrome can't be reached.
-    personal_target = False
-    if kind == "browser" and browser.wants_personal_browser(goal):
-        ok_p, msg_p = await asyncio.get_running_loop().run_in_executor(
-            None, browser.ensure_personal_available)
-        if ok_p:
-            browser.set_target("personal")
-            personal_target = True
-        elif msg_p:
-            await emit("warning", msg_p)
+    # A web task runs in the user's own Chrome (the JARVIS extension) unless they asked
+    # for JARVIS's browser, or the extension isn't there. Research reads in its own
+    # headless browser.
+    personal_target = kind == "browser" and await _users_chrome(goal)
+    if kind == "research":
+        browser.set_target("headless")
     hb = asyncio.create_task(_heartbeat())
     try:
         res = await autopilot.run_task(
-            kind, goal, on_step=on_step, on_shot=on_shot, ask=ask,
+            "browser" if web else kind,
+            agents.research_goal(goal) if kind == "research" else goal,
+            on_step=on_step, on_shot=on_shot, ask=ask,
             hint=playbooks.autopilot_hint(goal), interrupted=_interrupted,
         )
         ok = bool(res.get("ok"))
@@ -631,8 +628,8 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
         print(f"[Remote] task {task_id} failed: {exc}", flush=True)
     finally:
         hb.cancel()
-        if personal_target:
-            browser.set_target("own")   # next task defaults back to JARVIS's own browser
+        if personal_target or kind == "research":
+            browser.set_target("")      # back to JARVIS's own browser for single actions
         # A cancelled task raises CancelledError on await — and it's a BaseException,
         # so suppress(Exception) alone lets it escape (leaking out of the whole
         # handler when a task finishes fast enough that the heartbeat never entered
@@ -640,7 +637,7 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await hb
         if not was_consented:
-            if kind == "browser":
+            if web:
                 browser.revoke()
             else:
                 computer.disarm()
@@ -719,6 +716,8 @@ async def handle_task_submit(data) -> None:
     raw_kind = str(data.get("kind") or "").strip().lower()
     if raw_kind.startswith(("computer", "desktop")):
         kind = "computer"
+    elif raw_kind == "research":         # the phone's Research agent (agents.py)
+        kind = "research"
     elif raw_kind == "auto":
         kind = await _classify_task_kind(goal)
     else:
@@ -2032,6 +2031,26 @@ async def _run_autopilot_task(result: dict, *, speak: bool = True,
         _autopilot_owner = ""
 
 
+_chrome_hint_given = False
+
+
+async def _users_chrome(goal: str) -> bool:
+    """Point browser.* at the user's own Chrome (the JARVIS extension) for this task,
+    unless they asked for JARVIS's own browser. False = JARVIS's browser, with a word on
+    why the first time it happens."""
+    global _chrome_hint_given
+    if browser.wants_own_browser(goal):
+        return False
+    ok, msg = await asyncio.get_running_loop().run_in_executor(
+        None, browser.ensure_personal_available)
+    if ok:
+        browser.set_target("personal")
+    elif msg and not _chrome_hint_given:
+        _chrome_hint_given = True
+        await emit("warning", msg)
+    return ok
+
+
 def _agent_shot_feed(task_id: str):
     """An operator's on_shot for the Agent Activity panel: each screenshot it saw,
     downscaled to a light thumbnail (off the event loop); an unchanged frame isn't
@@ -2059,7 +2078,7 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
     # leftover correction from a prior task can't affect this one.
     _control_paused = False
     _pending_corrections = []
-    icon = {"computer": "🖱", "tv": "📺"}.get(kind, "🌐")
+    icon = {"computer": "🖱", "tv": "📺", "research": "🔎"}.get(kind, "🌐")
     sid = f"{time.time()}"
     await emit("status", "working")
     await emit("stream_start", {"sid": sid})
@@ -2122,11 +2141,22 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
                                              corrections=_pop_corrections)
         else:
             hint = "\n\n".join(h for h in (playbooks.autopilot_hint(goal), context) if h)
-            res = await autopilot.run_task(kind, goal, interrupted=_interrupted,
-                                           on_step=on_step, on_shot=on_shot, ask=ask,
-                                           paused=_control_is_paused,
-                                           corrections=_pop_corrections,
-                                           reconsent=reconsent, hint=hint)
+            # Research is the browser operator in its own headless browser: it reads
+            # what it likes without touching the user's Chrome or their windows. A
+            # browser task works in the user's own Chrome, where they're signed in.
+            if kind == "research":
+                browser.set_target("headless")
+            personal = kind == "browser" and await _users_chrome(goal)
+            try:
+                res = await autopilot.run_task(
+                    "browser" if kind == "research" else kind,
+                    agents.research_goal(goal) if kind == "research" else goal,
+                    interrupted=_interrupted, on_step=on_step, on_shot=on_shot, ask=ask,
+                    paused=_control_is_paused, corrections=_pop_corrections,
+                    reconsent=reconsent, hint=hint)
+            finally:
+                if kind == "research" or personal:
+                    browser.set_target("")
         summary = (res.get("summary") or "").strip()
         if res.get("stopped"):
             final = "Stopped, sir."
@@ -2619,6 +2649,7 @@ async def _run_pipeline(text: str, emit_transcription: bool = True,
     read the way the PC chat reads one. ``shown`` is the user bubble's text when it
     differs from what the model gets."""
     global _wa_chat
+    task_tier = task_tier or get_task_tier()   # no level picked: the saved one (chat ↔ Settings)
     async with _pipeline_lock:
         turn_recorder.begin(text)          # a no-op unless JARVIS_RECORD_TURNS=1
         try:
@@ -2670,21 +2701,36 @@ async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
     if emit_transcription:
         await emit("transcription", shown or text)
 
-    # Agent mode (agents.py): a coordinator picks the agent; the chat agent is the rest
-    # of this function, unchanged.
-    if get_agent_mode():
-        plan = await _agent_plan_for(text)
-        if plan is not None:
-            try:
-                await _run_agent_plan(text, plan)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                await _report_pipeline_error(exc, text)
-            finally:
-                await emit("status", "idle")
-            return
+    # Agents (agents.py): an @mention, or the agent picked on the HUD's agent row, goes
+    # to that agent; in agent mode the coordinator routes the rest (Auto). The chat
+    # agent is _chat_turn. A WhatsApp command follows only an @mention.
+    picked, text = agents.mention(text)
+    if not picked and get_agent_mode() and _wa_chat is None:
+        picked = get_active_agent()
+    if picked not in ("", "auto"):
+        plan = agents.picked_plan(picked, text)
+    else:
+        plan = await _agent_plan_for(text) if get_agent_mode() else None
+    if plan is None:
+        await _chat_turn(text, task_tier)
+        return
+    try:
+        await _run_agent_plan(text, plan, task_tier=task_tier)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        await _report_pipeline_error(exc, text)
+    finally:
+        await emit("status", "idle")
 
+
+async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
+                     context: str = "") -> None:
+    """The chat agent: one ordinary turn — stream, act, follow up. A Files, Scheduling
+    or Content agent's turn is this with its tool groups always loaded and its brief
+    (agents.TURN_AGENTS); ``context`` is what the other agents found."""
+    groups, brief = agents.TURN_AGENTS.get(agent, ((), ""))
+    live_tools.force(groups)
     sid = f"{time.time()}"          # stream id so the UI can finalize idempotently
     full_raw = ""
     cursor = 0
@@ -2706,8 +2752,10 @@ async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
         print(f"[Jarvis] Thinking… [Route] {routing_note(text, task_tier)}", flush=True)
 
         # Inject any playbook(s) relevant to THIS request so JARVIS follows the
-        # learned recipe (cleared when nothing matches, so it never lingers).
-        set_skill_context(playbooks.context_block(text))
+        # learned recipe (cleared when nothing matches, so it never lingers), after
+        # the agent's brief and what the other agents found.
+        set_skill_context("\n\n".join(
+            x for x in (brief, context, playbooks.context_block(text)) if x))
 
         speak_ok = _tts is not None and not skills.is_muted()
         leaky = model_leaks_reasoning(text, task_tier)
@@ -2907,6 +2955,7 @@ async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
     except Exception as exc:  # noqa: BLE001
         await _report_pipeline_error(exc, text)
     finally:
+        live_tools.force(())
         await _finish_tts(consumer, tts_queue)
         await emit("status", "idle")
 
@@ -3075,7 +3124,8 @@ async def _agent_step_task(kind: str, goal: str) -> "dict | None":
     an open consent window, or the Approve dialog. The deferred autopilot result, or
     None when it was refused or isn't an autopilot task after all."""
     loop = asyncio.get_running_loop()
-    spec = {"type": f"{kind}_task", "goal": goal}
+    # Research asks for the browser's consent: it drives a browser (its own, headless).
+    spec = {"type": f"{'browser' if kind == 'research' else kind}_task", "goal": goal}
     res = (await loop.run_in_executor(None, run_specs, [spec]))[0]
     if res.get("needs_permission"):
         pkind = res.get("kind", kind)
@@ -3086,7 +3136,9 @@ async def _agent_step_task(kind: str, goal: str) -> "dict | None":
                 return None
         grant(pkind)
         res = await loop.run_in_executor(None, run_action, res["spec"])
-    return res if res.get("needs_autopilot") else None
+    if not res.get("needs_autopilot"):
+        return None
+    return {**res, "kind": "research"} if kind == "research" else res
 
 
 def _agent_consult(asking: str):
@@ -3133,50 +3185,88 @@ async def _consult_agent(kind: str, question: str, asking: str) -> str:
     return "; ".join(x for x in [summary, *findings] if x)
 
 
-async def _run_agent_plan(text: str, plan: "agents.Plan") -> None:
+async def _agent_turn_step(step: "agents.Step", task_tier: str, context: str) -> str:
+    """A chat-turn agent's step (files, scheduling, content, chat), run as an ordinary
+    turn with that agent's tools and brief. Returns what it answered."""
+    events: list = []
+
+    def tap(event: str, data) -> None:
+        if event in ("response_end", "response", "action"):
+            events.append((event, data))
+    add_tap(tap)
+    try:
+        await _chat_turn(step.task, task_tier, agent=step.agent, context=context)
+    finally:
+        remove_tap(tap)
+    return whatsapp_channel.compose(events)[0].strip()
+
+
+async def _agent_next(text: str, results: "list[agents.StepResult]") -> "agents.Step | None":
+    """The planned steps are done: is anything in the request left, and for whom?"""
+    system, user = agents.next_prompt(text, results)
+    try:
+        raw = await quick_completion(system, user, max_tokens=300, task_tier="moderate")
+    except Exception:  # noqa: BLE001 — no answer: what's done is done
+        return None
+    nxt = agents.parse_next(raw, results)
+    print(f"[Agents] next → {nxt.agent}: {nxt.task[:60]!r}" if nxt else "[Agents] next → done",
+          flush=True)
+    return nxt
+
+
+async def _run_agent_plan(text: str, plan: "agents.Plan", task_tier: str = "") -> None:
     """Run a plan's steps in order: each agent gets what the earlier ones found, and a
     failed or refused step ends the plan (later ones would build on something that
-    didn't happen). Speaks once, at the end."""
-    multi = len(plan.steps) > 1
-    if multi:
+    didn't happen). When the planned steps are done and the request had more to it,
+    the coordinator may hand the rest to another agent (_agent_next). An operator step
+    reports once, at the end; a chat-turn agent's step answers like any turn."""
+    if len(plan.steps) > 1:
         await emit("response", agents.plan_text(plan))
     results: "list[agents.StepResult]" = []
-    for i, step in enumerate(plan.steps):
-        if _interrupted():
-            break
+    spoke = False                   # the last step was a turn, which spoke for itself
+    i = 0
+    while i < len(plan.steps) and not _interrupted():
+        step = plan.steps[i]
         context = agents.handover(results)
-        if step.agent == "chat":
-            # A chat step inside a plan answers from what the agents found.
-            answer = (await quick_completion(
-                "You are JARVIS. Answer the user's request in a few sentences, using "
-                "only what the other agents found. Never claim anything they didn't report.",
-                f"{context}\n\nRequest: {step.task}", max_tokens=400,
-                task_tier="moderate") or "").strip()
-            results.append(agents.StepResult("chat", step.task, bool(answer),
-                                             answer or "I couldn't put that together, sir."))
+        if step.agent not in agents.OPERATORS:
+            answer = await _agent_turn_step(step, task_tier, context)
+            results.append(agents.StepResult(step.agent, step.task, bool(answer),
+                                             answer or "I couldn't do that part, sir."))
+            spoke = True
             if not answer:
                 break
-            await emit("response", answer)
-            continue
-        res = await _agent_step_task(step.agent, step.task)
-        if res is None:
-            results.append(agents.StepResult(step.agent, step.task, False,
-                                             "Not approved, so I didn't start it."))
-            break
-        kind = res.get("kind") or step.agent
-        report: dict = {}
-        label = agents.NAMES.get(kind, "Agent") +             (f" · step {i + 1} of {len(plan.steps)}" if multi else "")
-        hint = "\n\n".join(x for x in (context, agents.ask_note(kind)) if x)
-        final = await _run_autopilot_task(res, speak=False, context=hint,
-                                          consult=_agent_consult(kind), report=report,
-                                          label=label)
-        results.append(agents.StepResult(kind, step.task, bool(report.get("ok")), final,
-                                         list(report.get("findings") or [])))
-        if not report.get("ok"):
-            break
+        else:
+            res = await _agent_step_task(step.agent, step.task)
+            if res is None:
+                results.append(agents.StepResult(step.agent, step.task, False,
+                                                 "Not approved, so I didn't start it."))
+                break
+            kind = res.get("kind") or step.agent
+            report: dict = {}
+            label = agents.NAMES.get(kind, "Agent") + \
+                (f" · step {i + 1} of {len(plan.steps)}" if len(plan.steps) > 1 else "")
+            hint = "\n\n".join(x for x in (context, agents.ask_note(kind)) if x)
+            final = await _run_autopilot_task(res, speak=False, context=hint,
+                                              consult=_agent_consult(kind), report=report,
+                                              label=label)
+            results.append(agents.StepResult(kind, step.task, bool(report.get("ok")), final,
+                                             list(report.get("findings") or [])))
+            spoke = False
+            if not report.get("ok"):
+                break
+        i += 1
+        if i == len(plan.steps) and len(plan.steps) < agents.MAX_STEPS \
+                and agents.may_continue(text, results) and not _interrupted():
+            nxt = await _agent_next(text, results)
+            if nxt is not None:
+                plan.steps.append(nxt)
+                await emit("response", f"↪ {agents.ICONS[nxt.agent]} {agents.NAMES[nxt.agent]} "
+                                       f"takes it from here: {nxt.task}")
     bubble, say = agents.outcome(plan, results)
-    if multi:
+    if len(plan.steps) > 1:
         await emit("response", bubble)
+    if spoke:
+        return                      # the turn already answered, aloud and in history
     remember_turn_outcome(text, say)
     if say and _tts and not skills.is_muted() and not _interrupted():
         await emit("status", "speaking")
@@ -3629,6 +3719,13 @@ async def handle_set_config(data) -> None:
             skills._open_file(skill_files.ensure_dir())
         except Exception as exc:  # noqa: BLE001
             await emit("warning", f"Couldn't open the skills folder: {exc}")
+    if data.get("chrome_extension_open"):
+        # Settings ▸ Connectors ▸ Chrome: the folder to "Load unpacked".
+        from actions import chrome_relay
+        try:
+            skills._open_file(str(chrome_relay.extension_dir()))
+        except Exception as exc:  # noqa: BLE001
+            await emit("warning", f"Couldn't open the extension folder: {exc}")
     if data.get("heartbeat_open"):
         # Settings ▸ Voice ▸ Heartbeat ▸ Edit checklist: the file, in the user's editor.
         import heartbeat
@@ -3647,6 +3744,11 @@ async def handle_set_config(data) -> None:
         set_autopilot_vision(data["autopilot_vision"])
     if "agent_mode" in data:
         set_agent_mode(bool(data["agent_mode"]))
+    if "task_tier" in data:
+        set_task_tier(data["task_tier"])
+    if "active_agent" in data:
+        picked = str(data["active_agent"] or "auto").lower()
+        set_active_agent(picked if picked in agents.AGENTS else "auto")
     if "native_tools" in data:
         from llm.groq_bridge import set_native_tools
         set_native_tools(data["native_tools"])
@@ -4826,6 +4928,12 @@ async def main(use_text: bool) -> None:
         register_handler("disarm_control", handle_disarm_control)
         register_handler("remote_input", handle_remote_input)
         register_handler("phone.result", handle_phone_result)
+        # "Send it to me": the owner's own WhatsApp chat or mailbox (actions/send_me.py).
+        from actions import send_me
+        send_me.attach_main(asyncio.get_running_loop(), lambda: _wa)
+        # The user's own Chrome for browser tasks, through the JARVIS extension.
+        from actions import chrome_relay
+        chrome_relay.start()
         # "Set an alarm on my phone" from here or from WhatsApp (phone_link.py).
         phone_link.configure(asyncio.get_running_loop(), send_to_device, connected_device_ids,
                              lambda: any(not d["pending"] for d in (

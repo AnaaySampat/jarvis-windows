@@ -72,16 +72,14 @@ _last_state: dict = {"available": None, "open": False, "url": "", "title": ""}
 _worker: "Optional[_BrowserWorker]" = None
 _worker_lock = threading.Lock()
 
-# ── Personal-browser target (the user's real Chrome, driven over CDP) ─────────
-# JARVIS normally drives its OWN dedicated Chromium (the persistent profile above).
-# When the user explicitly asks for THEIR browser, we attach to their real Chrome
-# over the DevTools protocol instead — same action code, a second worker/context.
-# The user's Chrome must be exposing the debug port (ensure_personal_available()
-# starts it that way when it isn't). We NEVER close or force-kill the user's Chrome.
-_PERSONAL_CDP_PORT = 9222
-_PERSONAL_CDP_URL = f"http://127.0.0.1:{_PERSONAL_CDP_PORT}"
+# ── Other targets ───────────────────────────────────────────────────────────────
+# "personal": the user's own Chrome, through the JARVIS extension (chrome_relay.py) —
+# the default for browser tasks when it's connected; same action code, a second
+# worker/context. We NEVER close or force-kill the user's Chrome.
+# "headless": the research agent's own windowless Chromium.
 _worker_personal: "Optional[_BrowserWorker]" = None
-_active_target = "own"      # "own" | "personal" — which browser browser.* acts on
+_worker_headless: "Optional[_BrowserWorker]" = None
+_active_target = "own"      # "own" | "personal" | "headless" — which browser browser.* acts on
 
 
 # ── JavaScript injected into the page ─────────────────────────────────────────
@@ -516,7 +514,7 @@ _WEDGE_GRACE_S = 20.0
 
 class _BrowserWorker:
     def __init__(self, mode: str = "own") -> None:
-        self._mode = "personal" if mode == "personal" else "own"
+        self._mode = mode if mode in ("personal", "headless") else "own"
         self._jobs: "queue.Queue" = queue.Queue()
         self._pw = None
         self._ctx = None
@@ -644,6 +642,9 @@ class _BrowserWorker:
                 self._ctx = _connect_personal_cdp(self._pw)
                 print(f"[Browser] attached to your Chrome over CDP in "
                       f"{time.time()-_t:.1f}s", flush=True)
+            elif self._mode == "headless":
+                self._ctx = _launch_headless_context(self._pw)
+                print(f"[Browser] headless Chromium up in {time.time()-_t:.1f}s", flush=True)
             else:
                 # Recovery ladder (locks → archive incompatible profile) lives in
                 # _launch_context_with_recovery — avoids the open/close/open loop
@@ -769,10 +770,11 @@ class _BrowserWorker:
         return self.submit(job, 30)
 
     def _reset(self) -> None:
-        if self._mode == "personal":
+        if self._mode in ("personal", "headless"):
             # NEVER close the user's real Chrome or its context. Closing the CDP
             # *connection* only disconnects (verified: Chrome and its tabs survive);
-            # skipping it leaked one connection per reset.
+            # skipping it leaked one connection per reset. For headless, closing the
+            # browser ends the one JARVIS launched.
             try:
                 if self._ctx is not None and self._ctx.browser is not None:
                     self._ctx.browser.close()
@@ -814,11 +816,16 @@ def _get_worker() -> "Optional[_BrowserWorker]":
     global _worker, _worker_personal
     if not available():
         return None
+    global _worker_headless
     with _worker_lock:
         if _active_target == "personal":
             if _worker_personal is None:
                 _worker_personal = _BrowserWorker(mode="personal")
             return _worker_personal
+        if _active_target == "headless":
+            if _worker_headless is None:
+                _worker_headless = _BrowserWorker(mode="headless")
+            return _worker_headless
         if _worker is None:
             _worker = _BrowserWorker()
         return _worker
@@ -826,49 +833,41 @@ def _get_worker() -> "Optional[_BrowserWorker]":
 
 def _active_worker() -> "Optional[_BrowserWorker]":
     """The already-created worker for the active target (no creation) — for abort()."""
-    return _worker_personal if _active_target == "personal" else _worker
+    return {"personal": _worker_personal, "headless": _worker_headless}.get(_active_target,
+                                                                            _worker)
 
 
 def set_target(name: str) -> None:
-    """Route subsequent browser.* actions to 'own' (JARVIS's dedicated browser) or
-    'personal' (the user's real Chrome over CDP). Set at a task's start, reset after;
+    """Route subsequent browser.* actions to 'own' (JARVIS's dedicated browser),
+    'personal' (the user's real Chrome) or 'headless' (the research agent's own,
+    windowless one); anything else is 'own'. Set at a task's start, reset after;
     single-flight in main.py guarantees no two tasks race on this global."""
     global _active_target
-    _active_target = "personal" if str(name or "").lower() == "personal" else "own"
+    n = str(name or "").lower()
+    _active_target = n if n in ("personal", "headless") else "own"
 
 
 def get_target() -> str:
     return _active_target
 
 
-# ── Personal Chrome (CDP attach) helpers ─────────────────────────────────────
+# ── The user's Chrome (through the JARVIS extension) ──────────────────────────
 
-_PERSONAL_BROWSER_HINTS = (
-    "personal browser", "my browser", "my own browser", "my chrome",
-    "personal chrome", "my personal browser", "real chrome", "actual browser",
-    "in my browser", "on my browser", "using my browser", "my default browser",
-    "my regular browser", "my normal browser",
+# Browser tasks run in the user's own Chrome when the JARVIS extension is connected —
+# signed in, as they left it. These words send one to JARVIS's own browser instead.
+_OWN_BROWSER_HINTS = (
+    "your browser", "your own browser", "jarvis browser", "jarvis's browser",
+    "test browser", "separate browser", "automation browser", "fresh browser",
+    "not my browser", "not in my browser", "not my chrome",
 )
 
 
-def wants_personal_browser(goal: str) -> bool:
-    """True when the user explicitly aimed a web task at THEIR browser (not JARVIS's).
+def wants_own_browser(goal: str) -> bool:
+    """True when the user aimed a web task at JARVIS's own browser, not theirs.
     Deterministic keyword match — a model dropping a structured flag is exactly why
-    'use my browser' kept landing in the wrong browser."""
+    'use my browser' once kept landing in the wrong browser."""
     g = " ".join((goal or "").lower().split())
-    return any(h in g for h in _PERSONAL_BROWSER_HINTS)
-
-
-def _cdp_reachable() -> bool:
-    """True when something is already exposing the Chrome debug port we use."""
-    try:
-        import json
-        import urllib.request
-        with urllib.request.urlopen(_PERSONAL_CDP_URL + "/json/version", timeout=1.5) as r:
-            json.load(r)
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+    return any(h in g for h in _OWN_BROWSER_HINTS)
 
 
 def _find_chrome_exe() -> str:
@@ -888,14 +887,7 @@ def _find_chrome_exe() -> str:
     return ""
 
 
-def _user_chrome_profile_dir() -> str:
-    """The user's real Chrome 'User Data' root (their Default profile lives inside)."""
-    return os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "User Data")
-
-
 def _chrome_running() -> bool:
-    """True if any ordinary chrome.exe is already running — a second chrome launched
-    with the debug flag would just open a tab in it and never expose the port."""
     try:
         import psutil
         for p in psutil.process_iter(["name"]):
@@ -906,47 +898,62 @@ def _chrome_running() -> bool:
     return False
 
 
-def ensure_personal_available() -> "tuple[bool, str]":
-    """Make the user's real Chrome reachable over CDP so 'personal' can attach.
+NO_EXTENSION = ("The JARVIS extension isn't connected in your Chrome, sir, so I used my own "
+                "browser — Settings ▸ Connectors ▸ Chrome shows how to add it.")
 
-    If the debug port is already up (they started Chrome with it, or a previous run
-    did), use it. Otherwise launch their Chrome on their own profile WITH the port —
-    but only when no ordinary Chrome is already open (a second chrome.exe just
-    delegates to the running instance and never exposes the port). Returns
-    (ok, message); on False the caller falls back to JARVIS's own browser. Blocking
-    (subprocess + HTTP) — call it OFF the event loop."""
-    if _cdp_reachable():
+
+def ensure_personal_available() -> "tuple[bool, str]":
+    """Make the user's Chrome reachable for 'personal': the JARVIS extension connected to
+    chrome_relay. Chrome not running → start it (it opens on the profile they used
+    last) and give the extension a moment. Returns (ok, message); on False the caller
+    uses JARVIS's own browser. Blocking — call it OFF the event loop."""
+    from actions import chrome_relay
+    chrome_relay.start()
+    if chrome_relay.connected():
         return True, ""
-    exe = _find_chrome_exe()
-    if not exe:
-        return False, "I couldn't find Google Chrome on this PC, sir."
-    if _chrome_running():
-        return False, ("Your Chrome is already open without remote control, sir — close "
-                       "it and ask again, or I'll just use my own browser.")
-    prof = _user_chrome_profile_dir()
-    try:
-        import subprocess
-        subprocess.Popen(
-            [exe, f"--remote-debugging-port={_PERSONAL_CDP_PORT}",
-             f"--user-data-dir={prof}", "--no-first-run", "--no-default-browser-check"],
-            close_fds=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"I couldn't start your Chrome, sir: {exc}"
-    deadline = time.monotonic() + 10
+    if not chrome_relay.ever_connected():
+        return False, NO_EXTENSION   # never added: don't open their Chrome for nothing
+    wait = 3.0                      # running: the extension may be mid-reconnect
+    if not _chrome_running():
+        exe = _find_chrome_exe()
+        if not exe:
+            return False, "I couldn't find Google Chrome on this PC, sir, so I used my own browser."
+        try:
+            import subprocess
+            subprocess.Popen([exe, "--no-first-run", "--no-default-browser-check"], close_fds=True)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"I couldn't start your Chrome, sir ({exc}), so I used my own browser."
+        wait = 15.0
+    deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
-        if _cdp_reachable():
+        if chrome_relay.connected():
             return True, ""
         time.sleep(0.3)
-    return False, "Your Chrome didn't expose remote control in time, sir."
+    return False, NO_EXTENSION
 
 
 def _connect_personal_cdp(pw):
-    """Connect to the user's real Chrome over CDP and return its default context
-    (their actual tabs/logins). Assumes ensure_personal_available() already made the
-    port reachable. Raises on failure (the caller has already fallen back if needed)."""
-    conn = pw.chromium.connect_over_cdp(_PERSONAL_CDP_URL, timeout=8000)
+    """Attach to the user's Chrome through the extension relay; its default context
+    holds only the tabs JARVIS opens there. Raises on failure."""
+    from actions import chrome_relay
+    conn = pw.chromium.connect_over_cdp(chrome_relay.cdp_url(), timeout=15000)
     return conn.contexts[0] if conn.contexts else conn.new_context()
+
+
+def _launch_headless_context(pw):
+    """The research agent's browser: no window, no profile, nothing of the user's.
+    channel="chromium" runs the full Chromium headless — the installer ships that, not
+    the separate headless shell — and the user agent drops "HeadlessChrome", which
+    search engines answer with a captcha."""
+    b = pw.chromium.launch(headless=True, channel="chromium")
+    major = (b.version or "140").split(".")[0]
+    ctx = b.new_context(
+        viewport={"width": 1280, "height": 900},
+        user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"))
+    ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', "
+                        "{get: () => undefined});")
+    return ctx
 
 
 def prewarm() -> None:

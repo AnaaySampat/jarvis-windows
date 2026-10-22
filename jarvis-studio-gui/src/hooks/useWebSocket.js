@@ -436,7 +436,7 @@ export function useWebSocket() {
     wsSend({ type: "rerun_setup" });
   }, [wsSend]);
 
-  const sendMessage = useCallback((text, taskTier = "moderate") => {
+  const sendMessage = useCallback((text, taskTier = "") => {   // "" = the saved level
     if (wsSend({ type: "text_input", data: { text, task_tier: taskTier } })) {
       setMessages(prev => [...prev, { role: "user", text, id: Date.now() + Math.random() }]);
     }
@@ -599,7 +599,7 @@ export function useWebSocket() {
 
   // Attach a file in chat: read it as a data URL and send to the backend (images
   // → vision, PDFs/text → extracted + answered). Shows a local "📎 file" bubble.
-  const sendUpload = useCallback((file, prompt = "", taskTier = "moderate") => {
+  const sendUpload = useCallback((file, prompt = "", taskTier = "") => {
     if (!file || wsRef.current?.readyState !== WebSocket.OPEN) return;
     if (file.size > MAX_UPLOAD_BYTES) {
       setWarnings(prev => [...prev, {

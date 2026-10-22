@@ -20,7 +20,9 @@ WebSocket also serves a cryptographically paired phone over Tailscale. See
 | Skill files (`read_skill`), heartbeat, routines | `jarvis-studio-backend/skill_files.py`, `heartbeat.py`, `routines.py` |
 | WhatsApp channel (neonize linked device; who may command; reply/approval routing; live progress message, "Jarvis, status") | `jarvis-studio-backend/whatsapp_channel.py`, `main._run_whatsapp_turn` |
 | What JARVIS is doing right now (a tap on every HUD event; WhatsApp status and busy notice) | `jarvis-studio-backend/activity.py` |
-| Agent mode (coordinator → chat / browser / desktop agent, plans, hand-over, agents asking each other) | `jarvis-studio-backend/agents.py`, `main._run_agent_plan` |
+| Agent mode (coordinator → chat / desktop / browser / research / files / scheduling / content agents, @mentions, the HUD's agent row, plans, hand-offs, agents asking each other) | `jarvis-studio-backend/agents.py`, `main._run_agent_plan`, `hud/agents.js` |
+| Browser tasks in the user's own Chrome (MV3 extension → loopback relay → Playwright CDP); research in headless Chromium | `jarvis-studio-backend/chrome-extension/`, `actions/chrome_relay.py`, `actions/browser.py` targets |
+| "Send it to me" — the owner's own WhatsApp chat or mailbox, no recipient | `jarvis-studio-backend/actions/send_me.py` |
 | Connectors (Gmail over IMAP, preset MCP servers) | `jarvis-studio-backend/connectors.py`, `actions/email_box.py`, Settings ▸ Connectors |
 | Commands to the paired phone ("set an alarm on my phone", also from WhatsApp) | `jarvis-studio-backend/phone_link.py`, `phone.result` handler |
 | Raw actions (apps, fs, computer, browser) | `jarvis-studio-backend/actions/` |
@@ -49,7 +51,7 @@ cd jarvis-studio-backend; python -m unittest discover -s . -p "test_*.py" -t .
 cd jarvis-studio-gui; npm run build
 ```
 
-508 backend tests, no network or API keys needed (one, in `test_files.py`, can only pass on Windows). GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
+534 backend tests, no network or API keys needed (one, in `test_files.py`, can only pass on Windows). GUI: `npm test` (vitest), `npm run lint`. CI runs them too (`.github/workflows/ci.yml`
 installs a hand-picked minimum — add to that list if a new test needs a module).
 For anything touching the live voice/WS wiring, run the app (`python start.py`),
 don't stop at compiling.
@@ -84,15 +86,21 @@ does something surprising, record it and keep it.
   PC's voice is quiet, every HUD event goes to a tap that builds the reply, and
   `request_permission` / `request_clarification` also ask in that chat. Every action
   not in `actions._REMOTE_FREE` asks first, open consent windows or not — a new
-  read-only lookup belongs on that list. Never add a
-  tool that messages anyone: replies only go to the chat a command came from.
-- The email connector reads and writes drafts; it has no send, so JARVIS still has no
-  tool that messages anyone. From WhatsApp, reading mail asks first, like reading a file. `phone_command` reaches only the paired phone, which runs
+  read-only lookup belongs on that list. Never add a tool that messages anyone
+  else: replies only go to the chat a command came from, and `send_to_me`
+  (`actions/send_me.py`) takes no recipient — only the owner's own WhatsApp chat or
+  their connected mailbox, from and to itself.
+- The email connector reads and writes drafts; its only send is `send_to_me` to the
+  mailbox's own address, so JARVIS still has no tool that messages anyone else. From WhatsApp, reading mail asks first, like reading a file. `phone_command` reaches only the paired phone, which runs
   it with its own short list of tools (`FROM_PC_TOOLS` in the phone app) and reports
   `ok` from its tool results.
 - Agent mode is opt-in (`agent_mode` in config). The chat agent IS the ordinary
-  pipeline turn: a coordinator change must leave anything it isn't sure about there,
-  and every agent step goes through `run_specs`' consent gate like any other task.
+  pipeline turn (`main._chat_turn`): a coordinator change must leave anything it isn't
+  sure about there, and every agent step goes through `run_specs`' consent gate like
+  any other task. Agents are split by what they reach: desktop / browser (the user's
+  Chrome) / research (headless) are autopilot operators; files / scheduling / content
+  are chat turns with forced tool groups (`agents.TURN_AGENTS`, `live_tools.force`).
+  `@name` or the HUD's agent row picks one; the HUD pick is never saved.
 - The phone app (`AnaaySampat/jarvis`) is a TypeScript port of this backend and now
   leads on some fixes; its `docs/STATUS.md` says what was verified on a device. When
   porting, keep the two in step (its `quota.ts` per-minute windows already are).

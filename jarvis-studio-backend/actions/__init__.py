@@ -176,6 +176,9 @@ def _describe(spec: dict, atype: str) -> str:
         return f"do this on the {where}: {goal}"
     if atype == "phone_command":
         return f"ask your phone to: {spec.get('request') or spec.get('text') or 'do something'}"
+    if atype == "send_to_me":
+        what = spec.get("attach") or "a message"
+        return f"send {what} to you (your own WhatsApp or email)"
     if atype == "email_search":
         q = spec.get("query")
         return "look through your email" + (f" for “{q}”" if q else "")
@@ -1103,6 +1106,9 @@ def _run_one(spec: dict) -> dict:
     elif atype == "phone_command":
         import phone_link
         return phone_link.run(spec)
+    elif atype == "send_to_me":
+        from actions import send_me
+        return send_me.run(spec)
     elif atype in ("email_search", "email_read", "email_draft"):
         from actions import email_box
         if atype == "email_search":

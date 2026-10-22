@@ -729,6 +729,36 @@ def set_agent_mode(on: bool) -> bool:
     return _config["agent_mode"]
 
 
+_active_agent = "auto"
+
+
+def get_active_agent() -> str:
+    """The agent picked on the HUD's agent row (agents.AGENTS), or "auto" for the
+    coordinator. Not saved: a restart is back on Auto, so voice never goes somewhere
+    unexpected after a reboot."""
+    return _active_agent
+
+
+def set_active_agent(agent: str) -> str:
+    global _active_agent
+    _active_agent = str(agent or "auto")
+    return _active_agent
+
+
+def get_task_tier() -> str:
+    """The saved model level for chat turns, shared by the chat picker and Settings:
+    "" = Auto (the Settings model decides per request), else dumb / moderate /
+    very_smart."""
+    return _config.get("task_tier") or ""
+
+
+def set_task_tier(tier: str) -> str:
+    t = str(tier or "").strip().lower()
+    _config["task_tier"] = "" if t in ("", "auto") else model_discovery.normalize_task_tier(t)
+    _save_config(_config)
+    return _config["task_tier"]
+
+
 def get_system_alerts() -> bool:
     return bool(_config.get("system_alerts"))
 
@@ -1996,6 +2026,8 @@ def get_sysinfo() -> dict:
                                               _AUTOPILOT_THINKING_DEFAULT)),
         "autopilot_vision": autopilot_vision_enabled(),
         "agent_mode": get_agent_mode(),
+        "task_tier": get_task_tier(),
+        "active_agent": get_active_agent(),
     }
 
 

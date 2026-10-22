@@ -9,6 +9,7 @@ import Customize from "./components/Customize";
 import AgentActivity from "./components/AgentActivity";
 import CommandPalette from "./components/CommandPalette";
 import { Icon } from "./hud/icons";
+import { AGENT_PICKS, agentPick } from "./hud/agents";
 import { syncBrowserPanel } from "./components/browserPanelWindow";
 import { syncControlOverlay } from "./components/controlOverlayWindow";
 
@@ -308,6 +309,16 @@ export default function App() {
 
   const running = agentTasks.some((t) => t.status === "running");
 
+  // Agent mode from the header switch, the agent row or the palette (agents.py).
+  const toggleAgentMode = useCallback(() => {
+    sendConfig({ agent_mode: !sysInfo.agent_mode });
+    notify(sysInfo.agent_mode ? "Simple mode" : "Agent mode: specialists on each request");
+  }, [sysInfo.agent_mode, sendConfig, notify]);
+  const pickAgent = useCallback((id) => {
+    sendConfig({ agent_mode: true, active_agent: id });
+    notify(id === "auto" ? "Auto: JARVIS picks the agents" : `${agentPick(id).name} agent: your requests go to it`);
+  }, [sendConfig, notify]);
+
   // ── Command palette entries ────────────────────────────────────────────────
   const paletteCommands = useMemo(() => {
     const cmd = (id, group, label, icon, run, extra = {}) => ({ id, group, label, icon, run, ...extra });
@@ -330,8 +341,13 @@ export default function App() {
         { keywords: "theme preset colour color accent font glow corners background picture image layout panels cards drag arrange iron man" }),
       cmd("settings", "Panels", "Settings", "settings", () => openSettings(), { keys: ["Ctrl", ","] }),
       cmd("agent-mode", "Assistant", sysInfo.agent_mode ? "Switch to simple mode" : "Switch to agent mode", "route",
-        () => { sendConfig({ agent_mode: !sysInfo.agent_mode }); notify(sysInfo.agent_mode ? "Simple mode" : "Agent mode: specialists on each request"); },
+        toggleAgentMode,
         { keywords: "agents agent mode simple mode coordinator browser desktop specialist plan", state: sysInfo.agent_mode ? "Agents" : null }),
+      ...AGENT_PICKS.map((a) => cmd(`agent-${a.id}`, "Assistant",
+        a.id === "auto" ? "Agents: let JARVIS pick (Auto)" : `Agents: use the ${a.name} agent`, "route",
+        () => pickAgent(a.id),
+        { keywords: `agent ${a.name} @${a.handle} ${a.hint}`,
+          state: sysInfo.agent_mode && (sysInfo.active_agent || "auto") === a.id ? "On" : null })),
       cmd("connect-gmail", "Connections", "Connect Gmail", "message", () => openSettings("connectors"),
         { keywords: "email mail inbox connector app password" }),
       cmd("connectors", "Connections", "Connect an app (GitHub, Notion, Calendar…)", "plug", () => openSettings("connectors"),
@@ -366,7 +382,7 @@ export default function App() {
   }, [recordings, runAction, newConversation, running, openSettings, triggerListen, stopSpeech, muted, setMute,
       alwaysOn, setAlwaysOnMode, conversationMode, setConversationModeOn, browserState.available, browserState.open,
       setBrowserOpen, setAllPanels, panels.terminal, togglePanel, memory?.routines, runRoutine, notify,
-      sysInfo.agent_mode, sendConfig]);
+      sysInfo.agent_mode, sysInfo.active_agent, toggleAgentMode, pickAgent]);
 
   // Quick controls, shown in the home screen's header.
   const toolbar = (
@@ -456,6 +472,9 @@ export default function App() {
         toolbar={toolbar}
         activeTask={agentTasks.find((t) => t.status === "running")}
         agentMode={!!sysInfo.agent_mode}
+        activeAgent={sysInfo.active_agent || "auto"}
+        onToggleAgents={toggleAgentMode}
+        onPickAgent={pickAgent}
         screen={screen}
         onArrange={(order) => sendScreen({ order })}
         status={status}
@@ -484,6 +503,8 @@ export default function App() {
         onUpload={sendUpload}
         onNotify={notify}
         taskModelTiers={sysInfo.task_model_tiers || []}
+        taskTier={sysInfo.task_tier || "auto"}
+        onTaskTier={(t) => sendConfig({ task_tier: t === "auto" ? "" : t })}
         runAction={runAction}
         onSaveDirs={saveDirs}
         conversations={conversations}

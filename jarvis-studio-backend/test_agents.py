@@ -44,6 +44,61 @@ class RouteTests(unittest.TestCase):
     def test_an_action_without_a_surface_is_for_the_model(self):
         self.assertEqual(self.route("find me a good laptop under 60k and compare two"), "unsure")
 
+    def test_research_and_going_through_files_have_their_own_agents(self):
+        self.assertEqual(self.route("research the best budget phones under 20k"), "research")
+        self.assertEqual(self.route("give me a report on solid state batteries"), "research")
+        self.assertEqual(self.route("summarize all the files in my downloads folder"), "files")
+        self.assertEqual(self.route("summarize my downloads and post it on my blog online"),
+                         "multi")
+
+
+class PickTests(unittest.TestCase):
+    def test_an_at_mention_or_a_spoken_name_picks_the_agent(self):
+        self.assertEqual(agents.mention("@files summarize my downloads"),
+                         ("files", "summarize my downloads"))
+        self.assertEqual(agents.mention("open github @desktop"), ("computer", "open github"))
+        self.assertEqual(agents.mention("tell the browser agent to open github"),
+                         ("browser", "open github"))
+        self.assertEqual(agents.mention("Research agent, best budget phones"),
+                         ("research", "best budget phones"))
+        self.assertEqual(agents.mention("@auto what's the time"), ("auto", "what's the time"))
+
+    def test_addresses_strangers_and_bare_names_pick_nothing(self):
+        for text in ("email it to me at someone@gmail.com", "@nobody do it", "@files",
+                     "call my travel agent", "the agent said no"):
+            self.assertEqual(agents.mention(text), ("", text), text)
+
+    def test_a_picked_agent_gets_the_whole_request(self):
+        long = "summarize " + "x" * 900
+        plan = agents.picked_plan("files", long)
+        self.assertEqual((plan.how, plan.steps[0].agent, plan.steps[0].task),
+                         ("picked", "files", long))
+        self.assertIsNone(agents.picked_plan("robot", "do it"))
+        self.assertIsNone(agents.picked_plan("files", "  "))
+
+
+class HandOffTests(unittest.TestCase):
+    done = [agents.StepResult("files", "summarize my downloads", True, "3 files: a, b, c.")]
+
+    def test_the_rest_goes_to_the_agent_the_coordinator_names(self):
+        nxt = agents.parse_next('{"next":{"agent":"web","task":"post the summary on my blog"}}',
+                                self.done)
+        self.assertEqual((nxt.agent, nxt.task), ("browser", "post the summary on my blog"))
+
+    def test_done_junk_and_repeats_end_it(self):
+        for raw in ('{"next": null}', "all done!", '{"next":{"agent":"robot","task":"x"}}',
+                    '{"next":{"agent":"files","task":"Summarize my downloads"}}'):
+            self.assertIsNone(agents.parse_next(raw, self.done), raw)
+
+    def test_only_a_request_with_more_to_it_is_looked_at_again(self):
+        self.assertTrue(agents.may_continue("summarize my downloads and email it to me", self.done))
+        self.assertFalse(agents.may_continue("summarize my downloads", self.done))
+        self.assertFalse(agents.may_continue("when was it completed and how tall is it", self.done))
+        self.assertTrue(agents.may_continue("find the cheapest flight then write it in notepad",
+                                            self.done))
+        failed = [agents.StepResult("files", "x", False, "no")]
+        self.assertFalse(agents.may_continue("open it and save it", failed))
+
 
 class PlanTests(unittest.TestCase):
     def test_a_good_plan_is_read_and_capped(self):
@@ -235,6 +290,38 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
             await self.main._run_agent_plan("x", self.plan(("browser", "book a seat")))
         self.assertEqual(len(self.runs), 1)
 
+    async def test_a_turn_agent_hands_the_rest_to_the_browser_agent(self):
+        turns = []
+
+        async def turn_step(step, task_tier, context):
+            turns.append((step.agent, step.task))
+            return "Three files: a.pdf (rent), b.docx (CV), c.png (a receipt)."
+        self.consult_answer = '{"next":{"agent":"browser","task":"post the summary on my blog"}}'
+        with mock.patch.object(self.main, "_agent_turn_step", turn_step):
+            await self.main._run_agent_plan(
+                "summarize my downloads and post it on my blog",
+                self.plan(("files", "summarize my downloads")))
+        self.assertEqual(turns, [("files", "summarize my downloads")])
+        self.assertEqual([r[:2] for r in self.runs], [("browser", "post the summary on my blog")])
+        self.assertIn("Files agent did “summarize my downloads” → done: Three files", self.runs[0][2])
+        said = [d for e, d in self.hud if e == "response"]
+        self.assertTrue(any(s.startswith("↪ 🌐 Browser agent takes it from here") for s in said))
+
+    async def test_research_runs_headless_on_the_browsers_consent(self):
+        targets = []
+
+        async def research(goal, kw):
+            from actions import browser
+            targets.append(browser.get_target())
+            return {"ok": True, "summary": "Pixel 8a is the pick.", "findings": ["a (gsmarena)"]}
+        self.outcomes["browser"] = research
+        await self.main._run_agent_plan("x", self.plan(("research", "best budget phone")))
+        self.assertEqual(self.asked, ["browser"])
+        self.assertEqual(targets, ["headless"])
+        self.assertTrue(self.runs[0][1].startswith("Research this and report back: best budget"))
+        from actions import browser
+        self.assertNotEqual(browser.get_target(), "headless")
+
     async def test_agent_mode_off_or_a_plain_question_never_plans(self):
         async def never(*a, **k):
             raise AssertionError("no model call for a plain question")
@@ -252,7 +339,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         async def plan_for(text):
             return agents.Plan([agents.Step("computer", text)])
 
-        async def run_plan(text, plan):
+        async def run_plan(text, plan, **kw):
             ran.append((text, plan.steps[0].agent))
 
         async def stream(text, **kw):
@@ -280,3 +367,60 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    async def test_a_picked_agent_or_a_mention_skips_the_coordinator(self):
+        import main
+        main._interrupt = asyncio.Event()
+        ran = []
+
+        async def run_plan(text, plan, **kw):
+            ran.append((text, plan.steps[0].agent, plan.how))
+
+        async def emit(event, data):
+            pass
+        never = mock.AsyncMock(side_effect=AssertionError("the coordinator was asked"))
+        with mock.patch.object(main, "_agent_plan_for", never), \
+             mock.patch.object(main, "_run_agent_plan", run_plan), \
+             mock.patch.object(main, "emit", emit), \
+             mock.patch.object(main, "_tts", None):
+            with mock.patch.object(main, "get_agent_mode", lambda: False):
+                await main._pipeline_turn("@research solid state batteries", True, "")
+            with mock.patch.object(main, "get_agent_mode", lambda: True), \
+                 mock.patch.object(main, "get_active_agent", lambda: "files"):
+                await main._pipeline_turn("what's in my downloads", True, "")
+        self.assertEqual(ran, [("solid state batteries", "research", "picked"),
+                               ("what's in my downloads", "files", "picked")])
+
+    async def test_a_whatsapp_command_ignores_the_hud_pick(self):
+        import main
+        main._interrupt = asyncio.Event()
+        asked = []
+
+        async def plan_for(text):
+            asked.append(text)
+            return None
+
+        async def chat(text, task_tier, **kw):
+            pass
+
+        async def emit(event, data):
+            pass
+        with mock.patch.object(main, "_agent_plan_for", plan_for), \
+             mock.patch.object(main, "_chat_turn", chat), \
+             mock.patch.object(main, "emit", emit), \
+             mock.patch.object(main, "_wa_chat", object()), \
+             mock.patch.object(main, "get_agent_mode", lambda: True), \
+             mock.patch.object(main, "get_active_agent", lambda: "files"):
+            await main._pipeline_turn("what's the time", True, "")
+        self.assertEqual(asked, ["what's the time"])        # Auto, not the Files agent
+
+
+class ForcedToolsTests(unittest.TestCase):
+    def test_an_agents_groups_stay_loaded_for_its_turn(self):
+        from llm import live_tools
+        live_tools.force(("files",))
+        try:
+            self.assertIn("files", live_tools.begin_turn("hello"))
+        finally:
+            live_tools.force(())
+        self.assertNotIn("files", live_tools.begin_turn("hello again"))
