@@ -989,7 +989,7 @@ def _observe_browser() -> str:
     ok, msg, listing = browser.list_elements()
     if ok and listing:
         return listing
-    st = browser.state()
+    st = browser.target_state()
     head = f"Page: {st.get('title') or '(unknown)'} — {st.get('url') or '(no page open)'}"
     return f"{head}\n({msg if not ok else 'no interactive elements visible'})"
 
@@ -1122,7 +1122,7 @@ def _exec_browser(cmd: dict) -> "tuple[bool, str, dict]":
     # a near-miss re-search hops sites. Tell the model to act on the page instead.
     if do in ("open", "goto", "go_to", "navigate", "visit",
               "search", "find", "look_up", "lookup"):
-        cur = str(browser.state().get("url") or "")
+        cur = str(browser.target_state().get("url") or "")
         nxt = _would_navigate_to(cmd, do, cur)
         if nxt and cur and _norm_url(nxt) == _norm_url(cur):
             # Synthetic no-op: nothing was sent to the page, so it must not be

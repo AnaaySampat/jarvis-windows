@@ -19,3 +19,9 @@ export const AGENT_PICKS = [
 ];
 
 export const agentPick = (id) => AGENT_PICKS.find((a) => a.id === id) || AGENT_PICKS[0];
+
+// Name + colour for an agent in a chat card (agents talking to each other); the chat
+// agent is JARVIS itself, so it isn't in the row.
+export const agentLook = (id) => (id === "chat"
+  ? { name: "Chat", color: "var(--accent)" }
+  : agentPick(id));

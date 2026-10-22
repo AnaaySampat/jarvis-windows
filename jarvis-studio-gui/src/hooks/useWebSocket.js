@@ -197,6 +197,12 @@ export function useWebSocket() {
               : [...prev, { role: "jarvis", text: msg.data.text, actions: msg.data.actions || [], streaming: false, finalized: true, id: sid }]);
             break;
           }
+          case "agent_message":
+            // One agent passing work, a question or an answer to another (agent mode).
+            if (msg.data?.from && msg.data?.to) {
+              setMessages(prev => [...prev, { ...msg.data, role: "agents", id: Date.now() + Math.random() }]);
+            }
+            break;
           case "ocr_result":
             setOcrResult({ ...msg.data, id: Date.now() + Math.random() });
             break;

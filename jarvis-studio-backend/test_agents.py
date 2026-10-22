@@ -238,6 +238,10 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("✓ Desktop agent", said[-1])
         labels = [d.get("agent") for e, d in self.hud if e == "agent_task"]
         self.assertEqual(labels, ["Browser agent · step 1 of 2", "Desktop agent · step 2 of 2"])
+        [msg] = [d for e, d in self.hud if e == "agent_message"]     # the chat sees the hand-over
+        self.assertEqual((msg["from"], msg["to"], msg["kind"]), ("browser", "computer", "handover"))
+        self.assertEqual(msg["items"], ["6E 5321, Fri 06:10, ₹4,210"])
+        self.assertTrue(msg["line"].startswith("🌐 Browser agent → 🖱 Desktop agent: IndiGo"))
 
     async def test_a_failed_step_stops_the_plan(self):
         async def browser(goal, kw):
@@ -274,6 +278,11 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(got["answer"], "₹4,210 on IndiGo.")
         self.assertEqual(self.runs[1][0], "browser")
         self.assertTrue(self.runs[1][1].startswith("Find this out and report it"))
+        talk = [(d["from"], d["to"], d["kind"], d["text"]) for e, d in self.hud
+                if e == "agent_message"]
+        self.assertEqual(talk, [
+            ("computer", "browser", "ask", "What is the price of the cheapest flight?"),
+            ("browser", "computer", "answer", "₹4,210 on IndiGo.")])
 
     async def test_a_choice_only_the_user_can_make_still_goes_to_the_user(self):
         self.consented.add("browser")
@@ -304,8 +313,9 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turns, [("files", "summarize my downloads")])
         self.assertEqual([r[:2] for r in self.runs], [("browser", "post the summary on my blog")])
         self.assertIn("Files agent did “summarize my downloads” → done: Three files", self.runs[0][2])
-        said = [d for e, d in self.hud if e == "response"]
-        self.assertTrue(any(s.startswith("↪ 🌐 Browser agent takes it from here") for s in said))
+        [msg] = [d for e, d in self.hud if e == "agent_message"]
+        self.assertEqual((msg["from"], msg["to"], msg["kind"], msg["task"]),
+                         ("files", "browser", "next", "post the summary on my blog"))
 
     async def test_research_runs_headless_on_the_browsers_consent(self):
         targets = []

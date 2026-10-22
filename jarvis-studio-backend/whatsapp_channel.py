@@ -275,6 +275,8 @@ def compose(events: list) -> "tuple[str, list[tuple[bytes, str]]]":
             take(data.get("actions"))
         elif event == "response" and isinstance(data, str) and data.strip():
             said.append(data.strip())
+        elif event == "agent_message" and isinstance(data, dict) and data.get("line"):
+            said.append(str(data["line"]))
         elif event == "action" and isinstance(data, list):
             take(data)
     lines: "list[str]" = []

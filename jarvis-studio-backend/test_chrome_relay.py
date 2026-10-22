@@ -116,5 +116,27 @@ class OpenTheirChromeTests(unittest.TestCase):
         self.assertIn("--profile-directory=Profile 3", linked[0])
 
 
+class OnlyJarvisOwnBrowserReachesTheHudTests(unittest.TestCase):
+    def test_a_headless_or_personal_page_is_the_autopilots_not_the_huds(self):
+        from unittest import mock
+        from actions import browser
+
+        class Page:
+            url = "https://example.com/"
+            def is_closed(self):
+                return False
+        hud = []
+        with mock.patch.object(browser, "_state_cb", hud.append), \
+                mock.patch.object(browser, "_last_state", {"open": False, "url": ""}):
+            for mode in ("headless", "personal"):
+                w = browser._BrowserWorker.__new__(browser._BrowserWorker)
+                w._mode, w._ctx, w._page, w._last_title, w._state = mode, object(), Page(), "", {}
+                w.push_state()
+                with mock.patch.object(browser, "_active_worker", lambda: w):
+                    self.assertEqual(browser.target_state()["url"], "https://example.com/")
+            self.assertEqual(hud, [])                 # no side panel over nothing
+            self.assertFalse(browser.is_open())       # the consent gate isn't fooled
+
+
 if __name__ == "__main__":
     unittest.main()

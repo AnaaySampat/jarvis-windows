@@ -337,6 +337,19 @@ def handover(earlier: "list[StepResult]") -> str:
     return "\n".join(lines)
 
 
+def message(frm: str, to: str, kind: str, text: str, items=(), task: str = "") -> dict:
+    """An `agent_message` event: one agent talking to another — "handover" (what it
+    passes the next step), "next" (the coordinator gave it the rest), "ask" / "answer"
+    (a question mid-task). The chat shows it as a card and WhatsApp as its `line`, so
+    the user sees what the agents give each other, not just their results."""
+    text = " ".join(str(text or "").split())[:300]
+    return {"from": frm, "to": to, "kind": kind, "text": text,
+            "items": [" ".join(str(f).split())[:200] for f in items][:5],
+            "task": " ".join(str(task or "").split())[:200],
+            "line": f"{ICONS[frm]} {NAMES[frm]} → {ICONS[to]} {NAMES[to]}: "
+                    f"{'❓ ' if kind == 'ask' else ''}{text}"}
+
+
 NEXT_SYSTEM = (
     "JARVIS's agents are working through a user's request. Given the request and what "
     "they have done so far, is any part of it still not done? Agents:\n" + _AGENT_LIST +

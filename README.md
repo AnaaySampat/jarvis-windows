@@ -246,7 +246,10 @@ In agent mode each typed or spoken request goes to a specialist:
 
 A request that needs both gets a short plan, shown in the chat and run in order. Each
 agent works from what the earlier ones found, and when one needs something mid-task
-("what's the price to write down?") it asks the other agent before it asks you. A step
+("what's the price to write down?") it asks the other agent before it asks you. The chat
+shows that talk as it happens: a card for each hand-over (what one agent passed on, with
+its sources, and the next one's task) and for every question one agent puts to another
+and the answer it got. A step
 that fails or that you don't approve stops the plan, and the reply says where. Every
 step asks for browser or computer control exactly like a normal task. The live voice
 session (Gemini Live) stays in simple mode.

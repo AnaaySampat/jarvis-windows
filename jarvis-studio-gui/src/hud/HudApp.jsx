@@ -216,7 +216,7 @@ export function JarvisHUD({
   const taskLine = activeTask
     ? `${SOURCE_LABEL[activeTask.source] ? `${SOURCE_LABEL[activeTask.source]}: ` : ""}${activeTask.goal}`
     : "";
-  const lastReplyAt = messages.map((m) => m.role !== "user").lastIndexOf(true);
+  const lastReplyAt = messages.map((m) => m.role === "jarvis").lastIndexOf(true);
   const lastReply = lastReplyAt >= 0 ? messages[lastReplyAt] : null;
   const lastAsk = [...messages.slice(0, lastReplyAt >= 0 ? lastReplyAt : messages.length)].reverse()
     .find((m) => m.role === "user");

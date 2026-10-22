@@ -2978,7 +2978,7 @@ async def _run_whatsapp_turn(text: str, chat, heard: bool = False,
     progress: "list[whatsapp_channel.Progress]" = []
 
     def tap(event: str, data) -> None:
-        if event in ("response_end", "response", "action"):
+        if event in ("response_end", "response", "action", "agent_message"):
             events.append((event, data))
         elif not isinstance(data, dict) or _wa is None:
             return
@@ -3151,7 +3151,11 @@ def _agent_consult(asking: str):
         target = agents.consult_target(raw, asking)
         if target is None:
             return ""
-        return await _consult_agent(target, question, asking)
+        await emit("agent_message", agents.message(asking, target, "ask", question))
+        answer = await _consult_agent(target, question, asking)
+        await emit("agent_message", agents.message(
+            target, asking, "answer", answer or "I couldn't find that out — asking you."))
+        return answer
     return consult
 
 
@@ -3224,10 +3228,16 @@ async def _run_agent_plan(text: str, plan: "agents.Plan", task_tier: str = "") -
         await emit("response", agents.plan_text(plan))
     results: "list[agents.StepResult]" = []
     spoke = False                   # the last step was a turn, which spoke for itself
+    planned = len(plan.steps)
     i = 0
     while i < len(plan.steps) and not _interrupted():
         step = plan.steps[i]
         context = agents.handover(results)
+        if results:                 # a failed step ended the plan, so this one is ok
+            r = results[-1]
+            await emit("agent_message", agents.message(
+                r.agent, step.agent, "next" if i >= planned else "handover",
+                r.summary, r.findings, step.task))
         if step.agent not in agents.OPERATORS:
             answer = await _agent_turn_step(step, task_tier, context)
             results.append(agents.StepResult(step.agent, step.task, bool(answer),
@@ -3259,9 +3269,7 @@ async def _run_agent_plan(text: str, plan: "agents.Plan", task_tier: str = "") -
                 and agents.may_continue(text, results) and not _interrupted():
             nxt = await _agent_next(text, results)
             if nxt is not None:
-                plan.steps.append(nxt)
-                await emit("response", f"↪ {agents.ICONS[nxt.agent]} {agents.NAMES[nxt.agent]} "
-                                       f"takes it from here: {nxt.task}")
+                plan.steps.append(nxt)      # announced by its "next" agent_message
     bubble, say = agents.outcome(plan, results)
     if len(plan.steps) > 1:
         await emit("response", bubble)

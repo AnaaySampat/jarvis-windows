@@ -520,6 +520,7 @@ class _BrowserWorker:
         self._ctx = None
         self._page = None
         self._last_title = ""        # cached so push_state needn't block on title()
+        self._state: dict = {}       # this browser's last snapshot (see target_state)
         # Watchdog state: when/with what budget the CURRENTLY RUNNING job started
         # (set/cleared on the worker thread; read by submit() on caller threads).
         self._job_started: "Optional[float]" = None
@@ -806,8 +807,14 @@ class _BrowserWorker:
                     url = self._page.url or ""
             except Exception:  # noqa: BLE001
                 pass
-        _emit_state({"available": True, "open": open_, "url": url, "title": title,
-                     "approved": is_approved()})
+        self._state = {"available": True, "open": open_, "url": url, "title": title,
+                       "approved": is_approved()}
+        # The HUD's browser state (companion panel, "JARVIS's browser" banner, the
+        # consent gate's is_open) is JARVIS's own window. The headless one has no
+        # window and the user's Chrome isn't ours: reporting them as "open" popped
+        # the side panel over nothing and left it up after the task (2026-10-22).
+        if self._mode == "own":
+            _emit_state(self._state)
 
 
 def _get_worker() -> "Optional[_BrowserWorker]":
@@ -835,6 +842,13 @@ def _active_worker() -> "Optional[_BrowserWorker]":
     """The already-created worker for the active target (no creation) — for abort()."""
     return {"personal": _worker_personal, "headless": _worker_headless}.get(_active_target,
                                                                             _worker)
+
+
+def target_state() -> dict:
+    """url/title of the page the ACTIVE target is on — what the autopilot acts on.
+    state() is JARVIS's own browser only (the HUD's view)."""
+    w = _active_worker()
+    return dict(w._state) if w is not None and w._mode != "own" else state()
 
 
 def set_target(name: str) -> None:
@@ -1996,34 +2010,23 @@ def dock_browser_window(panel_width: "Optional[int]" = None) -> None:
         work_r, work_b = rect.right, rect.bottom
     except Exception:  # noqa: BLE001
         return
-    title_hint = (_last_state.get("title") or "").strip()
     try:
         import pygetwindow as gw
     except Exception:  # noqa: BLE001
         return
+    # Only a window of JARVIS's own Chromium (its profile's processes). Matching by
+    # title ("chrome" in it) moved and resized the user's own Chrome — with the
+    # headless research browser there's no JARVIS window at all to find.
+    pids = set(_profile_chromium_pids())
     best = None
-    best_score = 0
-    for win in gw.getAllWindows():
-        wt = (win.title or "").strip()
-        if not wt or len(wt) < 2:
-            continue
-        norm = wt.replace(".", "").replace(" ", "").lower()
-        if "jarvis" in norm and "chrome" not in norm and "chromium" not in norm:
-            continue
-        score = 0
-        if title_hint and title_hint.lower() in wt.lower():
-            score += 5
-        low = wt.lower()
-        if "chromium" in low:
-            score += 3
-        elif "chrome" in low:
-            score += 2
-        if win.width >= 400 and win.height >= 300:
-            score += 1
-        if score > best_score:
-            best_score = score
+    for win in gw.getAllWindows() if pids else ():
+        hwnd = int(getattr(win, "_hWnd", 0) or 0)
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if (pid.value in pids and (win.title or "").strip() and user32.IsWindowVisible(hwnd)
+                and (best is None or win.width * win.height > best.width * best.height)):
             best = win
-    if best is None or best_score < 2:
+    if best is None:
         return
     try:
         # Reserve the panel's PHYSICAL width. The GUI sizes it in logical px (Tauri

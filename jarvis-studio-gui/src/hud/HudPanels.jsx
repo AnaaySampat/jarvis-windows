@@ -5,7 +5,7 @@ import { useState, useEffect, useRef, useCallback, memo } from "react";
 import ResponseRenderer from "../components/ResponseRenderer";
 import { Icon } from "./icons";
 import { ChipList, AddField } from "../components/controls";
-import { AGENT_PICKS, agentPick } from "./agents";
+import { AGENT_PICKS, agentPick, agentLook } from "./agents";
 
 export function AgentRow({ active = "auto", onPick }) {
   const rowRef = useRef(null);
@@ -607,7 +607,33 @@ export function MemoryOverlay({ open, onClose, memory, onRemember, onForget, onO
 // identity changes (useWebSocket replaces just that entry), so finalized bubbles
 // skip both re-render and ResponseRenderer's re-parse. runAction and onCopy are
 // stable callbacks, so they don't break the memo.
+const AGENT_SAYS = { handover: "passes on what it found", next: "hands the rest over",
+                     ask: "asks", answer: "answers" };
+
+// Agent mode: one agent talking to another (backend agents.message) — what it passed
+// on, or a question mid-task and its answer — in both agents' colours.
+function AgentMessage({ m }) {
+  const from = agentLook(m.from), to = agentLook(m.to);
+  return (
+    <div className={`cmsg cmsg--agents agentmsg--${m.kind}`}
+         style={{ "--from": from.color, "--to": to.color }}>
+      <span className="cmsg-role agentmsg-hd">
+        <span className="agentmsg-who" style={{ "--agent": from.color }}><span className="agent-dot" />{from.name} agent</span>
+        <Icon name="arrowRight" size={12} />
+        <span className="agentmsg-who" style={{ "--agent": to.color }}><span className="agent-dot" />{to.name} agent</span>
+        <span className="agentmsg-says">{AGENT_SAYS[m.kind] || ""}</span>
+      </span>
+      <div className="cmsg-bubble agentmsg-bubble">
+        {m.text}
+        {m.items?.length > 0 && <ul className="agentmsg-items">{m.items.map((f, i) => <li key={i}>{f}</li>)}</ul>}
+        {m.task && <div className="agentmsg-task"><b>{to.name} agent’s task:</b> {m.task}</div>}
+      </div>
+    </div>
+  );
+}
+
 const ChatMessage = memo(function ChatMessage({ m, runAction, onCopy }) {
+  if (m.role === "agents") return <AgentMessage m={m} />;
   const mine = m.role === "user";
   return (
     <div className={`cmsg cmsg--${mine ? "user" : "jarvis"}`}>
