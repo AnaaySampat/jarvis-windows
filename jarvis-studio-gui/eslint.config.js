@@ -4,7 +4,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
 
 export default [
-  { ignores: ["dist", "src-tauri/target", "src-tauri/gen", "src-tauri/resources", "node_modules"] },
+  { ignores: ["dist", "src-tauri/target", "src-tauri/gen", "src-tauri/resources", "node_modules", "public/gesture-assets/**"] },
   {
     files: ["**/*.{js,jsx}"],
     ...js.configs.recommended,

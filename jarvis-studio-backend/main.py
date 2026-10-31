@@ -1066,6 +1066,11 @@ def _remote_control_error(data: dict) -> str:
     return ""
 
 
+async def handle_gesture_action(data) -> None:
+    import gesture_actions
+    await gesture_actions.submit(data, sys.modules[__name__])
+
+
 async def handle_remote_input(data) -> None:
     """One direct input event from the phone's live-view canvas, serialized and
     lease-checked, then routed to the guarded computer.* primitives."""
@@ -4842,6 +4847,7 @@ async def main(use_text: bool) -> None:
     register_handler("agent_correction", handle_agent_correction)
     register_handler("set_mute", handle_set_mute)
     register_handler("run_action", handle_run_action)
+    register_handler("gesture_action", handle_gesture_action)
     register_handler("app_version", handle_app_version)
     register_handler("routine_save", handle_routine_save)
     # WhatsApp: local HUD only — never on the remote (phone) allowlist below.
@@ -4920,7 +4926,7 @@ async def main(use_text: bool) -> None:
             "phone.result",
             # Live remote-desktop: WebRTC screen signalling + direct input.
             "webrtc_offer", "webrtc_ice", "stop_screen",
-            "arm_control", "disarm_control", "remote_input",
+            "arm_control", "disarm_control", "remote_input", "gesture_action",
         })
         register_handler("device.pairing_create", handle_device_pairing_create)
         register_handler("device.list", handle_device_list)

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { GestureRequests } from "../gestures/request";
 
 const RECONNECT_MS = 3000;
 
@@ -84,6 +85,8 @@ export function useWebSocket() {
   const [waState, setWaState] = useState(null);            // WhatsApp channel {status, qr, number, error, enabled, allow}            // {config:{host,model}|null, result:{ok,summary}|null}
 
   const wsRef      = useRef(null);
+  const gestureRequestsRef = useRef(null);
+  if (gestureRequestsRef.current === null) gestureRequestsRef.current = new GestureRequests();
   const wsUrlRef   = useRef(null);
   const retryTimer = useRef(null);
 
@@ -115,6 +118,9 @@ export function useWebSocket() {
         try { msg = JSON.parse(ev.data); } catch { return; }
 
         switch (msg.event) {
+            case "gesture_result":
+              gestureRequestsRef.current.receive(msg.data);
+              break;
           case "status":
             setStatus(msg.data);
             break;
@@ -358,6 +364,7 @@ export function useWebSocket() {
       ws.onclose = () => {
         // Guard against stale sockets (React StrictMode mounts effects twice)
         if (wsRef.current !== ws) return;
+        gestureRequestsRef.current.close();
         setIsConnected(false);
         retryTimer.current = setTimeout(connect, RECONNECT_MS);
       };
@@ -378,6 +385,7 @@ export function useWebSocket() {
       cancelled = true;
       clearTimeout(retryTimer.current);
       const sock = wsRef.current;
+      gestureRequestsRef.current.close();
       wsRef.current = null;
       sock?.close();
     };
@@ -468,7 +476,7 @@ export function useWebSocket() {
   // Push-to-talk start (Ctrl+Space pressed): records until release (finishListen),
   // ignoring silence so a pause mid-sentence doesn't cut you off.
   const pttStart = useCallback(() => {
-    wsSend({ type: "trigger_listen", data: { ptt: true } });
+    return wsSend({ type: "trigger_listen", data: { ptt: true } });
   }, [wsSend]);
 
   const stopSpeech = useCallback(() => {
@@ -563,6 +571,10 @@ export function useWebSocket() {
   const runAction = useCallback((spec) => {
     wsSend({ type: "run_action", data: { spec } });
   }, [wsSend]);
+
+  const gestureAction = useCallback((action, data = {}) =>
+    gestureRequestsRef.current.request((payload) => wsSend({type:"gesture_action",data:payload}), action, data),
+  [wsSend]);
 
   // Open or close JARVIS's own web browser from the HUD toggle.
   const setBrowserOpen = useCallback((open) => {
@@ -671,6 +683,6 @@ export function useWebSocket() {
     memory, listMemory, rememberFact, forgetMemory, saveRoutine, runRoutine, routineResult,
     sendOcr, sendLocation, sendManualLocation, respondPermission, respondClarify, setMute, runAction,
     setBrowserOpen, sendUpload, sendScreen, setAlwaysOnMode, setConversationModeOn,
-    setOverlay, wsSend,
+    setOverlay, wsSend, gestureAction,
   };
 }

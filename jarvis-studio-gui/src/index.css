@@ -1240,7 +1240,7 @@ kbd {
 .settings-check input.sw:checked::after { transform: translateX(15px); background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 
 @media (max-width: 720px) {
-  .settings-panel.sx { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: 92vh; }
+  .settings-panel.sx { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); height: 92vh; }
   .sx-nav { border-right: none; border-bottom: 1px solid var(--border-soft); padding: 12px; gap: 8px; }
   .sx-links { flex-direction: row; overflow-x: auto; }
   .sx-link { width: auto; white-space: nowrap; }

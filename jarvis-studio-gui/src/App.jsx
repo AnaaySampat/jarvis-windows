@@ -12,6 +12,10 @@ import { Icon } from "./hud/icons";
 import { AGENT_PICKS, agentPick } from "./hud/agents";
 import { syncBrowserPanel } from "./components/browserPanelWindow";
 import { syncControlOverlay } from "./components/controlOverlayWindow";
+import { useGestureModes } from "./gestures/useGestureModes";
+import { WebcamCamera } from "./gestures/webcam";
+import { windowsGestureHost } from "./gestures/windowsHost";
+import GestureWorkspace from "./gestures/GestureWorkspace";
 
 // Section name (as JARVIS says it) → panels-state key. Module-scope constant —
 // it never changes, so there's no reason to rebuild it on every render.
@@ -79,8 +83,25 @@ export default function App() {
     sendLocation, sendManualLocation, triggerListen, stopSpeech,
     stopControl, finishListen, pttStart,
     respondPermission, respondClarify, setMute, runAction, setBrowserOpen, sendUpload,
-    sendScreen, setAlwaysOnMode, setConversationModeOn, wsSend,
+    sendScreen, setAlwaysOnMode, setConversationModeOn, wsSend, gestureAction,
   } = useWebSocket();
+
+  const gestureCamera=useMemo(()=>new WebcamCamera(),[]);
+  const gestureHost=useMemo(()=>windowsGestureHost({
+    listen:triggerListen,pttStart,finishListen,stopSpeech,request:gestureAction,
+    order:screen?.order||{left:["system","power","agenda"],right:["weather","network","terminal"]},
+    sendScreen,routines:Array.isArray(memory?.routines)?memory.routines:[],runRoutine,
+    ready:status==="idle" && !agentTasks.some((task)=>task.status==="running"),
+    armControl:()=>runAction({type:"computer",do:"arm"}),
+  }),[triggerListen,pttStart,finishListen,stopSpeech,gestureAction,screen,sendScreen,memory,runRoutine,status,agentTasks,runAction]);
+  const gestures=useGestureModes({
+    camera:gestureCamera,enabled:true,host:gestureHost,
+    blocked:Boolean(permissionRequest||clarifyRequest),
+    canListen:status==="idle" && !agentTasks.some((task)=>task.status==="running"),
+    latestReply:[...messages].reverse().find((message)=>message.role==="jarvis")?.text||"",
+  });
+  useEffect(()=>()=>{void gestureCamera.stop();},[gestureCamera]);
+  useEffect(()=>{if(gestures.config.mode==="routines")listMemory();},[gestures.config.mode,listMemory]);
 
   // App owns the overlay state so JARVIS can drive them via ui_action too.
   const [chatOpen, setChatOpen] = useState(false);
@@ -467,6 +488,7 @@ export default function App() {
 
   return (
     <>
+      <GestureWorkspace controls={gestures} />
       <JarvisHUD
         config={hudConfig}
         toolbar={toolbar}
@@ -562,6 +584,8 @@ export default function App() {
 
       {showSettings && (
         <Settings
+          gestureControls={gestures}
+          gestureRoutines={Array.isArray(memory?.routines)?memory.routines:[]}
           sysInfo={sysInfo}
           initialSection={settingsPage}
           onClose={() => setShowSettings(false)}

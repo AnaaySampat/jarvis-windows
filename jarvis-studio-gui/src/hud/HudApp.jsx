@@ -203,7 +203,8 @@ export function JarvisHUD({
   const column = (side) => {
     const cards = (order[side] || []).filter(shown).filter((k) => CARDS[k]);
     const line = <div key="drop" className="card-drop" aria-hidden="true" />;
-    const out = cards.flatMap((k) => (drop?.side === side && drop.before === k ? [line, CARDS[k]] : [CARDS[k]]));
+    const wrap=(k)=><div key={k} data-gesture-card={k} style={{display:"contents"}}>{CARDS[k]}</div>;
+    const out = cards.flatMap((k) => (drop?.side === side && drop.before === k ? [line, wrap(k)] : [wrap(k)]));
     return drop?.side === side && !cards.includes(drop.before) ? [...out, line] : out;
   };
 
@@ -247,7 +248,7 @@ export function JarvisHUD({
         </div>
         <nav className="home-nav" aria-label="Menus">
           {NAV.map((n) => (
-            <button key={n.id} className={`home-nav-btn${openNav[n.id][0] ? " is-on" : ""}`}
+            <button key={n.id} data-gesture-safe="true" className={`home-nav-btn${openNav[n.id][0] ? " is-on" : ""}`}
                     onClick={openNav[n.id][1]} title={n.label}>
               <Icon name={n.icon} size={16} /><span>{n.label}</span>
             </button>

@@ -4,6 +4,9 @@
   "version": "0.3.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/prepare-gestures.mjs",
+    "prebuild": "node scripts/prepare-gestures.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.gestures.json",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
@@ -17,6 +20,7 @@
     "@fontsource/inter": "^5.2.8",
     "@fontsource/orbitron": "^5.2.8",
     "@fontsource/share-tech-mono": "^5.2.7",
+    "@mediapipe/tasks-vision": "1.2.0",
     "@tauri-apps/api": "^2.0.0",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
@@ -31,6 +35,8 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.12.0",
+    "react-test-renderer": "18.3.1",
+    "typescript": "5.9.3",
     "vite": "^6.0.0",
     "vitest": "^4.1.11"
   }

@@ -52,6 +52,15 @@ landed, and corrects itself when it didn't.
 | 🛠️ **PC actions** | Volume, power, screenshots, screen/voice/video recording, QR codes, AI images, PDF read/write, speed test, camera OCR with translation. |
 | 🎨 **Make it yours** | Restyle the HUD by voice: colours, background, density and panel layout. Voices: Piper (offline), ElevenLabs or Google Chirp 3 HD. |
 
+## Hand gestures (preview)
+
+Open **Settings → Voice → Hand gestures**, choose a webcam and a mode, then start.
+The local camera worker supports media/TV, presentations, push-to-talk, instructions,
+timers, reading/bookmarks, routines, microphone mute, countdown photos, HUD pinch/drag
+and personal poses. Timing and mappings are adjustable; fist always stops the camera.
+Sessions stop after five minutes or when JARVIS is hidden. See
+[gesture controls](docs/GESTURE-CONTROLS.md) for setup and physical-testing limits.
+
 ## Download
 
 Grab the installer from the **[latest release](https://github.com/AnaaySampat/jarvis-windows/releases/latest)**.
