@@ -1,5 +1,6 @@
 import type { GestureConfig, Frame } from "./engine";
 
+const FRAME_INTERVAL_MS = 1000 / 15;
 type CameraState = {
   running: boolean;
   starting: boolean;
@@ -14,7 +15,10 @@ export class WebcamCamera {
   private worker: Worker | null = null;
   private stream: MediaStream | null = null;
   private video: HTMLVideoElement | null = null;
-  private interval: ReturnType<typeof setInterval> | undefined;
+  private frameTimer: ReturnType<typeof setTimeout> | undefined;
+  private frameTimeout: ReturnType<typeof setTimeout> | undefined;
+  private frameCallback: number | undefined;
+  private nextCaptureAt = 0;
   private expiry: ReturnType<typeof setTimeout> | undefined;
   private photoTimer: ReturnType<typeof setTimeout> | undefined;
   private photoReject: ((e: Error) => void) | null = null;
@@ -69,7 +73,11 @@ export class WebcamCamera {
       summary: "Loading the local gesture model...",
       frame: null,
     };
+    document.addEventListener("visibilitychange", this.stopHidden);
+    window.addEventListener("pagehide", this.stopPage);
     try {
+      if (document.hidden)
+        throw new Error("Keep JARVIS visible to start the webcam.");
       if (!navigator.mediaDevices?.getUserMedia)
         throw new Error("This WebView does not expose camera access.");
       const worker = new Worker(
@@ -119,6 +127,7 @@ export class WebcamCamera {
           ...(config.cameraId ? { deviceId: { exact: config.cameraId } } : {}),
           width: { ideal: 640 },
           height: { ideal: 480 },
+          frameRate: { ideal: 15, max: 30 },
         },
         audio: false,
       });
@@ -136,8 +145,8 @@ export class WebcamCamera {
       if (epoch !== this.epoch) throw new Error("Webcam startup cancelled.");
       worker.onmessage = ({ data }) => {
         if (epoch !== this.epoch) return;
-        this.inFlight = false;
-        if (data.type === "frame")
+        if (data.type === "frame") {
+          this.inFlight = false;
           this.state = {
             running: true,
             starting: false,
@@ -147,7 +156,9 @@ export class WebcamCamera {
               : "Webcam on. Lower your hand, then hold a gesture.",
             frame: data.frame,
           };
-        else if (data.type === "error") void this.stop(String(data.message));
+          this.watchFrames(epoch);
+          this.scheduleFrame(epoch);
+        } else if (data.type === "error") void this.stop(String(data.message));
       };
       worker.onerror = () => {
         if (epoch === this.epoch)
@@ -157,7 +168,9 @@ export class WebcamCamera {
       };
       this.inFlight = false;
       this.lastVideoTime = -1;
-      this.interval = setInterval(() => void this.capture(epoch), 125);
+      this.nextCaptureAt = 0;
+      this.watchFrames(epoch);
+      this.scheduleFrame(epoch);
       this.expiry = setTimeout(
         () => void this.stop("Five-minute webcam session ended."),
         300000,
@@ -170,8 +183,6 @@ export class WebcamCamera {
             );
         };
       });
-      document.addEventListener("visibilitychange", this.stopHidden);
-      window.addEventListener("pagehide", this.stopPage);
       await this.refreshDevices();
       return { ok: true, summary: "Webcam started. Recognition runs locally." };
     } catch (error) {
@@ -180,21 +191,67 @@ export class WebcamCamera {
       return { ok: false, summary: message };
     }
   }
+  private watchFrames(epoch: number) {
+    clearTimeout(this.frameTimeout);
+    this.frameTimeout = setTimeout(() => {
+      if (epoch === this.epoch)
+        void this.stop(
+          "No gesture frames arrived. Restart the webcam to try again.",
+        );
+    }, 10000);
+  }
+  private scheduleFrame(epoch: number) {
+    if (epoch !== this.epoch || !this.video || this.inFlight) return;
+    const video = this.video;
+    if (typeof video.requestVideoFrameCallback === "function") {
+      // Register before the next decoded frame. Waiting for the rate-limit
+      // timer first can miss that frame and halve throughput on a 15 fps feed.
+      this.frameCallback = video.requestVideoFrameCallback(() => {
+        if (epoch !== this.epoch) return;
+        this.frameCallback = undefined;
+        if (performance.now() + 2 < this.nextCaptureAt)
+          this.scheduleFrame(epoch);
+        else void this.capture(epoch);
+      });
+      return;
+    }
+    this.frameTimer = setTimeout(
+      () => {
+        if (epoch !== this.epoch) return;
+        void this.capture(epoch);
+      },
+      Math.max(0, this.nextCaptureAt - performance.now()),
+    );
+  }
   private async capture(epoch: number) {
     const video = this.video;
-    if (
-      !video ||
-      !this.worker ||
-      this.inFlight ||
-      video.readyState < 2 ||
-      video.currentTime === this.lastVideoTime
-    )
+    if (epoch !== this.epoch || !video || !this.worker || this.inFlight) return;
+    this.nextCaptureAt = performance.now() + FRAME_INTERVAL_MS;
+    if (video.readyState < 2 || video.currentTime === this.lastVideoTime) {
+      this.scheduleFrame(epoch);
       return;
+    }
     this.lastVideoTime = video.currentTime;
     this.inFlight = true;
     const observedAt = Date.now(); // Transport timestamps are epoch ms, not performance.now().
+    let image: ImageBitmap | null = null;
     try {
-      const image = await createImageBitmap(video);
+      // Some cameras ignore ideal dimensions. Bound transfer/inference cost
+      // while keeping the original stream available for explicit photos.
+      const scale = Math.min(
+        1,
+        640 / Math.max(video.videoWidth, video.videoHeight),
+      );
+      image = await createImageBitmap(
+        video,
+        scale < 1
+          ? {
+              resizeWidth: Math.max(1, Math.round(video.videoWidth * scale)),
+              resizeHeight: Math.max(1, Math.round(video.videoHeight * scale)),
+              resizeQuality: "low",
+            }
+          : {},
+      );
       if (epoch !== this.epoch || !this.worker) {
         image.close();
         return;
@@ -203,7 +260,9 @@ export class WebcamCamera {
         { type: "frame", image, observedAt, seq: ++this.sequence },
         [image],
       );
+      image = null; // Ownership passed to the worker.
     } catch {
+      image?.close();
       if (epoch === this.epoch)
         await this.stop("Could not read webcam frames.");
     }
@@ -212,7 +271,11 @@ export class WebcamCamera {
     this.epoch++;
     this.startReject?.(new Error("Webcam startup cancelled."));
     this.startReject = null;
-    clearInterval(this.interval);
+    clearTimeout(this.frameTimer);
+    clearTimeout(this.frameTimeout);
+    if (this.frameCallback !== undefined)
+      this.video?.cancelVideoFrameCallback(this.frameCallback);
+    this.frameCallback = undefined;
     clearTimeout(this.expiry);
     clearTimeout(this.photoTimer);
     this.photoReject?.(
