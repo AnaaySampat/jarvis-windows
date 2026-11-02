@@ -49,6 +49,17 @@ class LinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(res["ok"])
         self.assertIn("did NOT do it", res["feed_to_model"]["content"])
 
+    async def test_command_and_reply_contents_do_not_enter_console_logs(self):
+        with mock.patch("builtins.print") as output:
+            task = asyncio.create_task(phone_link.command("private alarm label"))
+            await asyncio.sleep(0)
+            await self.answer("phone-1", ok=True, reply="private reminder contents")
+            self.assertTrue((await task)["ok"])
+        logged = str(output.call_args_list)
+        self.assertNotIn("private alarm label", logged)
+        self.assertNotIn("private reminder contents", logged)
+        self.assertIn("succeeded", logged)
+
     async def test_no_phone_online_says_so_and_sends_nothing(self):
         self.live.clear()
         res = await phone_link.command("set a timer for 5 minutes")

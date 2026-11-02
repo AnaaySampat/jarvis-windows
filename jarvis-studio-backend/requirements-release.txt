@@ -9,6 +9,7 @@
 websockets>=12.0
 httpx>=0.27.0
 cryptography>=42.0     # remote-control crypto identity (Tailscale phone pairing)
+rfc8785>=0.1.4,<1     # canonical signed payloads shared with the phone
 numpy>=1.24
 pillow>=10.0.0
 google-auth>=2.0

@@ -196,6 +196,15 @@ OpenClaw. That isn't covered by WhatsApp's terms, and WhatsApp can restrict acco
 that use one: a second number for JARVIS is the cautious choice. **Unlink** in the same
 settings logs it out and deletes the session from this PC.
 
+## Phone-task passkey
+
+Phone tasks also require the **phone-task passkey** you set or change in
+**Settings → Devices → Phone** on the laptop. Choose 8–128 characters. Enter it on
+the phone for each new PC task; tasks started on the laptop do not require it.
+The laptop stores a salted verifier protected by Windows. The phone does not save
+or reuse the passkey. Existing phone-side approvals still apply. This passkey is
+separate from the one-time QR pairing PIN.
+
 ## One memory with the phone
 
 What you ask JARVIS to remember, and your routines, are shared with the paired phone

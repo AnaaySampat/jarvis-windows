@@ -5,6 +5,9 @@ one shared desktop)."""
 
 import asyncio
 import unittest
+import tempfile
+import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import main
@@ -12,6 +15,14 @@ import main
 
 class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # These existing task/approval tests start past passkey verification;
+        # the real verifier and missing/wrong-key boundaries are tested below.
+        authorization = patch.object(main, "_task_passkey", SimpleNamespace(
+            verify=lambda *_: main.Verification(True, revision="test-authorized"),
+            is_current=lambda _: True,
+        ))
+        authorization.start()
+        self.addCleanup(authorization.stop)
         main._remote_task_busy = False
         main._remote_task_id = ""
         main._remote_task_owner = ""
@@ -20,7 +31,7 @@ class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
         main._remote_finished.clear()
 
     async def _submit(self, *, busy=False, submit=None, result=None, calls=None, subscribe=None,
-                      run_task=None):
+                      run_task=None, answer_approval=None, approval_callback=None):
         ran = {"v": False}
         events = []  # (task_id, event, data) captured from emit_task_event
         calls = calls if calls is not None else []  # consent/run call order
@@ -32,6 +43,10 @@ class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_emit(task_id, event, data, **kw):
             events.append((task_id, event, data))
+            if data.get("kind") == "approval.challenge" and approval_callback is not None:
+                await approval_callback(data["payload"])
+            if data.get("kind") == "approval.challenge" and answer_approval is not None:
+                await main.handle_approval_response({**data["payload"], "approved": answer_approval})
             return kw["seq"] if "seq" in kw else len(events)
 
         class FakeReg:
@@ -84,6 +99,202 @@ class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
         # Approval is on the phone; the desktop trusts an authenticated task.
         ran, _ = await self._submit()
         self.assertTrue(ran, "task did not run")
+
+    async def test_each_new_phone_task_requires_the_laptop_passkey(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = main.TaskPasskeyStore(directory)
+            responses = []
+            async def send(event, data):
+                responses.append((event, data))
+            with patch.object(main, "_task_passkey", store), patch.object(main, "send_to_current", send):
+                ran, _ = await self._submit()
+                self.assertFalse(ran)
+                self.assertEqual(responses[-1][1]["error_code"], "passkey_not_configured")
+                store.set("test-only-task-passkey")
+                for supplied in (None, "incorrect-test-key", "test-only-task-passkey", None):
+                    ran, _ = await self._submit(submit={
+                        "goal": "open notepad", "kind": "computer", "passkey": supplied,
+                    })
+                    self.assertEqual(ran, supplied == "test-only-task-passkey")
+                self.assertNotIn("test-only-task-passkey", str(responses))
+
+    async def test_only_the_laptop_can_set_or_view_passkey_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = main.TaskPasskeyStore(directory)
+            responses = []
+            async def send(event, data):
+                responses.append((event, data))
+            with patch.object(main, "_task_passkey", store), patch.object(main, "send_to_current", send):
+                with patch.object(main, "is_current_sender_remote", return_value=True):
+                    await main.handle_task_passkey_set({"passkey": "test-only-task-passkey"})
+                    await main.handle_task_passkey_state({})
+                self.assertFalse(store.state()["configured"])
+                self.assertEqual(responses, [])
+                with patch.object(main, "is_current_sender_remote", return_value=False):
+                    await main.handle_task_passkey_set({"passkey": "test-only-task-passkey"})
+                    await main.handle_task_passkey_state({})
+                self.assertTrue(store.state()["configured"])
+                self.assertNotIn("test-only-task-passkey", str(responses))
+                self.assertNotIn("digest", str(responses))
+
+    async def test_local_task_route_is_exempt_from_remote_passkey_verification(self):
+        with patch.object(main, "is_current_sender_remote", return_value=False), \
+             patch.object(main._task_passkey, "verify") as verify:
+            await main.handle_task_submit({"goal": "open notepad"})
+        verify.assert_not_called()
+
+    async def test_stop_during_passkey_verification_prevents_later_execution(self):
+        started, release = threading.Event(), threading.Event()
+        def verify(*_args):
+            started.set()
+            release.wait(2)
+            return main.Verification(True, revision="test")
+        responses = []
+        async def send(event, data):
+            responses.append(data)
+        with patch.object(main, "_task_passkey", SimpleNamespace(verify=verify, is_current=lambda _: True)), \
+             patch.object(main, "send_to_current", send):
+            task = asyncio.create_task(self._submit(submit={
+                "task_id": "checking-passkey", "goal": "open notepad", "kind": "computer",
+            }))
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 1))
+                with patch.object(main, "is_current_sender_remote", return_value=True), \
+                     patch.object(main, "current_authenticated_device", return_value="dev1"):
+                    await main.handle_task_cancel({"task_id": "checking-passkey"})
+            finally:
+                release.set()
+            ran, _ = await task
+        self.assertFalse(ran)
+        self.assertEqual(responses[-1]["state"], "cancelled")
+
+    async def test_changing_the_passkey_before_admission_invalidates_an_older_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = main.TaskPasskeyStore(directory)
+            store.set("old-test-task-passkey")
+            responses = []
+            async def classify(_goal):
+                await asyncio.to_thread(store.set, "new-test-task-passkey")
+                return "computer"
+            async def send(event, data):
+                responses.append(data)
+            with patch.object(main, "_task_passkey", store), patch.object(main, "_classify_task_kind", classify), \
+                 patch.object(main, "send_to_current", send):
+                ran, _ = await self._submit(submit={
+                    "goal": "open notepad", "kind": "auto", "passkey": "old-test-task-passkey",
+                })
+            self.assertFalse(ran)
+            self.assertEqual(responses[-1]["error_code"], "passkey_changed")
+
+    async def test_screenshot_asks_on_phone_before_capturing_and_returns_the_actual_image(self):
+        calls = []
+        hud = []
+        image = "data:image/png;base64,c3ludGhldGlj"
+        async def emit(event, data):
+            hud.append(event)
+        with patch.object(main.skills, "capture_screen_b64", return_value=image) as capture, \
+             patch.object(main, "emit", emit):
+            _, events = await self._submit(
+                submit={"goal": "send me a screenshot of my laptop", "kind": "browser", "task_id": "shot-1"},
+                calls=calls, answer_approval=True,
+            )
+        capture.assert_called_once()
+        self.assertEqual(calls, [], "capturing a screenshot must not arm mouse/browser control")
+        self.assertNotIn("permission_request", hud)
+        kinds = [data.get("kind") for _, _, data in events]
+        self.assertIn("approval.challenge", kinds)
+        self.assertIn("approval.resolved", kinds)
+        terminal = next(data for _, event, data in events if event == "task.status")
+        self.assertEqual(terminal["state"], "succeeded")
+        self.assertEqual(terminal["artifacts"][0]["data_url"], image)
+        self.assertIn(terminal["artifacts"][0]["id"], terminal["proof"]["evidence_ids"])
+
+    async def test_denied_phone_approval_never_captures_the_screen(self):
+        with patch.object(main.skills, "capture_screen_b64") as capture:
+            _, events = await self._submit(
+                submit={"goal": "take a screenshot", "kind": "computer"}, answer_approval=False,
+            )
+        capture.assert_not_called()
+        terminal = next(data for _, event, data in events if event == "task.status")
+        self.assertEqual(terminal["state"], "failed")
+        self.assertNotIn("artifacts", terminal)
+
+    async def test_the_laptop_and_another_phone_cannot_approve_the_request(self):
+        async def attempt(challenge):
+            response = {**challenge, "approved": True}
+            with patch.object(main, "is_current_sender_remote", return_value=False):
+                await main.handle_approval_response(response)
+                await main.handle_permission_response({"id": challenge["step_id"], "approved": True})
+            with patch.object(main, "current_authenticated_device", return_value="other-phone"):
+                await main.handle_approval_response(response)
+            self.assertEqual(len(main.companion_approvals.pending_for_task(challenge["task_id"], "dev1")), 1)
+            capture.assert_not_called()
+        with patch.object(main.skills, "capture_screen_b64", return_value="data:image/png;base64,c2FtcGxl") as capture:
+            await self._submit(submit={"goal": "take a screenshot", "kind": "computer"},
+                               approval_callback=attempt, answer_approval=True)
+        capture.assert_called_once()
+
+    async def test_stop_while_waiting_on_phone_never_captures_or_delivers_an_image(self):
+        main._interrupt = asyncio.Event()
+        async def stop(challenge):
+            await main.handle_task_cancel({"task_id": challenge["task_id"]})
+        with patch.object(main.skills, "capture_screen_b64") as capture:
+            _, events = await self._submit(submit={"goal": "take a screenshot", "kind": "computer"},
+                                          approval_callback=stop)
+        capture.assert_not_called()
+        terminal = next(data for _, event, data in events if event == "task.status")
+        self.assertEqual(terminal["state"], "cancelled")
+        self.assertNotIn("artifacts", terminal)
+
+    async def test_phone_approval_timeout_never_captures_the_screen(self):
+        request = main.companion_approvals.Session.request
+        async def short_request(session, kind, description, timeout=120):
+            return await request(session, kind, description, timeout=0.001)
+        with patch.object(main.companion_approvals.Session, "request", short_request), \
+             patch.object(main.skills, "capture_screen_b64") as capture:
+            _, events = await self._submit(submit={"goal": "take a screenshot", "kind": "computer"})
+        capture.assert_not_called()
+        self.assertEqual(next(data for _, event, data in events if event == "task.status")["state"], "failed")
+
+    async def test_nested_permission_requests_are_routed_to_the_originating_phone(self):
+        hud = []
+        async def emit(event, data):
+            hud.append(event)
+        async def run(kind, goal, **kwargs):
+            approved = await main.request_permission("read", "read a requested file")
+            return {"ok": approved, "summary": "Read" if approved else "Denied"}
+        with patch.object(main, "emit", emit):
+            _, events = await self._submit(run_task=run, answer_approval=True)
+        self.assertNotIn("permission_request", hud)
+        self.assertTrue(any(data.get("kind") == "approval.challenge" for _, _, data in events))
+
+    async def test_remote_permission_without_a_task_context_cannot_prompt_the_desktop(self):
+        with patch.object(main, "is_current_sender_remote", return_value=True), \
+             patch.object(main, "emit") as emit:
+            self.assertFalse(await main.request_permission("screen", "capture the screen"))
+        emit.assert_not_called()
+
+    async def test_task_status_and_recovery_index_are_owner_scoped(self):
+        main._remote_finished.update({
+            "mine": ("dev1", [(1, "task.accepted", {"task_id": "mine", "goal": "my task"}),
+                              (2, "task.status", {"task_id": "mine", "state": "succeeded", "artifacts": ["large image"]})]),
+            "theirs": ("dev2", [(1, "task.status", {"task_id": "theirs", "summary": "private"})]),
+        })
+        sent = []
+        async def send(event, data):
+            sent.append((event, data))
+        with patch.object(main, "is_current_sender_remote", return_value=True), \
+             patch.object(main, "current_authenticated_device", return_value="dev1"), \
+             patch.object(main, "send_to_current", send), \
+             patch.object(main, "subscribe_task", return_value=True):
+            await main.handle_task_list({"source_device": "dev2"})
+            await main.handle_task_status({"task_id": "theirs"})
+            self.assertEqual(len(sent), 1)
+            rows = sent[0][1]["tasks"]
+            self.assertEqual([row["task_id"] for row in rows], ["mine"])
+            self.assertNotIn("artifacts", rows[0])
+            await main.handle_task_status({"task_id": "mine"})
+        self.assertEqual(sent[-1][1]["artifacts"], ["large image"])
 
     async def test_single_flight_rejects_a_concurrent_task(self):
         ran, _ = await self._submit(busy=True)

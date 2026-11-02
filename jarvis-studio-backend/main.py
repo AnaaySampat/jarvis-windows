@@ -24,12 +24,14 @@ from server.websocket_server import (
     emit, send_to, start as start_websocket, register_handler, on_connect,
     on_disconnect, send_to_current, current_client_id,
     configure_device_identity, set_remote_allowed, set_ready_info,
-    emit_task_event, subscribe_task, subscribe_local_clients,
+    emit_task_event, subscribe_task, subscribe_local_clients, unsubscribe_task,
     is_current_sender_remote, current_authenticated_device,
     connected_device_ids, send_to_device,
     disconnect_authenticated_device,
 )
 from server import webrtc_screen
+from autonomy import companion_approvals, companion_screenshot
+from autonomy.task_passkey import TaskPasskeyStore, Verification
 from llm.groq_bridge import (
     initialize, send_prompt, stream_prompt, get_sysinfo, set_model, set_tts,
     reset_history, set_history, translate_text, get_api_key, get_gemini_key, set_live_context,
@@ -236,6 +238,11 @@ _pending_perms: "dict[str, asyncio.Future]" = {}
 async def request_permission(kind: str, description: str, timeout: float = 120.0) -> bool:
     """Ask the GUI for Approve/Deny on a dangerous action. Blocks until the user
     responds (or the request times out → treated as denied)."""
+    session = companion_approvals.current()
+    if session is not None:
+        return await session.request(kind, description, timeout)
+    if is_current_sender_remote():
+        return False  # an unbound remote request must never prompt the local HUD
     loop = asyncio.get_running_loop()
     req_id = f"{time.time()}"
     fut: "asyncio.Future" = loop.create_future()
@@ -285,6 +292,11 @@ async def handle_permission_response(data) -> None:
         fut.set_result(bool(data.get("approved")))
 
 
+async def handle_approval_response(data) -> None:
+    if is_current_sender_remote():
+        companion_approvals.respond(current_authenticated_device(), data)
+
+
 # Pending mid-task clarify questions, keyed by request id → Future resolved by GUI.
 _pending_clarify: "dict[str, asyncio.Future]" = {}
 
@@ -295,6 +307,11 @@ async def request_clarification(question: str, timeout: float = 90.0) -> str:
     can't resolve from the page itself. Returns the typed answer ("" = skipped)."""
     question = (question or "").strip()
     if not question:
+        return ""
+    session = companion_approvals.current()
+    if session is not None:
+        return await session.ask(question)
+    if is_current_sender_remote():
         return ""
     loop = asyncio.get_running_loop()
     req_id = f"{time.time()}"
@@ -334,6 +351,8 @@ async def handle_clarify_response(data) -> None:
 # handlers are LOCAL-HUD-ONLY; the default-deny remote allowlist (set in main())
 # lets a phone invoke only the task vocabulary.
 _device_registry = None            # DeviceIdentityRegistry | None (None → remote off)
+_task_passkey = None               # TaskPasskeyStore | None; phone tasks fail closed until set locally
+_pending_task_checks = {}          # (authenticated device, task id) -> cancellable admission
 _remote_task_busy = False          # single-flight guard: one remote actuation at a time
 # Who is driving the autopilot right now: "" (nobody), "local" or "remote". The
 # interrupt flag, the consent windows, the browser target and the mouse itself are
@@ -435,6 +454,36 @@ async def handle_device_list(data) -> None:
     if is_current_sender_remote() or _device_registry is None:
         return
     await emit("device.list", _device_roster())
+
+
+async def handle_task_passkey_state(_data) -> None:
+    if is_current_sender_remote():
+        return
+    await send_to_current("device.passkey_state", _task_passkey.state() if _task_passkey else {
+        "configured": False, "storage_error": True,
+    })
+
+
+async def handle_task_passkey_set(data) -> None:
+    if is_current_sender_remote():
+        return
+    passkey = data.get("passkey") if isinstance(data, dict) else None
+    try:
+        if _task_passkey is None:
+            raise RuntimeError("passkey storage unavailable")
+        await asyncio.get_running_loop().run_in_executor(None, _task_passkey.set, passkey)
+    except ValueError:
+        await send_to_current("device.passkey_state", {
+            **(_task_passkey.state() if _task_passkey else {"configured": False}),
+            "saved": False, "error": "Use a passkey between 8 and 128 characters.",
+        })
+        return
+    except Exception:
+        await send_to_current("device.passkey_state", {
+            "configured": False, "saved": False, "error": "Couldn't save the task passkey on this laptop.",
+        })
+        return
+    await send_to_current("device.passkey_state", {**_task_passkey.state(), "saved": True})
 
 
 async def handle_device_revoke(data) -> None:
@@ -547,9 +596,12 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
     # unarmed, a remote task dies at step 0 with "control expired mid-task".
     # Arm the right window for the task, and restore the PC's prior posture after
     # so a remote task never leaves a consent window open the user didn't grant.
+    screenshot = companion_screenshot.requested(goal)
     web = kind in ("browser", "research")
-    was_consented = browser.is_approved() if web else computer.is_armed()
-    if web:
+    was_consented = (browser.is_approved() if web else computer.is_armed()) if not screenshot else False
+    if screenshot:
+        pass  # a capture grants no mouse, keyboard, or browser control
+    elif web:
         browser.approve(15)
     else:
         armed_ok, arm_msg = computer.arm(15)
@@ -587,17 +639,36 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
     # A web task runs in the user's own Chrome (the JARVIS extension) unless they asked
     # for JARVIS's browser, or the extension isn't there. Research reads in its own
     # headless browser.
-    personal_target = kind == "browser" and await _users_chrome(goal)
+    personal_target = not screenshot and kind == "browser" and await _users_chrome(goal)
     if kind == "research":
         browser.set_target("headless")
     hb = asyncio.create_task(_heartbeat())
     try:
-        res = await autopilot.run_task(
-            "browser" if web else kind,
-            agents.research_goal(goal) if kind == "research" else goal,
-            on_step=on_step, on_shot=on_shot, ask=ask,
-            hint=playbooks.autopilot_hint(goal), interrupted=_interrupted,
-        )
+        async def reconsent(consent_kind, task_goal):
+            approved = await request_permission(consent_kind, f"continue {consent_kind} control for this PC task")
+            if approved:
+                grant(consent_kind)
+            return approved
+
+        with companion_approvals.task_scope(task_id, device_id, _emit, ask):
+            if screenshot:
+                approved = await request_permission("screen", "capture your PC's screen and send it to this phone")
+                image = (await asyncio.get_running_loop().run_in_executor(None, skills.capture_screen_b64)
+                         if approved and not _interrupted() else None)
+                stopped = _interrupted()
+                if stopped:
+                    image = None
+                res = {"ok": bool(image), "stopped": stopped,
+                       "summary": "Screen capture cancelled." if stopped else "Here is your PC's screenshot." if image else
+                       ("Screen capture failed on the PC." if approved else "Screen capture was not approved on your phone."),
+                       "artifacts": [{"id": task_id + ":screenshot", "kind": "image", "data_url": image}] if image else []}
+            else:
+                res = await autopilot.run_task(
+                    "browser" if web else kind,
+                    agents.research_goal(goal) if kind == "research" else goal,
+                    on_step=on_step, on_shot=on_shot, ask=ask, reconsent=reconsent,
+                    hint=playbooks.autopilot_hint(goal), interrupted=_interrupted,
+                )
         ok = bool(res.get("ok"))
         stopped = bool(res.get("stopped"))
         summary = (res.get("summary") or "").strip()
@@ -607,13 +678,15 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
                 "ok": ok, "stopped": stopped})
         terminal = {"task_id": task_id, "state": state, "summary": summary,
                     "findings": findings, "v": REMOTE_PROTOCOL_VERSION}
+        if res.get("artifacts"):
+            terminal["artifacts"] = res["artifacts"]
         if ok:
             # The phone gates completion on proof.passed + a non-empty evidence list.
             # passed mirrors autopilot's OWN verdict (res.ok already runs the
             # _summary_looks_incomplete gate) — not a fabricated pass; evidence ids
             # are the real findings, or the task id (audit-log correlator) if none.
             terminal["proof"] = {"passed": True,
-                                 "evidence_ids": findings or [task_id]}
+                                 "evidence_ids": ([a["id"] for a in res.get("artifacts", [])] or findings or [task_id])}
         await _emit("task.status", terminal)
         await emit("agent_task_end", {"id": task_id, "ok": ok, "stopped": stopped,
                                       "summary": summary or ("Done." if ok else "Didn't finish.")})
@@ -636,7 +709,7 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
         # its own try/except). Suppress both.
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await hb
-        if not was_consented:
+        if not screenshot and not was_consented:
             if web:
                 browser.revoke()
             else:
@@ -677,6 +750,22 @@ async def _reject_remote_task(task_id: str) -> None:
     })
 
 
+async def _reject_task_passkey(task_id, error) -> None:
+    messages = {
+        "passkey_not_configured": "Set a phone-task passkey on the laptop in Settings → Devices → Phone first.",
+        "passkey_unavailable": "The laptop's task passkey is unavailable. Set it again in Settings → Devices → Phone.",
+        "passkey_incorrect": "The laptop task passkey was missing or incorrect. Enter it again for a new request.",
+        "passkey_rate_limited": "Too many incorrect task passkeys. Wait one minute before trying again.",
+        "passkey_changed": "The laptop task passkey changed. Submit the task again using the new passkey.",
+        "task_cancelled": "The PC task was cancelled before it started.",
+    }
+    await send_to_current("task.status", {
+        "task_id": task_id, "state": "cancelled" if error == "task_cancelled" else "failed", "error_code": error,
+        "summary": messages.get(error, "The task passkey could not be verified."),
+        "v": REMOTE_PROTOCOL_VERSION,
+    })
+
+
 async def handle_task_submit(data) -> None:
     """Remote phone → run a task on the PC. Remote-only; local uses text_input."""
     global _remote_task_busy, _remote_task_id, _remote_task_owner, _remote_task_kind
@@ -684,6 +773,7 @@ async def handle_task_submit(data) -> None:
     if not is_current_sender_remote() or not isinstance(data, dict):
         return
     goal = str(data.get("goal") or data.get("text") or "").strip()
+    passkey = data.pop("passkey", None)
     if not goal:
         return
     device_id = current_authenticated_device()
@@ -710,11 +800,39 @@ async def handle_task_submit(data) -> None:
     if _remote_task_busy or _autopilot_owner:
         await _reject_remote_task(task_id)
         return
+    key = (device_id, task_id)
+    checking = _pending_task_checks.setdefault(key, {"cancelled": asyncio.Event(), "users": 0})
+    checking["users"] += 1
+    try:
+        admission = _admit_phone_task(data, goal, device_id, task_id, passkey, checking["cancelled"])
+        passkey = None
+        await admission
+    finally:
+        checking["users"] -= 1
+        if checking["users"] == 0 and _pending_task_checks.get(key) is checking:
+            _pending_task_checks.pop(key, None)
+
+
+async def _admit_phone_task(data, goal, device_id, task_id, passkey, cancelled) -> None:
+    global _remote_task_busy, _remote_task_id, _remote_task_owner, _remote_task_kind, _autopilot_owner
+    verification = (await asyncio.get_running_loop().run_in_executor(
+        None, _task_passkey.verify, passkey, device_id)
+        if _task_passkey else Verification(False, "passkey_unavailable"))
+    # Do not retain the plaintext in this task's handler/journal or forward it to a model.
+    passkey = None
+    if cancelled.is_set():
+        await _reject_task_passkey(task_id, "task_cancelled")
+        return
+    if not verification.accepted:
+        await _reject_task_passkey(task_id, verification.error)
+        return
     # Route by the phone-chosen kind. 'auto' (the live-view command mode, which has
     # no phone-side model to pick a kind) is classified HERE on the desktop — which
     # actually knows what's installed/open — into browser vs a native desktop app.
     raw_kind = str(data.get("kind") or "").strip().lower()
-    if raw_kind.startswith(("computer", "desktop")):
+    if companion_screenshot.requested(goal):
+        kind = "computer"
+    elif raw_kind.startswith(("computer", "desktop")):
         kind = "computer"
     elif raw_kind == "research":         # the phone's Research agent (agents.py)
         kind = "research"
@@ -729,6 +847,15 @@ async def handle_task_submit(data) -> None:
                 device_name = dev.get("name") or device_name
                 break
     # Re-check: _classify_task_kind above awaited, and a local task may have started.
+    if cancelled.is_set():
+        await _reject_task_passkey(task_id, "task_cancelled")
+        return
+    if _task_passkey is None or not _task_passkey.is_current(verification.revision):
+        await _reject_task_passkey(task_id, "passkey_changed")
+        return
+    if task_id == _remote_task_id or task_id in _remote_finished:
+        await handle_task_subscribe({"task_id": task_id, "resume_after_seq": 0})
+        return
     if _remote_task_busy or _autopilot_owner:
         await _reject_remote_task(task_id)
         return
@@ -758,12 +885,17 @@ async def handle_task_cancel(data) -> None:
     if not is_current_sender_remote() or not isinstance(data, dict):
         return
     task_id = str(data.get("task_id") or "")
+    device_id = current_authenticated_device()
+    for (owner, pending_id), checking in tuple(_pending_task_checks.items()):
+        if owner == device_id and (not task_id or pending_id == task_id):
+            checking["cancelled"].set()
     if not _remote_task_id or (task_id and task_id != _remote_task_id):
         return
     if current_authenticated_device() != _remote_task_owner:
         return
     if _interrupt is not None:
         _interrupt.set()
+    companion_approvals.cancel_task(_remote_task_id, _remote_task_owner)
     if _remote_task_kind == "browser":
         # A browser autopilot step can block inside Playwright (page load / wait);
         # the interrupt is only polled BETWEEN steps, so force-kill the browser now
@@ -835,10 +967,86 @@ async def handle_task_subscribe(data) -> None:
                     await emit_task_event(task_id, event, payload, seq=seq)
     if not running:
         return
+    # Receiving a challenge is not answering it. A reconnecting phone may have
+    # advanced its event cursor past the prompt before losing its live dialog.
+    # Re-issue that exact pending challenge out of band, without replaying work.
+    for challenge in companion_approvals.pending_for_task(task_id, owner):
+        already_seen = any(
+            seq <= resume_after and event == "task.event"
+            and payload.get("kind") == "approval.challenge"
+            and payload.get("payload", {}).get("approval_id") == challenge["approval_id"]
+            for seq, event, payload in tuple(journal)
+        )
+        if already_seen:
+            await emit_task_event(task_id, "task.event", {
+                "task_id": task_id, "kind": "approval.challenge", "payload": challenge,
+            }, seq=0)
     # seq=0 → out-of-band keepalive: resets the phone's idle watchdog immediately.
     await emit_task_event(task_id, "task.status",
-                          {"task_id": task_id, "state": "running",
+                          {**_remote_snapshot(task_id, journal, True),
                            "v": REMOTE_PROTOCOL_VERSION}, seq=0)
+
+
+def _remote_snapshot(task_id, journal, running=False):
+    snapshot = {"task_id": task_id, "state": "running" if running else "failed"}
+    for seq, event, payload in tuple(journal):
+        if event in {"task.accepted", "task.status"}:
+            snapshot.update(payload)
+        elif event == "task.event" and payload.get("kind") == "approval.challenge":
+            snapshot["state"] = "waiting_for_approval"
+        elif event == "task.event" and payload.get("kind") == "approval.resolved":
+            snapshot["state"] = "running"
+    return snapshot
+
+
+async def handle_protocol_hello(data) -> None:
+    if not is_current_sender_remote() or not isinstance(data, dict):
+        return
+    versions = data.get("supported_versions")
+    supported = isinstance(versions, list) and REMOTE_PROTOCOL_VERSION in versions
+    await send_to_current("protocol.ready" if supported else "protocol.error", {
+        "version": REMOTE_PROTOCOL_VERSION,
+        "device_id": current_authenticated_device(),
+    })
+
+
+async def handle_task_list(data) -> None:
+    if not is_current_sender_remote():
+        return
+    owner = current_authenticated_device()
+    rows = []
+    candidates = list(_remote_finished.items())
+    if _remote_task_id:
+        candidates.append((_remote_task_id, (_remote_task_owner, _remote_task_journal)))
+    for task_id, (device_id, journal) in candidates:
+        if device_id != owner:
+            continue
+        snapshot = _remote_snapshot(task_id, journal, task_id == _remote_task_id)
+        # List metadata stays small; resubscribe/status retrieves the result and
+        # image only for that task, rather than bundling every screenshot at login.
+        snapshot.pop("artifacts", None)
+        rows.append(snapshot)
+        subscribe_task(task_id)
+    await send_to_current("task.snapshot", {"tasks": rows})
+
+
+async def handle_task_status(data) -> None:
+    if not is_current_sender_remote() or not isinstance(data, dict):
+        return
+    task_id = str(data.get("task_id") or "")
+    if task_id == _remote_task_id and task_id:
+        owner, journal = _remote_task_owner, _remote_task_journal
+    elif task_id in _remote_finished:
+        owner, journal = _remote_finished[task_id]
+    else:
+        return
+    if current_authenticated_device() == owner:
+        await send_to_current("task.status", _remote_snapshot(task_id, journal, task_id == _remote_task_id))
+
+
+async def handle_task_unsubscribe(data) -> None:
+    if is_current_sender_remote() and isinstance(data, dict):
+        unsubscribe_task(str(data.get("task_id") or ""))
 
 
 # ── Live remote-desktop: WebRTC screen view + direct mouse/keyboard ───────────
@@ -3523,8 +3731,13 @@ async def handle_stop_control(_data) -> None:
     the interrupt flag so any running autopilot loop breaks out at its next step.
     The control-state / browser-state broadcasts clear the HUD banners."""
     global _control_paused, _pending_corrections
+    device_id = current_authenticated_device() if is_current_sender_remote() else None
+    for (owner, _), checking in tuple(_pending_task_checks.items()):
+        if device_id is None or owner == device_id:
+            checking["cancelled"].set()
     if _interrupt is not None:
         _interrupt.set()
+    companion_approvals.cancel_task(_remote_task_id, _remote_task_owner)
     try:
         # Also drop any live remote-control lease + release a held button, so a
         # STOP from the phone's hard-stop button truly lets go of the mouse.
@@ -4899,10 +5112,11 @@ async def main(use_text: bool) -> None:
     # Bring up the crypto identity registry. If it fails (e.g. cryptography wheel
     # missing in a frozen build), remote stays OFF and the socket keeps its
     # localhost-only default — the local app is never affected.
-    global _device_registry
+    global _device_registry, _task_passkey
     try:
         from autonomy.device_identity import DeviceIdentityRegistry
         _device_registry = DeviceIdentityRegistry()
+        _task_passkey = TaskPasskeyStore(_device_registry.directory)
         configure_device_identity(_device_registry)
         # The phone learns this PC's network adapters on connect, to wake it later.
         from actions import wol
@@ -4931,10 +5145,17 @@ async def main(use_text: bool) -> None:
         register_handler("device.pairing_create", handle_device_pairing_create)
         register_handler("device.list", handle_device_list)
         register_handler("device.revoke", handle_device_revoke)
+        register_handler("device.passkey_state", handle_task_passkey_state)
+        register_handler("device.passkey_set", handle_task_passkey_set)
         register_handler("task.submit", handle_task_submit)
         register_handler("task.cancel", handle_task_cancel)
         register_handler("task.subscribe", handle_task_subscribe)
         register_handler("task.answer", handle_task_answer)
+        register_handler("approval.response", handle_approval_response)
+        register_handler("protocol.hello", handle_protocol_hello)
+        register_handler("task.list", handle_task_list)
+        register_handler("task.status", handle_task_status)
+        register_handler("task.unsubscribe", handle_task_unsubscribe)
         register_handler("webrtc_offer", handle_webrtc_offer)
         register_handler("webrtc_ice", handle_webrtc_ice)
         register_handler("stop_screen", handle_stop_screen)

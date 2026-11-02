@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
 
+import rfc8785
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -43,6 +44,7 @@ PROTOCOL_VERSION = 1
 KNOWN_SCOPES = frozenset({"tasks", "screen", "control"})
 DEFAULT_SCOPES = ("tasks",)
 MAX_PAIRING_TTL_SECONDS = 300
+MAX_PAIRING_ATTEMPTS = 5
 
 
 class IdentityError(RuntimeError):
@@ -70,34 +72,33 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
 
 
-def _normalize_numbers(value):
-    """Fold integral floats to ints so canonical JSON survives a JS round-trip.
-
-    Python renders 1.0 as ``1.0`` but JSON.parse → Number → canonical JS emits
-    ``1``: the phone would compute a different digest for byte-identical wire
-    data and reject a perfectly valid host signature (live-debugged 2026-07-19:
-    a journal payload's ``backoff_seconds: 1.0`` broke every replayed
-    task.event envelope). JS prints a float64's exact integer digits up to
-    1e21, and ``int(float)`` is exact, so folding matches JS for every value
-    Aura actually sends (timestamps, budgets, coordinates).
-    """
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
+def _json_numbers(value):
+    # JSON.parse represents every number as an IEEE-754 double, including an
+    # integer-looking 1e20 sent by JSON.stringify. Mirror what the peer actually
+    # reads. Security counters are separately restricted to safe integers.
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > 2**53 - 1:
+        return float(value)
     if isinstance(value, dict):
-        return {key: _normalize_numbers(item) for key, item in value.items()}
+        return {key: _json_numbers(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_normalize_numbers(item) for item in value]
+        return [_json_numbers(item) for item in value]
     return value
 
 
 def _canonical_json(value) -> bytes:
-    return json.dumps(
-        _normalize_numbers(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+    # The phone uses JSON.stringify for numbers and UTF-16 key ordering. Python's
+    # json.dumps differs for exponent notation, large floats and non-BMP keys;
+    # signatures over otherwise valid messages would fail in either direction.
+    try:
+        return rfc8785.dumps(_json_numbers(value))
+    except (rfc8785.CanonicalizationError, OverflowError) as exc:
+        raise AuthenticationError("payload is outside the canonical JSON domain") from exc
+
+
+def _validate_counter(counter) -> None:
+    if (isinstance(counter, bool) or not isinstance(counter, int)
+            or not 0 < counter <= 2**53 - 1):
+        raise AuthenticationError("counter must be a positive safe integer")
 
 
 def payload_digest(data) -> str:
@@ -293,6 +294,7 @@ class DeviceIdentityRegistry:
             for table, column, coltype in (
                 ("devices", "authorized_at", "REAL"),
                 ("pairing_challenges", "pin", "TEXT"),
+                ("pairing_challenges", "failed_attempts", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 try:
                     self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
@@ -348,8 +350,15 @@ class DeviceIdentityRegistry:
         selected = self._normalize_scopes(scopes)
         pin = f"{secrets.randbelow(1_000_000):06d}"
         with self._lock:
+            # A spent/expired human-present secret has no reason to stay on disk.
             self._db.execute(
-                "INSERT INTO pairing_challenges VALUES (?, ?, ?, NULL, ?, ?, ?)",
+                "UPDATE pairing_challenges SET pin = NULL WHERE expires_at <= ? OR used_at IS NOT NULL",
+                (now,),
+            )
+            self._db.execute(
+                """INSERT INTO pairing_challenges
+                   (challenge_id, created_at, expires_at, used_at, device_name, scopes, pin)
+                   VALUES (?, ?, ?, NULL, ?, ?, ?)""",
                 (challenge_id, now, now + ttl, clean_name, json.dumps(selected), pin),
             )
         # The "pin" is shown on the PC screen and typed into the phone; it is the
@@ -445,18 +454,25 @@ class DeviceIdentityRegistry:
                     raise PairingError("unknown pairing challenge")
                 if row["used_at"] is not None:
                     raise PairingError("pairing challenge was already used")
-                if now > float(row["expires_at"]):
+                if now >= float(row["expires_at"]):
                     raise PairingError("pairing challenge expired")
+                if int(row["failed_attempts"]) >= MAX_PAIRING_ATTEMPTS:
+                    raise PairingError("pairing PIN attempt limit reached; create a fresh pairing code")
                 stored_pin = row["pin"] if "pin" in row.keys() else None
-                if not stored_pin or not hmac.compare_digest(
-                    str(claim.get("pin") or ""), str(stored_pin)
-                ):
-                    got = str(claim.get("pin") or "")
-                    mask = lambda p: f"{p[:1]}****{p[-1:]}(len={len(p)})" if p else "EMPTY"
-                    print(f"[Pairing DIAG] challenge={challenge_id[:18]}… "
-                          f"claim_pin={mask(got)} stored_pin={mask(str(stored_pin or ''))} "
-                          f"challenge_age={now - float(row['created_at']):.0f}s",
-                          flush=True)
+                presented_pin = str(claim.get("pin") or "")
+                if not (stored_pin and len(presented_pin) == 6 and presented_pin.isascii()
+                        and presented_pin.isdigit()
+                        and hmac.compare_digest(presented_pin, str(stored_pin))):
+                    # Persist the budget across connections and host restarts.
+                    # Never log either the submitted PIN or the expected PIN.
+                    self._db.execute(
+                        """UPDATE pairing_challenges
+                           SET failed_attempts = failed_attempts + 1,
+                               pin = CASE WHEN failed_attempts + 1 >= ? THEN NULL ELSE pin END
+                           WHERE challenge_id = ?""",
+                        (MAX_PAIRING_ATTEMPTS, challenge_id),
+                    )
+                    self._db.execute("COMMIT")
                     raise PairingError("pairing PIN is missing or incorrect")
                 scopes = tuple(json.loads(row["scopes"]))
                 fingerprint = public_key_fingerprint(public_der)
@@ -481,12 +497,13 @@ class DeviceIdentityRegistry:
                      json.dumps(scopes), now, now, now),
                 )
                 self._db.execute(
-                    "UPDATE pairing_challenges SET used_at = ? WHERE challenge_id = ?",
+                    "UPDATE pairing_challenges SET used_at = ?, pin = NULL WHERE challenge_id = ?",
                     (now, challenge_id),
                 )
                 self._db.execute("COMMIT")
             except Exception:
-                self._db.execute("ROLLBACK")
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
                 raise
         return AuthenticatedDevice(device_id, name, fingerprint, scopes, 0)
 
@@ -503,8 +520,7 @@ class DeviceIdentityRegistry:
     def _accept_counter_and_signature(
         self, device_id: str, counter: int, signature: str, material: bytes
     ) -> AuthenticatedDevice:
-        if isinstance(counter, bool) or not isinstance(counter, int) or counter <= 0:
-            raise AuthenticationError("counter must be a positive integer")
+        _validate_counter(counter)
         now = float(self._clock())
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
@@ -536,6 +552,7 @@ class DeviceIdentityRegistry:
     def authenticate(
         self, device_id: str, nonce: str, counter: int, signature: str
     ) -> AuthenticatedDevice:
+        _validate_counter(counter)
         return self._accept_counter_and_signature(
             device_id,
             counter,
@@ -555,6 +572,7 @@ class DeviceIdentityRegistry:
         signature: str,
         required_scope: str | None = None,
     ) -> AuthenticatedDevice:
+        _validate_counter(counter)
         material = envelope_signing_bytes(
             "device", device_id, connection_nonce, counter,
             message_type, task_id, data,

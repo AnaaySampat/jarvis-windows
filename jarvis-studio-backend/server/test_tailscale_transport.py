@@ -38,6 +38,23 @@ class TailscaleTransportTests(unittest.TestCase):
             self.assertFalse(ws._is_tailscale_peer("not-an-ip"))
         run.assert_not_called()
 
+    def test_transport_requires_tls_or_a_verified_tailscale_peer_by_default(self):
+        socket = SimpleNamespace(
+            remote_address=("192.168.1.20", 5000),
+            transport=SimpleNamespace(get_extra_info=lambda _: None),
+        )
+        with patch.object(ws, "_ALLOW_AUTHENTICATED_LAN_PLAINTEXT", False), patch.object(
+            ws, "_is_tailscale_peer", return_value=False
+        ):
+            self.assertFalse(ws._remote_transport_allowed(socket))
+            socket.transport.get_extra_info = lambda _: object()
+            self.assertTrue(ws._remote_transport_allowed(socket))
+        socket.transport.get_extra_info = lambda _: None
+        with patch.object(ws, "_ALLOW_AUTHENTICATED_LAN_PLAINTEXT", False), patch.object(
+            ws, "_is_tailscale_peer", return_value=True
+        ):
+            self.assertTrue(ws._remote_transport_allowed(socket))
+
     def test_cgnat_range_alone_is_not_trusted_when_cli_is_missing(self):
         with patch.object(ws.subprocess, "run", side_effect=FileNotFoundError):
             self.assertFalse(ws._is_tailscale_peer(self.PEER))
