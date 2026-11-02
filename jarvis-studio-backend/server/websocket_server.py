@@ -645,7 +645,7 @@ async def _authenticate_remote(
                 device = registry.authenticate(
                     str(data.get("device_id") or ""),
                     challenge["nonce"],
-                    int(data.get("counter") or 0),
+                    data.get("counter"),
                     str(data.get("signature") or ""),
                 )
                 print(f"[Auth] {peer or 'unknown'} authenticated as "

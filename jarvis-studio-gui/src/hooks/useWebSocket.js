@@ -79,6 +79,7 @@ export function useWebSocket() {
   const [routineResult, setRoutineResult] = useState(null);  // last Memory ▸ Routines save {ok, message}
   const [devicePairing, setDevicePairing] = useState(null); // active QR pairing payload {ok,payload,pin,host,...}
   const [devices, setDevices] = useState([]);              // paired-phone roster
+  const [taskPasskeyState, setTaskPasskeyState] = useState(null);
   const [tvState, setTvState] = useState(null);
   const [mcpState, setMcpState] = useState(null);          // MCP servers {available, config, servers, result}
   const [connState, setConnState] = useState(null);        // Connectors {connectors:[…], mcp_available}
@@ -303,6 +304,9 @@ export function useWebSocket() {
             break;
           case "device.list":
             setDevices(Array.isArray(msg.data) ? msg.data : []);
+            break;
+          case "device.passkey_state":
+            setTaskPasskeyState(msg.data || null);
             break;
           case "tv.state":
             setTvState(msg.data || null);
@@ -661,6 +665,10 @@ export function useWebSocket() {
   const revokeDevice = useCallback((id) => {
     wsSend({ type: "device.revoke", data: { device_id: id } });
   }, [wsSend]);
+  const loadTaskPasskey = useCallback(() => wsSend({ type: "device.passkey_state" }), [wsSend]);
+  const setTaskPasskey = useCallback((passkey) => wsSend({
+    type: "device.passkey_set", data: { passkey },
+  }), [wsSend]);
 
   // Send a captured camera frame (base64 data URL) for OCR + translation.
   const sendOcr = useCallback((image, from = "auto", to = "en") => {
@@ -676,7 +684,7 @@ export function useWebSocket() {
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     activeApp, overlay, agentTasks, conversations, setupProgress,
     devicePairing, devices, tvState, waState, mcpState, connState,
-    createPairing, listDevices, revokeDevice,
+    createPairing, listDevices, revokeDevice, taskPasskeyState, loadTaskPasskey, setTaskPasskey,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage, sendCommand, triggerListen, stopSpeech,
     stopControl, pauseControl, sendCorrection, finishListen, pttStart,
     resetConversation, newConversation, openConversation, deleteConversation, listConversations, clearConversations,

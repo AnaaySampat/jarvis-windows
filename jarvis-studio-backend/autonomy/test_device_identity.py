@@ -1,6 +1,7 @@
 import base64
 import tempfile
 import unittest
+from unittest import mock
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -14,6 +15,7 @@ from autonomy.device_identity import (
     device_id_for_public_key,
     envelope_signing_bytes,
     pairing_signing_bytes,
+    _canonical_json,
 )
 
 
@@ -115,6 +117,77 @@ class DeviceIdentityTests(unittest.TestCase):
         self.now[0] += 16
         with self.assertRaisesRegex(PairingError, "expired"):
             self.claim(challenge)
+
+    def test_canonical_payloads_match_javascript_numbers_and_utf16_key_order(self):
+        vectors = [
+            (1.0, b"1"), (-0.0, b"0"), (1e-6, b"0.000001"),
+            (1e-7, b"1e-7"), (1e21, b"1e+21"), (1e20, b"100000000000000000000"),
+            (10**20, b"100000000000000000000"), (2**53 + 1, b"9007199254740992"),
+            ({"\ue000": "a", "\U0001f680": "b"}, '{"🚀":"b","\ue000":"a"}'.encode()),
+            ({"data": [1.0, {"x": 1e-6}]}, b'{"data":[1,{"x":0.000001}]}'),
+        ]
+        for value, expected in vectors:
+            with self.subTest(value=value):
+                self.assertEqual(_canonical_json(value), expected)
+        for invalid in (float("nan"), float("inf"), 10**500):
+            with self.assertRaises(AuthenticationError):
+                _canonical_json(invalid)
+
+    def test_malformed_counters_fail_as_authentication_errors(self):
+        self.pair()
+        for counter in (None, "1", True, 0, -1, 1.5, 2**63):
+            with self.subTest(counter=counter):
+                with self.assertRaises(AuthenticationError):
+                    self.registry.authenticate(self.device_id, "nonce", counter, "signature")
+                with self.assertRaises(AuthenticationError):
+                    self.registry.verify_envelope(
+                        device_id=self.device_id, connection_nonce="nonce", counter=counter,
+                        message_type="task.submit", task_id="t", data={}, signature="signature",
+                    )
+
+    def test_pin_guess_budget_survives_restart_and_requires_a_fresh_code(self):
+        challenge = self.registry.create_pairing_challenge()
+        wrong = {**challenge, "pin": "000000" if challenge["pin"] != "000000" else "111111"}
+        with mock.patch("builtins.print") as output:
+            for _ in range(4):
+                with self.assertRaisesRegex(PairingError, "incorrect"):
+                    self.claim(wrong)
+            self.registry.close()
+            self.registry = DeviceIdentityRegistry(self.temp.name, clock=lambda: self.now[0])
+            with self.assertRaisesRegex(PairingError, "incorrect"):
+                self.claim(wrong)
+            # Even the correct PIN cannot revive a challenge after five guesses.
+            with self.assertRaisesRegex(PairingError, "attempt limit"):
+                self.claim(challenge)
+        output.assert_not_called()
+        row = self.registry._db.execute(
+            "SELECT pin FROM pairing_challenges WHERE challenge_id = ?",
+            (challenge["challenge_id"],),
+        ).fetchone()
+        self.assertIsNone(row["pin"])
+        self.assertEqual(self.claim(self.registry.create_pairing_challenge()).device_id, self.device_id)
+
+    def test_successful_and_expired_pairing_pins_are_removed_from_storage(self):
+        expired = self.registry.create_pairing_challenge(ttl_seconds=15)
+        self.now[0] += 16
+        fresh = self.registry.create_pairing_challenge()
+        self.claim(fresh)
+        for challenge in (expired, fresh):
+            row = self.registry._db.execute(
+                "SELECT pin FROM pairing_challenges WHERE challenge_id = ?",
+                (challenge["challenge_id"],),
+            ).fetchone()
+            self.assertIsNone(row["pin"])
+
+    def test_non_ascii_pin_is_a_counted_pairing_failure(self):
+        challenge = self.registry.create_pairing_challenge()
+        with self.assertRaisesRegex(PairingError, "incorrect"):
+            self.claim({**challenge, "pin": "１２３４５６"})
+        row = self.registry._db.execute(
+            "SELECT failed_attempts FROM pairing_challenges WHERE challenge_id = ?",
+            (challenge["challenge_id"],),
+        ).fetchone()
+        self.assertEqual(row["failed_attempts"], 1)
 
     def test_device_id_cannot_impersonate_another_public_key(self):
         challenge = self.registry.create_pairing_challenge()

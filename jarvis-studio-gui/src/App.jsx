@@ -76,7 +76,7 @@ export default function App() {
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
     overlay, agentTasks, conversations, setupProgress,
     devicePairing, devices, tvState, waState, mcpState, connState,
-    createPairing, listDevices, revokeDevice,
+    createPairing, listDevices, revokeDevice, taskPasskeyState, loadTaskPasskey, setTaskPasskey,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage,
     resetConversation, newConversation, openConversation, deleteConversation, listConversations, clearConversations,
     memory, listMemory, rememberFact, forgetMemory, saveRoutine, runRoutine, routineResult,
@@ -601,6 +601,9 @@ export default function App() {
           onCreatePairing={createPairing}
           onListDevices={listDevices}
           onRevokeDevice={revokeDevice}
+          taskPasskeyState={taskPasskeyState}
+          onLoadTaskPasskey={loadTaskPasskey}
+          onSetTaskPasskey={setTaskPasskey}
           tvState={tvState}
           waState={waState}
           mcpState={mcpState}

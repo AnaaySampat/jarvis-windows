@@ -72,7 +72,7 @@ async def command(text: str, timeout: float = TIMEOUT_S) -> dict:
     try:
         if not await _send(device, "phone.command", {"id": cid, "text": text}):
             return _result(False, NOT_CONNECTED)
-        print(f"[Phone] sent {cid}: {text!r}", flush=True)
+        print(f"[Phone] sent command {cid}", flush=True)
         answer = await asyncio.wait_for(fut, timeout)
     except asyncio.TimeoutError:
         return _result(False, NO_ANSWER.format(s=int(timeout)))
@@ -81,7 +81,7 @@ async def command(text: str, timeout: float = TIMEOUT_S) -> dict:
     ok = answer.get("ok") is True
     reply = " ".join(str(answer.get("reply") or "").split())[:_REPLY_MAX] or \
         ("Done." if ok else "It couldn't do that.")
-    print(f"[Phone] {cid} {'✓' if ok else '✗'} {reply!r}", flush=True)
+    print(f"[Phone] command {cid}: {'succeeded' if ok else 'failed'}", flush=True)
     return _result(ok, f"Phone: {reply}", reply)
 
 

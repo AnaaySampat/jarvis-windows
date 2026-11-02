@@ -9,6 +9,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    branches: ["release/**"]
   workflow_dispatch:
 
 permissions:
@@ -49,7 +50,7 @@ jobs:
       - name: Backend tests
         working-directory: jarvis-studio-backend
         run: |
-          pip install websockets httpx cryptography numpy pyaudio faster-whisper pillow
+          pip install websockets httpx cryptography rfc8785 numpy pyaudio faster-whisper pillow
           python -m unittest discover -s . -p "test_*.py" -t .
       - name: Frontend checks
         working-directory: jarvis-studio-gui
@@ -68,7 +69,8 @@ jobs:
         run: |
           $exe = Get-ChildItem jarvis-studio-gui/src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
           if (-not $exe) { Write-Output "::error::No installer was produced."; exit 1 }
-          $name = "JARVIS-$($env:GITHUB_REF_NAME -replace '/', '-')-setup.exe"
+          $version = (Get-Content jarvis-studio-gui/package.json | ConvertFrom-Json).version
+          $name = "JARVIS-v$version-x64-setup.exe"
           Copy-Item $exe.FullName $name
           "INSTALLER=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 

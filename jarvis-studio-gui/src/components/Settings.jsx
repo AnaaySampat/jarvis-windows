@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import QRCode from "qrcode";
 import GesturePanel from "../gestures/GesturePanel";
+import TaskPasskeySettings from "./TaskPasskeySettings";
 import { Icon } from "../hud/icons";
 import { Card, Row, Switch, Guide, Note, ConfirmButton, ChipList, AddField } from "./controls";
 
@@ -73,9 +74,10 @@ function timeAgo(epochS) {
 // Remote mobile control: mint a QR the phone scans to pair over Tailscale, plus a
 // 6-digit PIN (shown here, NOT in the QR) you type into the phone once — that PIN
 // is the pairing approval, so a device that only grabbed the QR can't pair. Manage
-// /revoke paired devices below. Per-task approval lives on the phone (fingerprint).
+// /revoke paired devices below. The task passkey is set here; entry and approvals
+// happen on the phone for each new task.
 function RemotePairingSection({ devicePairing, devices, onCreatePairing,
-  onListDevices, onRevokeDevice }) {
+  onListDevices, onRevokeDevice, taskPasskeyState, onLoadTaskPasskey, onSetTaskPasskey }) {
   const [qr, setQr] = useState("");
   useEffect(() => { onListDevices && onListDevices(); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -95,6 +97,7 @@ function RemotePairingSection({ devicePairing, devices, onCreatePairing,
   const tsReady = !devicePairing || devicePairing.tailscale_ready;
 
   return (<>
+    <TaskPasskeySettings state={taskPasskeyState} onLoad={onLoadTaskPasskey} onSave={onSetTaskPasskey} />
     <Card title="Pair a phone"
           sub="Control this PC from your phone over Tailscale — on the same network or a different one."
           actions={(
@@ -685,7 +688,8 @@ function DevicesSection(props) {
     {tab === "phone" && (
       <RemotePairingSection devicePairing={props.devicePairing} devices={props.devices}
                             onCreatePairing={props.onCreatePairing} onListDevices={props.onListDevices}
-                            onRevokeDevice={props.onRevokeDevice} />
+                            onRevokeDevice={props.onRevokeDevice} taskPasskeyState={props.taskPasskeyState}
+                            onLoadTaskPasskey={props.onLoadTaskPasskey} onSetTaskPasskey={props.onSetTaskPasskey} />
     )}
     {tab === "tv" && <TvSection tvState={props.tvState} onTv={props.onTv} />}
     {tab === "whatsapp" && <WhatsAppSection waState={props.waState} onWhatsApp={props.onTv} />}
@@ -887,7 +891,7 @@ const SECTIONS = [
   { id: "files", label: "Files & Location", icon: "folder", desc: "Where JARVIS saves things, what it may read, and where you are.",
     words: "storage folder directories files read location weather pin skills terminal" },
   { id: "devices", label: "Devices", icon: "phone", desc: "Your phone, Android TV and WhatsApp.",
-    words: "phone remote pairing qr pin tailscale devices mobile tv television android adb netflix whatsapp message chat wake lan" },
+    words: "phone remote pairing qr pin passkey password task tailscale devices mobile tv television android adb netflix whatsapp message chat wake lan" },
   { id: "connectors", label: "Connectors", icon: "plug", desc: "Gmail, GitHub, Notion, Google Calendar and more — set up in a minute.",
     words: "connectors connect gmail email mail inbox imap app password github notion google calendar todoist home assistant brave search zapier slack folders integrations apps" },
   { id: "mcp", label: "MCP Servers", icon: "plug", desc: "Extra tools from Model Context Protocol servers.",
@@ -920,6 +924,7 @@ const SHORTCUTS = [
 ];
 
 export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocation, onRefreshModels, onRerankModels, onRepairSetup,
+  taskPasskeyState, onLoadTaskPasskey, onSetTaskPasskey,
   devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState, mcpState, connState,
   onOpenCustomize, initialSection, gestureControls, gestureRoutines }) {
   // Re-discover models when the panel opens so the dropdown is current (e.g. a
@@ -1470,6 +1475,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
             {current.id === "devices" && (
               <DevicesSection devicePairing={devicePairing} devices={devices} onCreatePairing={onCreatePairing}
                               onListDevices={onListDevices} onRevokeDevice={onRevokeDevice}
+                              taskPasskeyState={taskPasskeyState} onLoadTaskPasskey={onLoadTaskPasskey} onSetTaskPasskey={onSetTaskPasskey}
                               tvState={tvState} waState={waState} onTv={onTv} />
             )}
             {current.id === "connectors" && (<>

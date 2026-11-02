@@ -96,6 +96,15 @@ class SyncTests(unittest.TestCase):
         self.assertFalse(ms.apply({"facts": ["x", {"text": "", "ts": 5}, {"key": "a", "ts": "zz"}],
                                    "routines": [{"name": "x"}]}))
 
+    def test_reply_echoes_only_a_bounded_request_id(self):
+        for request_id in ("memory-123-1", None, "", "x" * 129, ["invalid"]):
+            with self.subTest(request_id=request_id):
+                reply, _ = ms.handle({"since": 0, "request_id": request_id})
+                if request_id == "memory-123-1":
+                    self.assertEqual(reply["request_id"], request_id)
+                else:
+                    self.assertNotIn("request_id", reply)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -83,7 +83,7 @@ jobs:
       # verified minimum for `unittest discover` — extend it if a new test pulls
       # in a module that is imported at module scope.
       - name: Install test dependencies
-        run: pip install websockets httpx cryptography numpy pyaudio faster-whisper pillow
+        run: pip install websockets httpx cryptography rfc8785 numpy pyaudio faster-whisper pillow
 
       - name: Run tests
         run: python -m unittest discover -s . -p "test_*.py" -t .

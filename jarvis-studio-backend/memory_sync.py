@@ -204,4 +204,8 @@ def handle(payload: dict) -> "tuple[dict, bool]":
     payload = payload if isinstance(payload, dict) else {}
     stamp = now_ms()
     changed = apply(payload)
-    return {"now": stamp, **changes(max(_int(payload.get("since")), 0))}, changed
+    reply = {"now": stamp, **changes(max(_int(payload.get("since")), 0))}
+    request_id = payload.get("request_id")
+    if isinstance(request_id, str) and 0 < len(request_id) <= 128:
+        reply["request_id"] = request_id
+    return reply, changed

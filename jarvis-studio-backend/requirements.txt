@@ -3,6 +3,7 @@ httpx>=0.27.0
 # Remote mobile control: ECDSA P-256 host/device identity + signed handshake for
 # the Tailscale-gated phone pairing (autonomy/device_identity.py).
 cryptography>=42.0
+rfc8785>=0.1.4,<1  # canonical JSON shared with the TypeScript companion
 # Application Default Credentials (ADC) for Vertex AI — mints OAuth bearer tokens
 # from the user's `gcloud auth application-default login` so Gemini calls bill to
 # their Google Cloud project (and its trial credits). No API key needed.
