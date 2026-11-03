@@ -730,7 +730,8 @@ async def _run_remote_task_owned(task_id: str, kind: str, goal: str, device_name
                        "summary": "Screen capture cancelled." if stopped else "Here is your PC's screenshot." if image else
                        ("Screen capture failed on the PC." if approved else "Screen capture was not approved on your phone."),
                        "artifacts": [{"id": task_id + ":screenshot", "kind": "image", "data_url": image}] if image else [],
-                       "evidence": [agent_results.receipt("screenshot", "Captured the PC screen", "screen")] if image else []}
+                       "evidence": [{"id": task_id + ":screenshot", "kind": "screenshot",
+                                     "detail": "Captured the PC screen", "source": "screen"}] if image else []}
             else:
                 res = await autopilot.run_task(
                     "browser" if web else kind,
@@ -750,6 +751,8 @@ async def _run_remote_task_owned(task_id: str, kind: str, goal: str, device_name
                     "findings": findings, "v": REMOTE_PROTOCOL_VERSION}
         if res.get("artifacts"):
             terminal["artifacts"] = res["artifacts"]
+        else:
+            terminal.pop("artifacts", None)
         if ok:
             # The phone gates completion on proof.passed + a non-empty evidence list.
             # Only actual executor/checker receipts can back the signed proof.
