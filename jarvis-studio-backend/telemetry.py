@@ -38,6 +38,64 @@ _gpu_kind: str = "none"               # "nvml" | "gputil" | "typeperf" | "none"
 _gpu_inited = False
 _gpu_pct: "float | None" = None       # cached util when read by the bg poller
 _gpu_poller_started = False
+_GPU_POLL_SECONDS = 15.0
+_GPU_RETRY_MAX_SECONDS = 300.0
+_app_root = None
+_app_processes = []
+_app_refresh_at = 0.0
+_app_previous_cpu = {}
+_app_previous_at = 0.0
+
+
+def get_app_stats() -> dict | None:
+    """Read Jarvis's tree, refreshing child discovery only once every ten seconds.
+
+    The desktop host/launcher supplies its PID to include the GUI and WebViews.
+    Direct backend launches report backend scope. Memory is private committed
+    memory, rather than a sum that double-counts shared physical pages.
+    """
+    global _app_root, _app_processes, _app_refresh_at, _app_previous_cpu, _app_previous_at
+    if psutil is None:
+        return None
+    now = time.monotonic()
+    try:
+        if _app_root is None:
+            try:
+                _app_root = psutil.Process(int(os.environ.get("JARVIS_APP_ROOT_PID", os.getpid())))
+            except (ValueError, psutil.Error):
+                _app_root = psutil.Process()
+        if not _app_processes or now >= _app_refresh_at:
+            _app_processes = [_app_root] + _app_root.children(recursive=True)
+            _app_refresh_at = now + 10.0
+        previous, current = _app_previous_cpu, {}
+        used_cpu = private = resident = count = 0
+        for process in _app_processes:
+            try:
+                if not process.is_running():
+                    continue
+                cpu = process.cpu_times()
+                total = cpu.user + cpu.system
+                current[process.pid] = total
+                if process.pid in previous:
+                    used_cpu += max(0.0, total - previous[process.pid])
+                memory = process.memory_info()
+                private += getattr(memory, "private", memory.rss)
+                resident += memory.rss
+                count += 1
+            except (psutil.Error, OSError):
+                continue
+        elapsed = now - _app_previous_at if _app_previous_at else 0
+        _app_previous_cpu, _app_previous_at = current, now
+        return {
+            "cpu": round(min(100.0, used_cpu / elapsed / (psutil.cpu_count() or 1) * 100), 1) if elapsed > 0 else 0,
+            "privateMiB": round(private / 2**20, 1),
+            "residentSumMiB": round(resident / 2**20, 1),
+            "processes": count,
+            "scope": "backend" if _app_root.pid == os.getpid() else "app",
+        }
+    except (psutil.Error, OSError):
+        _app_root, _app_processes = None, []
+        return None
 
 
 def _system_drive() -> str:
@@ -112,6 +170,7 @@ def _gpu_poller() -> None:
     out to nvidia-smi (~100-500ms) — sampling here every 2.5s and caching into
     `_gpu_pct` means get_fast_stats() just reads the cached number."""
     global _gpu_pct, _gpu_name
+    failures = 0
     while True:
         try:
             if _gpu_kind == "gputil":
@@ -126,7 +185,11 @@ def _gpu_poller() -> None:
                 _gpu_pct = _typeperf_gpu()
         except Exception:
             _gpu_pct = None
-        time.sleep(2.5)
+        # Failed Windows counter queries can themselves consume substantial CPU.
+        # Keep unavailable GPU telemetry from continuously spawning expensive
+        # subprocesses; retry periodically and recover normal cadence on success.
+        failures = min(failures + 1, 5) if _gpu_pct is None else 0
+        time.sleep(min(_GPU_RETRY_MAX_SECONDS, _GPU_POLL_SECONDS * (2 ** failures)))
 
 
 def _read_gpu() -> "tuple[float | None, str]":
@@ -254,6 +317,7 @@ def get_fast_stats() -> dict:
 
     return {
         "cpu": float(cpu),
+        "app": get_app_stats(),
         "ram": float(vm.percent),
         "ramTotalGb": vm.total / 1e9,
         "disk": float(du.percent),

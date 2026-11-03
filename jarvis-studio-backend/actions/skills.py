@@ -720,17 +720,25 @@ def text_to_pdf(payload) -> Tuple[bool, str]:
         pdf = FPDF()
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
+        # Core Helvetica fonts use latin-1. Keep common smart punctuation readable
+        # and apply the same fallback to the title as to the document body.
+        punctuation = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                                     "\u2013": "-", "\u2014": "-", "\u2026": "...", "\u2022": "-"})
+        def printable(value):
+            return value.translate(punctuation).encode("latin-1", "replace").decode("latin-1")
+
         if title:
             pdf.set_font("Helvetica", "B", 16)
-            pdf.multi_cell(0, 10, title)
+            pdf.multi_cell(0, 10, printable(title), new_x="LMARGIN", new_y="NEXT")
             pdf.ln(2)
         pdf.set_font("Helvetica", size=12)
-        # latin-1 is all the core fonts support; drop anything exotic.
-        safe = text.encode("latin-1", "replace").decode("latin-1")
+        safe = printable(text)
         for line in safe.split("\n"):
-            pdf.multi_cell(0, 8, line if line else " ")
+            # fpdf2 otherwise leaves x at the cell's right edge; the next line
+            # then has zero width and fails even for an ordinary short sentence.
+            pdf.multi_cell(0, 8, line if line else " ", new_x="LMARGIN", new_y="NEXT")
         out_dir = storage.documents_dir()
-        name = (title or "document").lower().replace(" ", "_")[:40] or "document"
+        name = re.sub(r"[^\w.-]+", "_", (title or "document").lower()).strip(" ._")[:40] or "document"
         out = out_dir / f"{name}_{int(time.time())}.pdf"
         pdf.output(str(out))
         _open_file(out)

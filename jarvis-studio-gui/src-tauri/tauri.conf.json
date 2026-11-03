@@ -36,7 +36,8 @@
         "resizable": false,
         "shadow": false,
         "focus": false,
-        "visible": false
+        "visible": false,
+        "create": false
       },
       {
         "label": "browser-panel",
@@ -53,7 +54,8 @@
         "focus": false,
         "visible": false,
         "x": 0,
-        "y": 0
+        "y": 0,
+        "create": false
       },
       {
         "label": "control-overlay",
@@ -70,7 +72,8 @@
         "focus": false,
         "visible": false,
         "x": 0,
-        "y": 0
+        "y": 0,
+        "create": false
       }
     ],
     "security": {
@@ -89,8 +92,8 @@
       "icons/icon.ico"
     ],
     "shortDescription": "JARVIS voice assistant for Windows",
-    "longDescription": "A JARVIS-style AI voice assistant with an Iron-Man HUD interface. Wake word, local transcription, cloud LLM, and PC automation.",
-    "copyright": "Copyright © 2026 JARVIS contributors",
+    "longDescription": "JARVIS voice assistant with local wake word, Groq online transcription, speech output and supervised PC automation.",
+    "copyright": "Copyright \u00c2\u00a9 2026 JARVIS contributors",
     "category": "Productivity",
     "windows": {
       "webviewInstallMode": {

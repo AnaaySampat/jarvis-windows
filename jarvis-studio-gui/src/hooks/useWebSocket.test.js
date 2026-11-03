@@ -1,5 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { reduceSetupProgress } from "./useWebSocket";
+import { agentTaskStatus, reduceSetupProgress, viewAcceptsEvent, boundAgentImages } from "./useWebSocket";
+
+describe("auxiliary view memory", () => {
+  it("does not retain full chat, memory or telemetry in auxiliary windows", () => {
+    for (const view of ["overlay", "browser-panel", "control-overlay"]) {
+      for (const event of ["history", "memory", "stream_delta", "telemetry"]) {
+        expect(viewAcceptsEvent(view, event)).toBe(false);
+      }
+      expect(viewAcceptsEvent(view, "status")).toBe(true);
+    }
+    expect(viewAcceptsEvent("main", "history")).toBe(true);
+  });
+
+  it("bounds screenshots across tasks while keeping recent images and old step text", () => {
+    const tasks = [
+      { id: "old", items: [{ kind: "step", line: "Observed" }, { kind: "shot", image: "123456" }] },
+      { id: "new", items: [{ kind: "shot", image: "abcdef" }] },
+    ];
+    const bounded = boundAgentImages(tasks, 8);
+    expect(bounded[0].items).toEqual([{ kind: "step", line: "Observed" }]);
+    expect(bounded[1]).toBe(tasks[1]);
+    expect(tasks[0].items).toHaveLength(2);
+  });
+});
+
+describe("agentTaskStatus", () => {
+  it("preserves uncertainty instead of treating every non-success as failure", () => {
+    for (const status of ["unverified", "partial", "blocked", "failed"]) {
+      expect(agentTaskStatus({ ok: false, status })).toBe(status);
+    }
+    expect(agentTaskStatus({ ok: true, status: "succeeded" })).toBe("done");
+    expect(agentTaskStatus({ ok: false, status: "unverified", stopped: true })).toBe("stopped");
+  });
+
+  it("supports terminal events from older backends", () => {
+    expect(agentTaskStatus({ ok: true })).toBe("done");
+    expect(agentTaskStatus({ ok: false })).toBe("failed");
+  });
+});
 
 describe("reduceSetupProgress", () => {
   it("tracks each asset once, in arrival order, through to complete", () => {

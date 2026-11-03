@@ -11,6 +11,9 @@ const ALLOWED = new Set(["chrome.debugger.attach", "chrome.debugger.detach",
   "chrome.debugger.sendCommand", "chrome.tabs.create", "chrome.tabs.remove"]);
 
 let ws = null;
+let retryTimer = null;
+let retryDelay = 1000;
+let superseded = false;
 const ours = new Set();       // tabs JARVIS opened (and their popups)
 const attached = new Set();   // of those, the ones whose debugger JARVIS holds
 let groupId = null;
@@ -26,16 +29,30 @@ function send(msg) {
 }
 
 function connect() {
+  if (superseded) return;
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  clearTimeout(retryTimer);
+  retryTimer = null;
   let sock;
   try { sock = new WebSocket(RELAY); } catch { return; }
   ws = sock;
-  sock.onopen = () => badge(true);
-  sock.onclose = () => {
-    if (ws === sock) ws = null;
+  sock.onopen = () => { retryDelay = 1000; badge(true); };
+  sock.onclose = (event) => {
+    if (ws !== sock) return;
+    ws = null;
     badge(false);
     for (const tabId of attached) chrome.debugger.detach({ tabId }).catch(() => {});
     attached.clear();
+    // Another Chrome profile was explicitly selected. Do not let their retry
+    // timers steal the relay back from each other indefinitely.
+    if (event?.code === 1000 && event?.reason === "Another Chrome connected") {
+      superseded = true;
+      return;
+    }
+    // Alarms can only wake a suspended worker every 30 seconds. While awake,
+    // reconnect promptly after JARVIS restarts rather than making a task wait.
+    retryTimer = setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 10000);
   };
   sock.onerror = () => {};    // JARVIS isn't running: the alarm tries again
   sock.onmessage = (e) => { onMessage(e.data); };
@@ -106,6 +123,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.alarms.create("jarvis-reconnect", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(connect);
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (sender.id !== chrome.runtime.id || message?.type !== "jarvis-connect") return;
+  superseded = false;
+  connect();
+  respond({ connected: ws?.readyState === WebSocket.OPEN });
+});
+chrome.action.onClicked.addListener(() => { superseded = false; connect(); });
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 connect();

@@ -13,6 +13,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
+import { useWindowVisibility } from "../hooks/useWindowVisibility";
+import { controlPresentation } from "./controlTint";
 import "./control-overlay.css";
 
 const W = 580, H = 132, EXP_H = 452, MIN_W = 210, MIN_H = 48;
@@ -63,8 +65,9 @@ async function applyWindow(visible, minimized, expanded) {
 }
 
 export default function ControlOverlay() {
+  useWindowVisibility();
   const { controlState, agentTasks, status, screen, stopControl, pauseControl, sendCorrection } =
-    useWebSocket();
+    useWebSocket("control-overlay");
 
   const armed = !!controlState.armed;
   const paused = !!controlState.paused;
@@ -74,6 +77,8 @@ export default function ControlOverlay() {
   );
   const running = !!task && task.status === "running";
   const visible = armed || running;
+  const presentation = controlPresentation(armed, running, paused);
+  const ready = !running || !armed;
 
   const [minimized, setMinimized] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -85,11 +90,11 @@ export default function ControlOverlay() {
   const stepsRef = useRef(null);
 
   useEffect(() => {
-    if (!visible) { startRef.current = null; setElapsed(0); return; }
+    if (!running) { startRef.current = null; setElapsed(0); return; }
     if (startRef.current == null) startRef.current = Date.now();
     const id = setInterval(() => setElapsed((Date.now() - startRef.current) / 1000), 500);
     return () => clearInterval(id);
-  }, [visible]);
+  }, [running]);
 
   useEffect(() => { if (!visible) setMinimized(false); }, [visible]);
 
@@ -143,10 +148,12 @@ export default function ControlOverlay() {
     } catch { /* not in Tauri */ }
   };
 
+  if (!visible) return null;
+
   if (minimized) {
     return (
-      <div className={`co-root co-min${paused ? " co-paused" : ""}`}
-           style={themeStyle} onMouseDown={startDrag}>
+      <div className={`co-root co-min${paused ? " co-paused" : ""}${ready ? " co-ready" : ""}`}
+           style={themeStyle} onMouseDown={startDrag} aria-label={presentation.title}>
         <span className="co-dot" aria-hidden="true" />
         <span className="co-min-time">{fmt(elapsed)}</span>
         <button className="co-btn co-stop" title="Stop" onClick={stopControl}>■</button>
@@ -156,7 +163,7 @@ export default function ControlOverlay() {
   }
 
   return (
-    <div className={`co-root${paused ? " co-paused" : ""}${expanded ? " co-exp" : ""}`}
+    <div className={`co-root${paused ? " co-paused" : ""}${ready ? " co-ready" : ""}${expanded ? " co-exp" : ""}`}
          style={themeStyle} onMouseDown={startDrag}>
       <span className="co-bracket co-tl" aria-hidden="true" />
       <span className="co-bracket co-tr" aria-hidden="true" />
@@ -165,8 +172,8 @@ export default function ControlOverlay() {
 
       <div className="co-bar">
         <span className="co-dot" aria-hidden="true" />
-        <span className="co-title">JARVIS CONTROLLING</span>
-        <span className={`co-live${paused ? " co-live--paused" : ""}`}>{paused ? "PAUSED" : "LIVE"}</span>
+        <span className="co-title">{presentation.title}</span>
+        <span className={`co-live${paused ? " co-live--paused" : ""}`}>{presentation.badge}</span>
         <span className="co-time">{fmt(elapsed)}</span>
         <div className="co-spacer" />
         <button className="co-btn co-stop" title="Stop & disarm" onClick={stopControl}>■ Stop</button>
@@ -198,7 +205,7 @@ export default function ControlOverlay() {
               {stepRows.length === 0 && (
                 <div className="co-step co-step--muted">
                   <span className="co-step-ico">⏳</span>
-                  <span className="co-step-txt">{paused ? "Paused — holding." : "Watching the screen…"}</span>
+                  <span className="co-step-txt">{ready ? presentation.description : paused ? "Paused — holding." : "Watching the screen…"}</span>
                 </div>
               )}
               {stepRows.map((it, i) => (
@@ -222,7 +229,7 @@ export default function ControlOverlay() {
       ) : (
         <div className="co-status" title={lastStep}>
           <span className="co-status-ico" aria-hidden="true">▸</span>
-          <span className="co-status-txt">{lastStep || (paused ? "Paused — JARVIS is holding." : "Working…")}</span>
+          <span className="co-status-txt">{ready ? presentation.description : lastStep || presentation.description}</span>
         </div>
       )}
 

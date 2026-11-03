@@ -12,7 +12,6 @@ openwakeword>=0.6.0
 onnxruntime>=1.16
 pyaudio>=0.2.14
 numpy>=1.24
-faster-whisper>=1.0.0
 edge-tts>=6.1.0
 pyttsx3>=2.90
 pygame>=2.5.0

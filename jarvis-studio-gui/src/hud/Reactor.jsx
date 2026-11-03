@@ -15,7 +15,7 @@ const MOODS = {
 };
 const lerp = (a, b, t) => a + (b - a) * t;
 
-function Rings({ status, rgb, layer }) {
+function Rings({ status, rgb, layer, active }) {
   const cvs = useRef(null);
   const cur = useRef({ ...MOODS.idle });
 
@@ -25,7 +25,7 @@ function Rings({ status, rgb, layer }) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = SIZE * dpr; canvas.height = SIZE * dpr;
     ctx.scale(dpr, dpr);
-    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const still = !active || status === "idle" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const [R0, G0, B0] = rgb;
     const rgba = (a) => `rgba(${R0},${G0},${B0},${a})`;
     const cx = SIZE / 2, cy = SIZE / 2, R = SIZE * 0.46;
@@ -91,7 +91,7 @@ function Rings({ status, rgb, layer }) {
     document.addEventListener("visibilitychange", onVis);
     raf = requestAnimationFrame(frame);
     return () => { cancelAnimationFrame(raf); document.removeEventListener("visibilitychange", onVis); };
-  }, [status, layer, rgb[0], rgb[1], rgb[2]]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [status, active, layer, rgb[0], rgb[1], rgb[2]]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return <canvas ref={cvs} className={`reactor-rings reactor-rings--${layer}`} aria-hidden />;
 }
@@ -108,14 +108,14 @@ export function Waveform({ status = "idle", bars = 36 }) {
   );
 }
 
-export default function Reactor({ status = "idle", label, onClick, rgb = [0, 229, 255] }) {
+export default function Reactor({ status = "idle", active = true, label, onClick, rgb = [0, 229, 255] }) {
   return (
     <button type="button" className={`reactor reactor--${status}`} onClick={onClick}
             aria-label={label} title={label}>
       <span className="reactor-glow" aria-hidden />
-      <Rings status={status} rgb={rgb} layer="back" />
+      <Rings status={status} active={active} rgb={rgb} layer="back" />
       <img className="reactor-helmet" src="/assets/ironman-helmet-kept.png" alt="" draggable={false} />
-      <Rings status={status} rgb={rgb} layer="front" />
+      <Rings status={status} active={active} rgb={rgb} layer="front" />
     </button>
   );
 }

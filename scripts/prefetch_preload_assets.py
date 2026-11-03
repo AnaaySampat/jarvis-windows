@@ -4,19 +4,17 @@ Run by the BUILD machine (via scripts/package-backend.ps1) using the build venv'
 Python, BEFORE staging the frozen backend. It downloads, once, on the dev box:
 
   • Chromium               → preload-assets/ms-playwright/   (~170MB)
-  • faster-whisper base    → preload-assets/whisper-base/    (~150MB)
   • Piper en_GB-alan voice → preload-assets/piper/           (~60MB)
 
-so the shipped installer carries them and a fresh install works OFFLINE, with no
+so the shipped installer carries them and a fresh install needs no
 first-run download. The backend reads exactly these locations at runtime (see
-actions/browser.py `_activate_bundled_chromium`, transcription/whisper_transcriber.py
-`_bundled_model_path`, tts/tts_engine.py `_bundled_piper_dir`).
+actions/browser.py `_activate_bundled_chromium`, tts/tts_engine.py `_bundled_piper_dir`).
 
 The robust auto-download in provisioning.py remains as a SELF-REPAIR fallback: if a
 bundled asset is ever missing/corrupt, first launch re-fetches just that one.
 
 Usage:
-    python scripts/prefetch_preload_assets.py <target-preload-assets-dir> [--skip browser,speech,voice]
+    python scripts/prefetch_preload_assets.py <target-preload-assets-dir> [--skip browser,voice]
 
 Exit code is non-zero if any *requested* asset failed, so the build can fail loudly.
 """
@@ -30,7 +28,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-_WHISPER_REPO = "Systran/faster-whisper-base"
 _PIPER_VOICE = "en_GB-alan-medium"
 
 
@@ -67,26 +64,6 @@ def _fetch_chromium(target: Path) -> None:
     _ok(f"Chromium staged at {dest}")
 
 
-def _fetch_whisper(target: Path) -> None:
-    """Download the faster-whisper base model dir into target/whisper-base."""
-    dest = target / "whisper-base"
-    if dest.is_dir() and (dest / "model.bin").is_file():
-        _ok(f"Whisper base already staged at {dest}")
-        return
-    dest.mkdir(parents=True, exist_ok=True)
-    from huggingface_hub import snapshot_download
-    # Newer huggingface_hub places real files (no symlinks) in local_dir by default;
-    # older versions need the explicit flag. Try the modern signature first.
-    try:
-        snapshot_download(_WHISPER_REPO, local_dir=str(dest))
-    except TypeError:
-        snapshot_download(_WHISPER_REPO, local_dir=str(dest),
-                          local_dir_use_symlinks=False)
-    if not (dest / "model.bin").is_file():
-        raise RuntimeError(f"model.bin missing under {dest} after download")
-    _ok(f"Whisper base staged at {dest}")
-
-
 def _fetch_piper(target: Path) -> None:
     """Download the default Piper voice into target/piper."""
     dest = target / "piper"
@@ -104,7 +81,6 @@ def _fetch_piper(target: Path) -> None:
 
 _FETCHERS = {
     "browser": ("Chromium", _fetch_chromium),
-    "speech": ("Whisper base model", _fetch_whisper),
     "voice": ("Piper neural voice", _fetch_piper),
 }
 
@@ -112,7 +88,7 @@ _FETCHERS = {
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("target", help="preload-assets directory to populate")
-    ap.add_argument("--skip", default="", help="comma list of: browser,speech,voice")
+    ap.add_argument("--skip", default="", help="comma list of: browser,voice")
     args = ap.parse_args()
 
     target = Path(args.target).resolve()

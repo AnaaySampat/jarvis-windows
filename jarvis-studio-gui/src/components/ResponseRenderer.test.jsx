@@ -12,4 +12,13 @@ describe("ResponseRenderer text", () => {
     expect(html).toContain("<td>$2</td>");
     expect(html).not.toContain("|");
   });
+
+  it("shows an uncertain task without a failure cross", () => {
+    const html = renderToStaticMarkup(
+      <ResponseRenderer text="" actions={[{ type: "browser_task", ok: false, status: "unverified", message: "The page opened; completion needs checking." }]} />,
+    );
+    expect(html).toContain("action-card--uncertain");
+    expect(html).toContain('class="action-state">?</span>');
+    expect(html).not.toContain("action-card--fail");
+  });
 });

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
 import "./overlay.css";
+import { voiceOverlayVisible } from "./components/auxiliaryWindows";
+import { useWindowVisibility } from "./hooks/useWindowVisibility";
 
 // Window frames the zoom-scaled pill (120px design × 0.8 ≈ 96px) with margin for
 // its glow. ~20% smaller than the original 150/168/50 footprint.
@@ -35,22 +37,6 @@ async function applyWindow(visible, busy, perm) {
   } catch {
     /* Browser dev preview, no Tauri window available. */
   }
-}
-
-function shouldShow(activeApp, overlay) {
-  if (!overlay?.enabled) return false;
-  if (!activeApp) return false;
-  if (activeApp.on_jarvis) return false;
-  // Normalise both sides to the bare process stem (drop ".exe", lowercase) and
-  // compare for equality. Substring matching over-matched badly — a hide entry
-  // "code" would also hide on "vscode", "chrome" on "chromium", etc.
-  const stem = (s) => String(s || "").toLowerCase().replace(/\.exe$/, "").trim();
-  const app = stem(activeApp.app);
-  const list = (overlay.apps || []).map(stem).filter(Boolean);
-  const matches = !!app && list.includes(app);
-  if (overlay.mode === "only") return list.length ? matches : false;
-  if (overlay.mode === "except") return !matches;
-  return true;
 }
 
 const STATE_LABEL = {
@@ -140,10 +126,11 @@ function accentToRgb(accent) {
 }
 
 export default function Overlay() {
+  useWindowVisibility();
   const {
     status, stopSpeech, triggerListen, finishListen, activeApp, overlay, screen,
     permissionRequest, respondPermission,
-  } = useWebSocket();
+  } = useWebSocket("overlay");
 
   const previewStatus = new URLSearchParams(window.location.search).get("status");
   const displayStatus = previewStatus || status;
@@ -159,7 +146,7 @@ export default function Overlay() {
   // pill is always-on-top, so showing the card is safe even over JARVIS's own
   // windows; a redundant HUD modal (if its window is visible) is harmless.
   const permPending = !!permissionRequest && overlay?.enabled !== false;
-  const visible = permPending || shouldShow(activeApp, overlay);
+  const visible = voiceOverlayVisible(activeApp, overlay, permissionRequest);
   const accent = screen?.accent || "#00e5ff";
   const accentRgb = Array.isArray(screen?.rgb) ? screen.rgb.join(", ") : accentToRgb(accent);
 
@@ -186,6 +173,8 @@ export default function Overlay() {
     e?.stopPropagation();
     finishListen();
   }, [finishListen]);
+
+  if (!visible && !previewStatus) return null;
 
   // Floating Approve/Deny card — replaces the pill while a request is pending.
   if (permPending) {

@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useMemo, useState } from "react";
 import { useWebSocket } from "../hooks/useWebSocket";
+import { useWindowVisibility } from "../hooks/useWindowVisibility";
 import "./browser-panel.css";
 
 const PANEL_W = 400;
@@ -65,10 +66,11 @@ async function applyPanelWindow(visible, minimized) {
 export { PANEL_W };
 
 export default function BrowserPanel() {
+  useWindowVisibility();
   const {
     browserState, agentTasks, status, stopSpeech, setBrowserOpen, wsSend, screen,
     stopControl, sendMessage,
-  } = useWebSocket();
+  } = useWebSocket("browser-panel");
 
   const runningBrowser = useMemo(
     () => (agentTasks || []).find((t) => t.kind === "browser" && t.status === "running"),
@@ -177,6 +179,8 @@ export default function BrowserPanel() {
       </div>
     );
   }
+
+  if (!visible) return null;
 
   return (
     <div

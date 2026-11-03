@@ -112,6 +112,7 @@ _REMOTE_FREE = {
     "lookup", "look_up", "search", "qr_code", "qr", "qrcode", "generate_image",
     "gen_image", "create_image", "make_image", "image", "list_dir", "ls", "dir",
     "list_directory", "browse_dir", "browse_files", "load_tools", "read_skill",
+    "read_agent_result", "consult_agent",
 }
 
 
@@ -601,7 +602,25 @@ def _safe_int(value, default: int) -> int:
 
 
 def _run_one(spec: dict) -> dict:
+    import workflow_store
+    return workflow_store.execute(_run_one_impl, "action:" + str(spec.get("type") or ""), spec)
+
+
+def _run_one_impl(spec: dict) -> dict:
     atype = str(spec.get("type", "")).lower().strip()
+    import agent_results
+    if agent_results.readonly.get() and not agent_results.read_only_spec(spec):
+        return {"type": atype, "ok": False, "status": "blocked",
+                "message": "Consultation is information-only; this action was not run."}
+    if atype == "read_agent_result":
+        import workflow_store
+        saved = workflow_store.active_result(str(spec.get("result_id") or ""))
+        return {"type": atype, "ok": saved is not None,
+                "message": "Stored result found." if saved else "No such result in this workflow.",
+                "feed_to_model": {"content": json.dumps(saved, ensure_ascii=False)}}
+    if atype == "consult_agent":
+        return {"type": atype, "ok": None, "needs_consultation": True,
+                "question": str(spec.get("question") or ""), "agent": str(spec.get("agent") or "")}
     # The single "target" most actions use; some skills read the whole spec.
     target = spec.get("target") or spec.get("app") or spec.get("url") \
         or spec.get("query") or spec.get("command") or spec.get("text") \
@@ -823,6 +842,10 @@ def _run_one(spec: dict) -> dict:
 
     elif atype in ("text_to_pdf", "make_pdf", "create_pdf", "save_pdf"):
         ok, msg = skills.text_to_pdf(spec)
+        saved = re.search(r"saved to (.+?)\.?$", msg or "") if ok else None
+        if saved:
+            return {"type": atype, "ok": ok, "message": msg,
+                    "artifacts": [{"uri": saved.group(1), "kind": "document"}]}
     elif atype in ("record", "recording", "record_audio", "record_video", "record_screen"):
         # Let an explicit type like record_screen imply the media.
         if atype == "record_audio":
@@ -1252,6 +1275,11 @@ def run_specs(specs: "List[dict]") -> List[dict]:
     results: List[dict] = []
     specs = _drop_runaway([s for s in (specs or []) if isinstance(s, dict)])
     for spec in _strip_subsumed(specs):
+        import agent_results
+        if agent_results.readonly.get() and not agent_results.read_only_spec(spec):
+            results.append({"type": spec.get("type"), "ok": False, "status": "blocked",
+                            "message": "Information-only helper cannot perform this action."})
+            continue
         atype = str(spec.get("type") or "").lower().strip()
         if not atype:
             print(f"[Actions] ignored action with empty type: {spec!r}", flush=True)

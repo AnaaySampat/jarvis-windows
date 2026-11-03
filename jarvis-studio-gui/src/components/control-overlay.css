@@ -46,6 +46,7 @@
 .co-dot { width: 9px; height: 9px; border-radius: 50%; background: #ff4d4f; flex: 0 0 auto;
   box-shadow: 0 0 8px #ff4d4f; animation: co-pulse 1.3s ease-in-out infinite; }
 .co-paused .co-dot { background: #ffc107; box-shadow: 0 0 8px #ffc107; animation: none; }
+.co-ready .co-dot { opacity: 0.6; box-shadow: none; animation: none; }
 @keyframes co-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 .co-title { font-family: "Orbitron", "Share Tech Mono", monospace; font-weight: 700;
@@ -57,6 +58,7 @@
   animation: co-pulse 1.6s ease-in-out infinite; }
 .co-live--paused { background: #ffc107; color: #201500; box-shadow: 0 0 10px rgba(255,193,7,0.5);
   animation: none; }
+.co-ready .co-live { opacity: 0.7; box-shadow: none; animation: none; }
 
 .co-time { font-size: 15px; letter-spacing: 2px; color: #ff5a5c;
   text-shadow: 0 0 8px rgba(255,90,92,0.45); }

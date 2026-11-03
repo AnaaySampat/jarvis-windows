@@ -22,6 +22,7 @@ import { SkillsOverlay, CapabilitiesOverlay, PowerOverlay, ChatOverlay, MemoryOv
   AgentRow } from "./HudPanels";
 import { agentPick } from "./agents";
 import { SOURCE_LABEL } from "../utils/taskSource";
+import { useWindowVisibility } from "../hooks/useWindowVisibility";
 
 /* Theme defaults (App recolours them from the user's screen settings). */
 export const DIRECTIONS = [
@@ -47,12 +48,13 @@ function greeting(h) {
 }
 
 /* Ticks on its own so the rest of the screen doesn't re-render every second. */
-function HeroClock() {
+function HeroClock({ active }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
+    if (!active) return;
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [active]);
   const parts = new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit" }).formatToParts(now);
   const time = parts.filter((p) => p.type !== "dayPeriod").map((p) => p.value).join("").trim();
   const period = parts.find((p) => p.type === "dayPeriod")?.value;
@@ -124,6 +126,7 @@ export function JarvisHUD({
   // overlays (App owns these so JARVIS can drive them too)
   chatOpen, setChatOpen,
   skillsOpen, setSkillsOpen,
+  onOpenCamera,
   capsOpen, setCapsOpen,
   powerOpen, setPowerOpen,
   memoryOpen, setMemoryOpen,
@@ -162,6 +165,7 @@ export function JarvisHUD({
   const vis = sc.panels || {};
   const order = sc.order || { left: ["system", "power", "agenda"], right: ["weather", "network", "terminal"] };
   const background = sc.background || "grid";
+  const visible = useWindowVisibility();
   const density = sc.density || "normal";
   const hudCards = sc.cards === "hud";
   const reactor = sc.core === "reactor";
@@ -231,7 +235,7 @@ export function JarvisHUD({
   };
 
   return (
-    <div className={`hud home home--bg-${background} home--${density} home--font-${sc.font || "clean"} home--cards-${sc.cards || "clean"}`}
+    <div data-status={shownStatus} className={`hud home home--bg-${background} home--${density} home--font-${sc.font || "clean"} home--cards-${sc.cards || "clean"}`}
          style={lookStyle}>
       <div className="home-bg" aria-hidden="true" />
       {hudCards && <div className="im-frame" aria-hidden="true" />}
@@ -261,8 +265,8 @@ export function JarvisHUD({
         <aside className="home-col home-col--left" aria-label="Left cards" {...dropZone("left")}>{column("left")}</aside>
 
         <section className="home-hero" aria-label="JARVIS">
-          <HeroClock />
-          <Core status={shownStatus} rgb={c.rgb} onClick={busy ? onStop : onListen}
+          <HeroClock active={visible} />
+          <Core active={visible} status={shownStatus} rgb={c.rgb} onClick={busy ? onStop : onListen}
                 label={busy ? "Stop" : "Talk to JARVIS"} />
           <div className="hero-status" role="status">
             {hudCards && <Waveform status={shownStatus} />}
@@ -306,6 +310,7 @@ export function JarvisHUD({
         open={skillsOpen} onClose={() => setSkillsOpen(false)}
         recordings={recordings} runAction={runAction}
         allowedDirs={allowedDirs} onSaveDirs={onSaveDirs}
+        onOpenCamera={onOpenCamera}
         onShowResult={() => { setSkillsOpen(false); setChatOpen(true); }}
       />
       <CapabilitiesOverlay open={capsOpen} onClose={() => setCapsOpen(false)} onAsk={onAsk} />

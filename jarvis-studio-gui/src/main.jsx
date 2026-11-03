@@ -1,4 +1,4 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
 
 // Bundled HUD fonts (offline, served from 'self' so they satisfy the app CSP).
@@ -16,10 +16,10 @@ import "@fontsource/inter/600.css";
 import "@fontsource/inter/700.css";
 import "@fontsource/share-tech-mono/400.css";
 
-import App from "./App";
-import Overlay from "./Overlay";
-import BrowserPanel from "./components/BrowserPanel";
-import ControlOverlay from "./components/ControlOverlay";
+const App = lazy(() => import("./App"));
+const Overlay = lazy(() => import("./Overlay"));
+const BrowserPanel = lazy(() => import("./components/BrowserPanel"));
+const ControlOverlay = lazy(() => import("./components/ControlOverlay"));
 import "./index.css";
 import "./ui.css";
 
@@ -48,6 +48,6 @@ function Root() {
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <Root />
+    <Suspense fallback={null}><Root /></Suspense>
   </React.StrictMode>,
 );

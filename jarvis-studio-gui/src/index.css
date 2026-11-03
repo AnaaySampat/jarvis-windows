@@ -4,6 +4,14 @@
   padding: 0;
 }
 
+/* Native hiding/minimization can leave WebView2's document marked visible. */
+html[data-window-visible="false"] *,
+html[data-window-visible="false"] *::before,
+html[data-window-visible="false"] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
 :root {
   --bg-base:     #04070d;
   --bg-surface:  #0e1116;
@@ -389,6 +397,11 @@ html, body, #root {
   border-color: rgba(255,84,104,0.28);
   border-left-color: #ff5468;
 }
+.action-card--uncertain {
+  background: rgba(230,174,76,0.07);
+  border-color: rgba(230,174,76,0.28);
+  border-left-color: #e6ae4c;
+}
 .action-ico { font-size: 16px; line-height: 1; flex-shrink: 0; }
 .action-msg {
   flex: 1; font-size: 13px; color: var(--text-pri); user-select: text;
@@ -398,6 +411,7 @@ html, body, #root {
 }
 .action-state { font-size: 13px; color: var(--accent); flex-shrink: 0; }
 .action-card--fail .action-state { color: #ff5468; }
+.action-card--uncertain .action-state { color: #e6ae4c; }
 /* Grounded web-search source chips (provenance for live answers). Non-clickable
    by design — a real <a href> would navigate the whole Tauri webview away. */
 .action-sources { display: flex; flex-wrap: wrap; gap: 6px; padding-left: 27px; }

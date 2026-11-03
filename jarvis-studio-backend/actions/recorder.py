@@ -3,7 +3,7 @@
 A tiny background-thread recorder you can start and stop by voice:
 
   • voice  → captures the default microphone to a .wav  (uses pyaudio, already a dep)
-  • video  → captures the default webcam (+ mic best-effort) to an .avi/.mp4 via OpenCV
+  • video  → captures the default webcam to an .avi via OpenCV
 
 Files land in the user's storage 'recordings' folder (see storage.py).
 Everything is best-effort and returns the usual ``(ok, message)`` tuple. Only
@@ -26,17 +26,63 @@ def _out_dir() -> Path:
     return storage.recordings_dir()
 
 
-class _AudioRecorder:
+class _Recorder:
     def __init__(self) -> None:
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self.path: Optional[Path] = None
         self._error: Optional[str] = None
+        self._frames = 0
 
     @property
     def active(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def _worker(self) -> None:
+        try:
+            self._run()
+        except Exception as exc:  # noqa: BLE001 — device/encoder failures belong in the reply
+            self._error = str(exc)
+        finally:
+            self._ready.set()  # failed startup must wake start() too
+
+    def _begin(self, message: str) -> Tuple[bool, str]:
+        self._error = None
+        self._frames = 0
+        self._stop.clear()
+        self._ready.clear()
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+        if not self._ready.wait(timeout=8):
+            self._stop.set()
+            return False, "The recording could not start in time; the capture device may be busy."
+        if self._error:
+            return False, f"The recording failed, sir — {self._error}."
+        if not self.active or not self._frames:
+            return False, "The recording stopped before any frames were captured."
+        return True, message
+
+    def _finish(self, media: str, saved: str, timeout: float) -> Tuple[bool, str]:
+        if self._thread is None:
+            return False, f"I'm not recording any {media} right now."
+        self._stop.set()
+        self._thread.join(timeout=timeout)
+        if self.active:
+            return False, "The recording is still stopping; wait a moment and ask me to stop again."
+        self._thread = None
+        if self._error:
+            return False, f"The recording failed, sir — {self._error}."
+        try:
+            valid_file = self.path is not None and self.path.is_file() and self.path.stat().st_size > 0
+        except OSError:
+            valid_file = False
+        if not self._frames or not valid_file:
+            return False, "The recording didn't save any captured frames, sir."
+        return True, f"Saved your {saved} to {self.path}."
+
+
+class _AudioRecorder(_Recorder):
     def start(self) -> Tuple[bool, str]:
         if self.active:
             return False, "I'm already recording audio."
@@ -45,22 +91,10 @@ class _AudioRecorder:
         except ImportError:
             return False, "Voice recording needs pyaudio (it ships with Jarvis already)."
         self.path = _out_dir() / f"voice_{int(time.time())}.wav"
-        self._error = None
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        return True, "Recording audio. Say 'stop recording' when you're done."
+        return self._begin("Recording audio. Say 'stop recording' when you're done.")
 
     def stop(self) -> Tuple[bool, str]:
-        if not self.active:
-            return False, "I'm not recording any audio right now."
-        self._stop.set()
-        self._thread.join(timeout=5)
-        if self._error:
-            return False, f"The recording failed, sir — {self._error}."
-        if self.path is None or not self.path.exists():
-            return False, "The recording didn't save, sir."
-        return True, f"Saved your recording to {self.path}."
+        return self._finish("audio", "recording", 5)
 
     def _run(self) -> None:
         import pyaudio
@@ -76,6 +110,8 @@ class _AudioRecorder:
                              input=True, frames_per_buffer=chunk)
             while not self._stop.is_set():
                 frames.append(stream.read(chunk, exception_on_overflow=False))
+                self._frames += 1
+                self._ready.set()
         except Exception as exc:  # noqa: BLE001
             self._error = str(exc)
         finally:
@@ -97,19 +133,13 @@ class _AudioRecorder:
             except Exception as exc:  # noqa: BLE001
                 self._error = str(exc)
             finally:
-                pa.terminate()
+                try:
+                    pa.terminate()
+                except Exception:  # noqa: BLE001
+                    pass
 
 
-class _VideoRecorder:
-    def __init__(self) -> None:
-        self._thread: Optional[threading.Thread] = None
-        self._stop = threading.Event()
-        self.path: Optional[Path] = None
-
-    @property
-    def active(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
+class _VideoRecorder(_Recorder):
     def start(self) -> Tuple[bool, str]:
         if self.active:
             return False, "I'm already recording video."
@@ -119,53 +149,42 @@ class _VideoRecorder:
             return False, ("Video recording needs OpenCV. Install it with: "
                            "pip install opencv-python")
         self.path = _out_dir() / f"video_{int(time.time())}.avi"
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        return True, "Recording from your webcam. Say 'stop recording' when you're done."
+        return self._begin("Recording from your webcam. Say 'stop recording' when you're done.")
 
     def stop(self) -> Tuple[bool, str]:
-        if not self.active:
-            return False, "I'm not recording any video right now."
-        self._stop.set()
-        self._thread.join(timeout=6)
-        if self.path is None or not self.path.exists():
-            return False, ("The video didn't save, sir — the webcam may be "
-                           "unavailable or in use.")
-        return True, f"Saved your video to {self.path}."
+        return self._finish("video", "video", 6)
 
     def _run(self) -> None:
         import cv2
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            self._stop.set()
-            return
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
-        fourcc = cv2.VideoWriter_fourcc(*"XVID")
-        writer = cv2.VideoWriter(str(self.path), fourcc, 20.0, (w, h))
+        cap, writer = None, None
         try:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                raise RuntimeError("the webcam is unavailable or in use")
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
+            fourcc = cv2.VideoWriter_fourcc(*"XVID")
+            writer = cv2.VideoWriter(str(self.path), fourcc, 20.0, (w, h))
+            if not writer.isOpened():
+                raise RuntimeError("the video writer could not open the output file")
             while not self._stop.is_set():
                 ok, frame = cap.read()
                 if not ok:
-                    break
+                    if self._stop.is_set():
+                        break
+                    raise RuntimeError("the webcam stopped producing frames")
                 writer.write(frame)
+                self._frames += 1
+                self._ready.set()
         finally:
-            cap.release()
-            writer.release()
+            if cap is not None:
+                cap.release()
+            if writer is not None:
+                writer.release()
 
 
-class _ScreenRecorder:
+class _ScreenRecorder(_Recorder):
     """Capture the whole screen to a video file (mss grab → OpenCV writer)."""
-
-    def __init__(self) -> None:
-        self._thread: Optional[threading.Thread] = None
-        self._stop = threading.Event()
-        self.path: Optional[Path] = None
-
-    @property
-    def active(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
 
     def start(self) -> Tuple[bool, str]:
         if self.active:
@@ -177,19 +196,10 @@ class _ScreenRecorder:
             return False, ("Screen recording needs mss and OpenCV. Install them with: "
                            "pip install mss opencv-python")
         self.path = _out_dir() / f"screen_{int(time.time())}.mp4"
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        return True, "Recording your screen. Say 'stop recording' when you're done."
+        return self._begin("Recording your screen. Say 'stop recording' when you're done.")
 
     def stop(self) -> Tuple[bool, str]:
-        if not self.active:
-            return False, "I'm not recording the screen right now."
-        self._stop.set()
-        self._thread.join(timeout=6)
-        if self.path is None or not self.path.exists():
-            return False, "The screen recording didn't save, sir."
-        return True, f"Saved your screen recording to {self.path}."
+        return self._finish("screen", "screen recording", 6)
 
     def _run(self) -> None:
         import cv2
@@ -203,11 +213,15 @@ class _ScreenRecorder:
             writer = cv2.VideoWriter(str(self.path), fourcc, fps, (w, h))
             frame_interval = 1.0 / fps
             try:
+                if not writer.isOpened():
+                    raise RuntimeError("the screen video writer could not open the output file")
                 while not self._stop.is_set():
                     t0 = time.time()
                     shot = sct.grab(mon)
                     frame = np.array(shot)[:, :, :3]      # BGRA → BGR
                     writer.write(frame)
+                    self._frames += 1
+                    self._ready.set()
                     elapsed = time.time() - t0
                     if elapsed < frame_interval:
                         time.sleep(frame_interval - elapsed)

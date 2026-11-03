@@ -143,6 +143,7 @@ class NoRepeatTests(unittest.IsolatedAsyncioTestCase):
             return None
 
         with mock.patch.object(main.autopilot, "run_task", fake_run), \
+             mock.patch.object(main, "_users_chrome", mock.AsyncMock(return_value=False)), \
              mock.patch.object(main, "emit", fake_emit), \
              mock.patch.object(main, "_tts", None), \
              mock.patch.object(main.playbooks, "autopilot_hint", lambda g: ""), \
@@ -155,6 +156,84 @@ class NoRepeatTests(unittest.IsolatedAsyncioTestCase):
             # A different kind is still allowed, and the next request starts clean.
             await main._run_autopilot_task({"type": "browser_task", "goal": "look it up"})
             self.assertEqual(len(runs), 2)
+
+
+class AutopilotReportingTests(unittest.IsolatedAsyncioTestCase):
+    async def _run(self, outcome, *, logging_error=False, idle_error=False, kind="browser"):
+        events, memories, report = [], [], {}
+        main._interrupt = None
+        main._autopilot_owner = ""
+        main._acted_and_failed.clear()
+
+        async def emit(event, data=None):
+            if idle_error and event == "status" and data == "idle":
+                raise ConnectionError("status delivery unavailable")
+            events.append((event, data))
+
+        with mock.patch.object(main.autopilot, "run_task", mock.AsyncMock(return_value=outcome)), \
+             mock.patch.object(main.tv_operator, "run_task", mock.AsyncMock(return_value=outcome)), \
+             mock.patch.object(main, "_users_chrome", mock.AsyncMock(return_value=False)), \
+             mock.patch.object(main, "emit", emit), \
+             mock.patch.object(main, "_tts", None), \
+             mock.patch.object(main.playbooks, "autopilot_hint", lambda g: ""), \
+             mock.patch.object(main.playbooks, "capture_auto", lambda *a: None), \
+             mock.patch.object(main, "_log_commands", mock.AsyncMock(side_effect=RuntimeError("display unavailable") if logging_error else None)), \
+             mock.patch.object(main, "note_outcome", memories.append):
+            final = await main._run_autopilot_task({"type": f"{kind}_task", "kind": kind,
+                                                   "goal": "Save the report"}, report=report)
+        return final, report, events, memories
+
+    async def test_a_logging_failure_cannot_overwrite_a_confirmed_success(self):
+        receipt = main.agent_results.receipt("completion_check", "Report saved")
+        final, report, events, _ = await self._run(
+            {"ok": True, "summary": "Saved the report.", "steps": ["Clicked Save"], "evidence": [receipt]},
+            logging_error=True)
+        self.assertEqual(final, "Saved the report.")
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["evidence"], [receipt])
+        terminals = [d for e, d in events if e == "agent_task_end"]
+        self.assertEqual(len(terminals), 1)
+        self.assertEqual(terminals[0]["status"], "succeeded")
+
+    async def test_unverified_outcome_stays_distinct_from_failure_in_ui_and_memory(self):
+        receipt = main.agent_results.receipt("tool_result", "Clicked Save")
+        final, report, events, memories = await self._run(
+            {"ok": False, "status": "unverified", "summary": "Save ran; completion needs checking.",
+             "steps": ["Clicked Save"], "evidence": [receipt]})
+        self.assertEqual(report["status"], "unverified")
+        self.assertEqual(report["summary"], final)
+        self.assertEqual([d["status"] for e, d in events if e == "agent_task_end"], ["unverified"])
+        self.assertIn("completion unverified", memories[0])
+        self.assertNotIn("stopped before finishing", memories[0])
+        self.assertIn("browser", main._acted_and_failed, "uncertain side effects must not be replayed")
+
+    async def test_ui_and_report_agree_when_a_success_has_no_receipt(self):
+        final, report, events, _ = await self._run({"ok": True, "summary": "Saved."})
+        terminal = [d for e, d in events if e == "agent_task_end"][0]
+        self.assertFalse(terminal["ok"])
+        self.assertEqual(terminal["status"], report["status"])
+        self.assertEqual(report["status"], "unverified")
+        self.assertEqual(report["summary"], final)
+
+    async def test_uncertain_work_is_not_replayable_after_a_logging_failure(self):
+        await self._run({"ok": False, "status": "unverified", "summary": "Save ran; check the result.",
+                         "steps": ["Clicked Save"]}, logging_error=True)
+        self.assertIn("browser", main._acted_and_failed)
+
+    async def test_idle_delivery_failure_cannot_escape_after_success(self):
+        final, report, events, _ = await self._run(
+            {"ok": True, "summary": "Saved the report.",
+             "evidence": [main.agent_results.receipt("completion_check", "Report saved")]}, idle_error=True)
+        self.assertEqual(final, "Saved the report.")
+        self.assertTrue(report["ok"])
+        self.assertEqual([d["status"] for e, d in events if e == "agent_task_end"], ["succeeded"])
+
+    async def test_browser_receipt_gate_preserves_legacy_tv_completion(self):
+        final, report, events, _ = await self._run(
+            {"ok": True, "summary": "Playing the video.", "steps": ["Pressed Play"]}, kind="tv")
+        self.assertEqual(final, "Playing the video.")
+        self.assertTrue(report["ok"])
+        self.assertEqual([d["status"] for e, d in events if e == "agent_task_end"], ["succeeded"])
 
 
 class RouteTests(unittest.IsolatedAsyncioTestCase):

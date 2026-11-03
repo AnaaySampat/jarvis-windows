@@ -4,9 +4,13 @@ operator."""
 
 import asyncio
 import unittest
+import tempfile
+from pathlib import Path
 from unittest import mock
 
 import agents
+import agent_results
+import workflow_store
 
 INSTALLED = {"notepad": "Notepad", "excel": "Excel", "spotify": "Spotify"}
 
@@ -166,6 +170,18 @@ class TalkTests(unittest.TestCase):
         self.assertIn("– Desktop agent: not started — write it", bubble)
         self.assertIn("🧭 2 agents on this:", agents.plan_text(plan))
 
+    def test_an_uncertain_result_is_not_summarized_as_failed_work(self):
+        report = agent_results.result({"status": "unverified", "summary": "Save ran; completion needs checking."})
+        result = agents.StepResult("browser", "save it", False, report["summary"], result=report)
+        plan = agents.Plan([agents.Step("browser", "save it")])
+        bubble, say = agents.outcome(plan, [result])
+        self.assertTrue(bubble.startswith("? Browser agent:"))
+        self.assertEqual(say, report["summary"])
+        plan.steps.append(agents.Step("computer", "use the saved report"))
+        _, say = agents.outcome(plan, [result])
+        self.assertIn("needs verification", say)
+        self.assertIn("remaining steps have not started", say)
+
 
 class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
     """main._run_agent_plan with the operator, consent and model faked."""
@@ -177,6 +193,11 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         main._autopilot_owner = ""
         main._interrupt = asyncio.Event()
         main._acted_and_failed.clear()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        journal_patch = mock.patch.object(main, "_workflow_journal", workflow_store.Journal(Path(self.temp.name) / "workflow.sqlite3"))
+        journal_patch.start()
+        self.addCleanup(journal_patch.stop)
 
         async def emit(event, data):
             self.hud.append((event, data))
@@ -189,7 +210,10 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         async def run_task(kind, goal, **kw):
             self.runs.append((kind, goal, kw.get("hint", "")))
             fn = self.outcomes.get(kind)
-            return await fn(goal, kw) if fn else {"ok": True, "summary": "Done.", "findings": []}
+            outcome = await fn(goal, kw) if fn else {"ok": True, "summary": "Done.", "findings": []}
+            if outcome.get("ok"):
+                outcome.setdefault("evidence", [agent_results.receipt("fake_observation", "Scripted surface confirms task", kind)])
+            return outcome
 
         self.consult_answer = "user"
 
@@ -210,6 +234,11 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         p.start()
         self.addCleanup(p.stop)
         self.consented = set()
+        async def no_personal_browser(goal):
+            return False
+        p = mock.patch.object(main, "_users_chrome", no_personal_browser)
+        p.start()
+        self.addCleanup(p.stop)
         p = mock.patch("actions.browser.is_approved", lambda: "browser" in self.consented)
         p.start()
         self.addCleanup(p.stop)
@@ -252,6 +281,29 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r[0] for r in self.runs], ["browser"])
         self.assertIn("– Desktop agent: not started", [d for e, d in self.hud
                                                        if e == "response"][-1])
+
+    async def test_a_reply_without_tool_evidence_does_not_start_the_next_step(self):
+        async def no_action(text, task_tier, agent="chat", context="", report=None):
+            if report is not None:
+                report["actions"] = []
+            await self.main.emit("response", "Done, I've saved the comparison.")
+        with mock.patch.object(self.main, "_chat_turn", no_action):
+            await self.main._run_agent_plan("Read files then publish", self.plan(
+                ("files", "Read the comparison files"), ("browser", "Publish the comparison")))
+        self.assertEqual(self.runs, [])
+        self.assertIn("couldn't verify", [d for e, d in self.hud if e == "response"][-1])
+
+    async def test_native_voice_receives_the_same_consultation_answer(self):
+        async def consult(question, preferred=""):
+            self.assertEqual(preferred, "scheduling")
+            return "Two meetings tomorrow, with the afternoon free."
+        with mock.patch.object(self.main, "_agent_consult", return_value=consult), \
+             mock.patch.object(self.main, "_log_commands", mock.AsyncMock()), \
+             mock.patch.object(self.main, "_apply_action_side_effects", mock.AsyncMock()), \
+             mock.patch.object(self.main, "_remember_outcomes", lambda *a: None):
+            response = await self.main._execute_voice_tool({"id": "voice-consult", "name": "consult_agent",
+                "args": {"agent": "scheduling", "question": "What is on tomorrow?"}})
+        self.assertIn("afternoon free", response["response"]["result"])
 
     async def test_a_refused_step_starts_nothing(self):
         async def deny(kind, desc, timeout=120.0):
@@ -304,7 +356,8 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         async def turn_step(step, task_tier, context):
             turns.append((step.agent, step.task))
-            return "Three files: a.pdf (rent), b.docx (CV), c.png (a receipt)."
+            return agent_results.result({"ok": True, "summary": "Three files: a.pdf (rent), b.docx (CV), c.png (a receipt).",
+                                         "evidence": [agent_results.receipt("fake_read", "Read three files")]}, step.task)
         self.consult_answer = '{"next":{"agent":"browser","task":"post the summary on my blog"}}'
         with mock.patch.object(self.main, "_agent_turn_step", turn_step):
             await self.main._run_agent_plan(

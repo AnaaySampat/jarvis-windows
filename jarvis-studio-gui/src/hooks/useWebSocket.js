@@ -3,7 +3,7 @@ import { GestureRequests } from "../gestures/request";
 
 const RECONNECT_MS = 3000;
 
-async function resolveWsUrl() {
+async function resolveWsUrl(view) {
   let token = import.meta.env.VITE_JARVIS_WS_TOKEN || "";
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -11,11 +11,46 @@ async function resolveWsUrl() {
   } catch {
     // Not running inside Tauri (e.g. Vite-only preview).
   }
-  return `ws://127.0.0.1:8765${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  const query = new URLSearchParams();
+  if (token) query.set("token", token);
+  if (view !== "main") query.set("view", view);
+  return `ws://127.0.0.1:8765${query.size ? `?${query}` : ""}`;
 }
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const AGENT_TASK_CAP = 10;   // keep the last N autopilot tasks in the activity feed
 const AGENT_SHOT_CAP = 30;   // keep the most recent N screenshots per task (bound memory)
+const AUX_EVENTS = {
+  overlay: new Set(["status", "screen", "overlay", "active_app", "permission_request"]),
+  "browser-panel": new Set(["status", "screen", "browser_state", "control_state", "agent_task", "agent_step", "agent_shot", "agent_task_end"]),
+  "control-overlay": new Set(["status", "screen", "control_state", "agent_task", "agent_step", "agent_shot", "agent_task_end"]),
+};
+
+export function viewAcceptsEvent(view, event) {
+  return !AUX_EVENTS[view] || AUX_EVENTS[view].has(event);
+}
+
+// Keep recent observations within a byte budget as well as a per-task count.
+// Older step text remains available after its screenshot is evicted.
+export function boundAgentImages(tasks, budget = 8 * 1024 * 1024) {
+  let remaining = budget;
+  return [...tasks].reverse().map(task => {
+    const items = [...task.items].reverse().filter(item => {
+      if (item.kind !== "shot") return true;
+      const size = (item.image || "").length;
+      if (size > remaining) return false;
+      remaining -= size;
+      return true;
+    }).reverse();
+    return items.length === task.items.length ? task : { ...task, items };
+  }).reverse();
+}
+
+export function agentTaskStatus(data) {
+  if (data.stopped) return "stopped";
+  if (data.status === "succeeded") return "done";
+  if (["unverified", "partial", "blocked", "failed"].includes(data.status)) return data.status;
+  return data.ok ? "done" : "failed";
+}
 
 // Fold the backend's staged `setup_progress` events (first-run asset download)
 // into one UI state: { total, order:[key], items:{key:{label,status,error}}, complete }.
@@ -47,7 +82,7 @@ export function reduceSetupProgress(prev, data) {
   return s;
 }
 
-export function useWebSocket() {
+export function useWebSocket(view = "main") {
   const [status, setStatus]         = useState("idle");
   const [messages, setMessages]     = useState([]);
   const [warnings, setWarnings]     = useState([]);
@@ -103,7 +138,7 @@ export function useWebSocket() {
         setIsConnected(true);
         clearTimeout(retryTimer.current);
         // The backend checks GitHub for a newer release (once a day) against this.
-        import("@tauri-apps/api/app")
+        if (view === "main") import("@tauri-apps/api/app")
           .then(({ getVersion }) => getVersion())
           .then((version) => {
             if (wsRef.current === ws && ws.readyState === WebSocket.OPEN) {
@@ -117,6 +152,7 @@ export function useWebSocket() {
         if (wsRef.current !== ws) return;
         let msg;
         try { msg = JSON.parse(ev.data); } catch { return; }
+        if (!viewAcceptsEvent(view, msg.event)) return;
 
         switch (msg.event) {
             case "gesture_result":
@@ -324,10 +360,19 @@ export function useWebSocket() {
           case "agent_task": {
             const d = msg.data || {};
             if (!d.id) break;
-            setAgentTasks(prev => [
-              ...prev.filter(t => t.id !== d.id),
-              { id: d.id, kind: d.kind, goal: d.goal || "", source: d.source || "", agent: d.agent || "", items: [], status: "running", summary: "" },
-            ].slice(-AGENT_TASK_CAP));
+            if (view === "browser-panel" && d.kind !== "browser") break;
+            if (view === "control-overlay" && d.kind !== "computer") break;
+            setAgentTasks(prev => {
+              // Reconnecting HUDs receive the current active tasks again. Keep
+              // observations already displayed for that ID while accepting the
+              // backend's fresh declaration that it is still running.
+              const prior = prev.find(t => t.id === d.id);
+              return [
+                ...prev.filter(t => t.id !== d.id),
+                { id: d.id, kind: d.kind, goal: d.goal || "", source: d.source || "", agent: d.agent || "",
+                  items: prior?.items || [], status: "running", summary: "" },
+              ].slice(-(view === "main" ? AGENT_TASK_CAP : 1));
+            });
             break;
           }
           case "agent_step": {
@@ -340,25 +385,25 @@ export function useWebSocket() {
           case "agent_shot": {
             const d = msg.data || {};
             if (!d.image) break;
-            setAgentTasks(prev => prev.map(t => {
+            setAgentTasks(prev => boundAgentImages(prev.map(t => {
               if (t.id !== d.id) return t;
               const items = [...t.items, { kind: "shot", image: d.image }];
               // Drop the oldest screenshots beyond the cap (step rows are tiny, kept).
               let shots = items.filter(it => it.kind === "shot").length;
-              while (shots > AGENT_SHOT_CAP) {
+              while (shots > (view === "main" ? AGENT_SHOT_CAP : 1)) {
                 const idx = items.findIndex(it => it.kind === "shot");
                 if (idx < 0) break;
                 items.splice(idx, 1);
                 shots--;
               }
               return { ...t, items };
-            }));
+            })));
             break;
           }
           case "agent_task_end": {
             const d = msg.data || {};
             setAgentTasks(prev => prev.map(t => t.id === d.id
-              ? { ...t, status: d.stopped ? "stopped" : (d.ok ? "done" : "failed"), summary: d.summary || "" }
+              ? { ...t, status: agentTaskStatus(d), summary: d.summary || "" }
               : t));
             break;
           }
@@ -369,7 +414,18 @@ export function useWebSocket() {
         // Guard against stale sockets (React StrictMode mounts effects twice)
         if (wsRef.current !== ws) return;
         gestureRequestsRef.current.close();
+        // The old connection can no longer establish consent or report task
+        // completion. Keep its audit history, but stop presenting it as live.
+        // Fresh backend snapshots/events restore state after reconnect.
+        wsRef.current = null;
         setIsConnected(false);
+        setControlState({ armed: false, available: false, seconds_left: 0, paused: false });
+        setAgentTasks(prev => prev.map(task => task.status === "running"
+          ? { ...task, status: "unverified", summary: "Connection lost; task completion could not be verified." }
+          : task));
+        setPermissionRequest(null);
+        setClarifyRequest(null);
+        setStatus("idle");
         retryTimer.current = setTimeout(connect, RECONNECT_MS);
       };
 
@@ -377,12 +433,12 @@ export function useWebSocket() {
     } catch {
       retryTimer.current = setTimeout(connect, RECONNECT_MS);
     }
-  }, []);
+  }, [view]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      wsUrlRef.current = await resolveWsUrl();
+      wsUrlRef.current = await resolveWsUrl(view);
       if (!cancelled) connect();
     })();
     return () => {
@@ -393,7 +449,7 @@ export function useWebSocket() {
       wsRef.current = null;
       sock?.close();
     };
-  }, [connect]);
+  }, [connect, view]);
 
   // The armed control window auto-expires after a bounded time, but the backend
   // only emits control_state on arm/disarm — so without this the "CONTROLLING"

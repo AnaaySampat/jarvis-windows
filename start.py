@@ -4,7 +4,8 @@ start.py — Launch JARVIS with a single command.
 
     python start.py        (or double-click it)
 
-Starts the Python backend and the Tauri GUI side-by-side,
+Starts the Python backend and a release Tauri GUI side-by-side (use --dev
+for hot reload),
 streams their output with colour-coded prefixes, and shuts
 both down cleanly on Ctrl+C.
 
@@ -14,6 +15,7 @@ the Microsoft Store alias it can't start — it exits with code 101 and the
 console vanishes before anything is printed.
 """
 
+import argparse
 import csv
 import os
 import secrets
@@ -160,7 +162,7 @@ def _command_line(pid: int) -> str:
         capture_output=True, text=True, errors="replace").stdout.strip()
 
 
-def _clear_old_jarvis() -> None:
+def _clear_old_jarvis(dev: bool = False) -> None:
     """Stop a JARVIS still running from an earlier start — usually hidden in the
     tray (the HUD's X only hides it) or a backend a closed console left behind.
     It holds port 8765 (or the dev server's 1420), so the new backend died on
@@ -173,7 +175,8 @@ def _clear_old_jarvis() -> None:
                          errors="replace").stdout
     old = [(int(row[1]), "window") for row in csv.reader(out.splitlines())
            if len(row) > 1 and row[0].lower() == "jarvis-studio-gui.exe"]
-    for port, (what, marks) in PORTS.items():
+    active_ports = PORTS if dev else {8765: PORTS[8765]}
+    for port, (what, marks) in active_ports.items():
         if not _port_busy(port):
             continue
         owner = _port_owner(port)
@@ -192,7 +195,7 @@ def _clear_old_jarvis() -> None:
         print(f"{_tag('[setup]', YELLOW)} Stopped the JARVIS {what} still running from "
               f"before (PID {pid}).", flush=True)
     deadline = time.monotonic() + 8
-    while old and any(map(_port_busy, PORTS)) and time.monotonic() < deadline:
+    while old and any(map(_port_busy, active_ports)) and time.monotonic() < deadline:
         time.sleep(0.2)
 
 
@@ -208,14 +211,42 @@ def _backend_python() -> str:
 
 # ── Entry point ────────────────────────────────────────────────────────────
 
+def _release_inputs():
+    for folder in (GUI_DIR / "src", GUI_DIR / "public", GUI_DIR / "src-tauri/src",
+                   GUI_DIR / "src-tauri/permissions", GUI_DIR / "src-tauri/capabilities"):
+        if folder.is_dir():
+            yield from (p for p in folder.rglob("*") if p.is_file())
+    for name in ("package.json", "package-lock.json", "index.html", "vite.config.js",
+                 "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/build.rs"):
+        path = GUI_DIR / name
+        if path.is_file():
+            yield path
+
+
+def _release_gui() -> Path:
+    """Build once after UI/native changes, then launch without dev servers/watchers."""
+    binary = GUI_DIR / "src-tauri/target/release" / ("jarvis-studio-gui.exe" if WIN else "jarvis-studio-gui")
+    if not binary.is_file() or any(p.stat().st_mtime > binary.stat().st_mtime for p in _release_inputs()):
+        print(f"{_tag('[gui]', CYAN)} Building desktop app (once after source changes)…", flush=True)
+        npm = shutil.which("npm.cmd" if WIN else "npm") or "npm"
+        result = subprocess.run([npm, "run", "tauri", "build", "--", "--no-bundle"], cwd=str(GUI_DIR))
+        if result.returncode != 0 or not binary.is_file():
+            raise SystemExit("Desktop build failed. Fix the build error above, or use --dev for development.")
+    return binary
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Launch JARVIS without development watchers by default")
+    parser.add_argument("--dev", action="store_true", help="Run Vite and Tauri development watchers")
+    args = parser.parse_args()
     _enable_ansi()
     print(f"\n{CYAN}{BOLD}  J.A.R.V.I.S{RESET}  {DIM}— booting up…{RESET}\n")
 
     _ensure_icons()
-    _clear_old_jarvis()
+    _clear_old_jarvis(args.dev)
     ws_token = os.environ.get("JARVIS_WS_TOKEN") or secrets.token_urlsafe(32)
-    backend_env = {**os.environ, "JARVIS_WS_TOKEN": ws_token}
+    gui_cmd = ["npm", "run", "tauri", "dev"] if args.dev else [str(_release_gui())]
+    backend_env = {**os.environ, "JARVIS_WS_TOKEN": ws_token, "JARVIS_APP_ROOT_PID": str(os.getpid())}
     gui_env = {
         **backend_env,
         "VITE_JARVIS_WS_TOKEN": ws_token,
@@ -230,9 +261,8 @@ def main() -> None:
     backend = _spawn([backend_py, "main.py"], cwd=BACKEND_DIR, env=backend_env)
 
     # ── GUI ────────────────────────────────────────────────────────────────
-    print(f"{_tag('[gui]', CYAN)} Starting Tauri GUI "
-          f"{DIM}(first build may take ~1 min){RESET}…", flush=True)
-    gui = _spawn(["npm", "run", "tauri", "dev"], cwd=GUI_DIR, env=gui_env)
+    print(f"{_tag('[gui]', CYAN)} Starting {'development' if args.dev else 'desktop'} GUI…", flush=True)
+    gui = _spawn(gui_cmd, cwd=GUI_DIR, env=gui_env)
 
     # ── Pipe output with colour-coded prefixes ─────────────────────────────
     for proc, label, color in [

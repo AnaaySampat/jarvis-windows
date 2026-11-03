@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "allow-jarvis-commands"
 description = "JARVIS backend coordination commands"
-commands.allow = ["get_ws_token"]
+commands.allow = ["get_ws_token", "set_control_tint", "set_aux_window"]

@@ -702,7 +702,9 @@ class _BrowserWorker:
         # downloaded yet. Fetch it as its own job with a long budget BEFORE the
         # launch job, so a ~150MB download can't blow the launch timeout (and the
         # launch below then finds the binary ready).
-        if cold and not _chromium_ready:
+        # A personal Chrome session attaches to the user's installed browser.
+        # It must never download a second Chromium before it can open a website.
+        if cold and self._mode != "personal" and not _chromium_ready:
             ok, msg = self.submit(self._ensure_chromium_job, _CHROMIUM_INSTALL_TIMEOUT)
             if not ok:
                 return False, msg
@@ -717,7 +719,8 @@ class _BrowserWorker:
                 # here or the window flickers open/closed.
                 if _is_closed_err(exc) and self._ctx is not None and not self._aborted:
                     self._reset()
-                    _prepare_profile_for_launch()
+                    if self._mode != "personal":
+                        _prepare_profile_for_launch()
                     page = self._ensure_page()
                     result = action(page)
                 else:
@@ -924,12 +927,24 @@ def _extension_profile() -> str:
         names = sorted(os.listdir(root))
     except OSError:
         return ""
+    # Prefer the profile Chrome last used when the extension exists in several.
+    try:
+        with open(os.path.join(root, "Local State"), encoding="utf-8") as f:
+            preferred = json.load(f).get("profile", {}).get("last_used", "")
+        if preferred in names:
+            names.remove(preferred)
+            names.insert(0, preferred)
+    except (OSError, ValueError, TypeError):
+        pass
     for name in names:
         for prefs in ("Secure Preferences", "Preferences"):   # unpacked ones sit in Secure
             try:
                 with open(os.path.join(root, name, prefs), encoding="utf-8") as f:
-                    if chrome_relay.EXTENSION_ID in json.load(f)["extensions"]["settings"]:
-                        return name
+                    entry = json.load(f)["extensions"]["settings"].get(chrome_relay.EXTENSION_ID)
+                    if isinstance(entry, dict):
+                        if entry.get("state", 1) != 0:
+                            return name
+                        break   # Secure Preferences wins over an older Preferences entry
             except (OSError, ValueError, KeyError, TypeError):
                 pass
     return ""
@@ -948,24 +963,25 @@ def ensure_personal_available() -> "tuple[bool, str]":
     chrome_relay.start()
     if chrome_relay.connected():
         return True, ""
-    if not chrome_relay.ever_connected():
-        return False, NO_EXTENSION   # never added: don't open their Chrome for nothing
-    # A Chrome already open on the extension's profile reconnects on its next alarm, so
-    # just after JARVIS starts, wait that out rather than open a second window on it.
-    if _chrome_running() and chrome_relay.wait(
-            max(3.0, chrome_relay.RETRY_S + 2 - chrome_relay.up_for())):
-        return True, ""
+    profile = _extension_profile()
+    if not profile:
+        return False, NO_EXTENSION   # absent/disabled: don't open an invalid bootstrap tab
     exe = _find_chrome_exe()
     if not exe:
         return False, "I couldn't find Google Chrome on this PC, sir, so I used my own browser."
-    profile = _extension_profile()
-    try:
-        subprocess.Popen([exe, "--no-first-run", "--no-default-browser-check",
-                          *([f"--profile-directory={profile}"] if profile else [])],
-                         close_fds=True)
-    except Exception as exc:  # noqa: BLE001
-        return False, f"I couldn't start your Chrome, sir ({exc}), so I used my own browser."
-    return (True, "") if chrome_relay.wait(20.0) else (False, NO_EXTENSION)
+    # A slow cold start may need a second wake event after Chrome finishes opening.
+    # Both attempts share a short budget; neither waits for Chrome's 30s alarm.
+    for budget in (3.0, 7.0):
+        try:
+            subprocess.Popen([exe, "--no-first-run", "--no-default-browser-check",
+                              f"--profile-directory={profile}",
+                              f"chrome-extension://{chrome_relay.EXTENSION_ID}/connect.html"],
+                             close_fds=True)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"I couldn't start your Chrome, sir ({exc}), so I used my own browser."
+        if chrome_relay.wait(budget):
+            return True, ""
+    return False, NO_EXTENSION
 
 
 def _connect_personal_cdp(pw):
@@ -1593,8 +1609,7 @@ def list_elements() -> "tuple[bool, str, str]":
             title = page.title()
         except Exception:  # noqa: BLE001
             title = ""
-        if not els:
-            return True, f"No interactive elements found on “{title}”.", ""
+        w._last_title = title or w._last_title
         # Drop ads/sponsored results so the operator never clicks a promoted "Watch"
         # thinking it's the first genuine result. Numbers stay stamped in the DOM, so
         # click-by-number is unaffected. Fallback: keep them if EVERYTHING looked like
@@ -1617,6 +1632,12 @@ def list_elements() -> "tuple[bool, str, str]":
         lines = [f"Page: {title or '(untitled)'} — {url}"]
         if heading and heading.lower() not in (title or "").lower():
             lines.append(f"Heading: {heading}")
+        if not els:
+            # Static articles and confirmation pages can have no controls. Keep
+            # their current title, URL and heading available to the operator and
+            # completion checker instead of replacing them with a cached page.
+            lines.append("(no interactive elements visible)")
+            return True, f"No interactive elements found on “{title}”.", "\n".join(lines)
         for e in ordered[:_LIST_CAP]:
             kind = e.get("type") or e.get("tag")
             extras = []

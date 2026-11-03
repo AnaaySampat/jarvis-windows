@@ -2,7 +2,7 @@
 # Build: pyinstaller jarvis-backend.spec --noconfirm --clean
 #
 # "Balanced" build: bundles the full local voice stack (openWakeWord + its ONNX
-# models, faster-whisper offline STT fallback, Piper neural TTS) AND browser
+# models and Piper neural TTS) AND browser
 # control (Playwright), but EXCLUDES the multi-GB ML extras for camera-OCR
 # (torch / easyocr / opencv). The camera-OCR feature degrades gracefully when
 # those are absent (its import is guarded), and screen-vision uses the cloud.
@@ -48,6 +48,7 @@ hiddenimports = [
     "jarvis_paths",
     "app_secrets",
     "storage",
+    "camera_ocr",
     "provisioning",     # first-run asset download — root module, easily missed by the scan
     "telemetry",
     "weather",
@@ -82,11 +83,7 @@ hiddenimports = [
     "pyaudio",
     "numpy",
     # offline STT fallback (faster-whisper → ctranslate2 + av)
-    "faster_whisper",
-    "ctranslate2",
     "av",
-    "tokenizers",
-    "huggingface_hub",
     # TTS
     "piper",
     "edge_tts",
@@ -165,8 +162,8 @@ for pkg in ("neonize", "magic"):
     except Exception:
         pass
 
-# Native runtime libraries (DLLs) for the ONNX / ctranslate2 / PyAV backends.
-for pkg in ("onnxruntime", "ctranslate2", "av", "piper", "cv2"):
+# Native runtime libraries (DLLs) for the ONNX / PyAV backends.
+for pkg in ("onnxruntime", "av", "piper", "cv2"):
     try:
         binaries += collect_dynamic_libs(pkg)
     except Exception:
@@ -174,6 +171,7 @@ for pkg in ("onnxruntime", "ctranslate2", "av", "piper", "cv2"):
 
 # ── Exclude the multi-GB extras (balanced build) ────────────────────────────
 excludes = [
+    "faster_whisper", "ctranslate2", "tokenizers", "huggingface_hub",
     "torch", "torchvision", "torchaudio",
     "easyocr",
     "ocr",          # local camera-OCR package (guarded; feature dropped)

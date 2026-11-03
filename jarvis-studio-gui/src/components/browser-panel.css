@@ -64,9 +64,10 @@
 }
 
 @keyframes bp-scan {
-  0% { top: -140px; }
-  100% { top: 100%; }
+  0% { transform: translateY(-140px); }
+  100% { transform: translateY(800px); }
 }
+.bp-root:not(.bp-root--busy) .bp-scanline { animation: none; opacity: 0; }
 
 .bp-frame {
   position: absolute;

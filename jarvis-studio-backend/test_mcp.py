@@ -7,6 +7,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -139,6 +140,7 @@ class RunTests(unittest.TestCase):
 
     def setUp(self):
         self.loop = asyncio.new_event_loop()
+        self.addCleanup(self.loop.close)
         t = threading.Thread(target=self.loop.run_forever, daemon=True)
         t.start()
         self.addCleanup(lambda: (self.loop.call_soon_threadsafe(self.loop.stop), t.join(2)))
@@ -216,22 +218,34 @@ class RealServerTests(unittest.TestCase):
             try:
                 with mock.patch.object(mc, "CONFIG_PATH", cfg), \
                      mock.patch.dict(mc._servers, {}, clear=True):
-                    loop.call_soon_threadsafe(mc.start, loop)
-                    for _ in range(150):
-                        if mc.server_names():
-                            break
-                        threading.Event().wait(0.1)
-                    self.assertEqual(mc.server_names(), ["demo"], mc.state())
-                    spec = lt.to_spec("mcp__demo__add", {"a": 2, "b": 3})
-                    [r] = run_specs([spec])
-                    if r.get("needs_permission"):          # FastMCP sets no read-only hint
-                        r = mc.run(spec)
-                    self.assertTrue(r["ok"], r)
-                    self.assertIn("5", r["message"])
-                    asyncio.run_coroutine_threadsafe(mc.stop_all(), loop).result(10)
+                    try:
+                        loop.call_soon_threadsafe(mc.start, loop)
+                        # A cold MCP SDK/server import on Windows can take more than
+                        # 15 seconds. Use the application's bounded startup budget,
+                        # and fail immediately if the server reports an actual error.
+                        deadline = time.monotonic() + mc._START_TIMEOUT_S
+                        while time.monotonic() < deadline:
+                            srv = mc._servers.get("demo")
+                            if mc.server_names() or (srv and srv.status == "failed"):
+                                break
+                            threading.Event().wait(0.1)
+                        self.assertEqual(mc.server_names(), ["demo"], mc.state())
+                        spec = lt.to_spec("mcp__demo__add", {"a": 2, "b": 3})
+                        [r] = run_specs([spec])
+                        if r.get("needs_permission"):      # MCPServer has no read-only hint
+                            r = mc.run(spec)
+                        self.assertTrue(r["ok"], r)
+                        self.assertIn("5", r["message"])
+                    finally:
+                        async def stop_servers():
+                            pending = [srv.task for srv in mc._servers.values() if srv.task]
+                            await mc.stop_all()
+                            await asyncio.gather(*pending, return_exceptions=True)
+                        asyncio.run_coroutine_threadsafe(stop_servers(), loop).result(10)
             finally:
                 loop.call_soon_threadsafe(loop.stop)
                 t.join(5)
+                loop.close()
 
 
 if __name__ == "__main__":

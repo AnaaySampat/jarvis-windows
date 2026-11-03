@@ -35,7 +35,7 @@ landed, and corrects itself when it didn't.
 
 | | |
 |---|---|
-| 🎙️ **Hands-free voice** | Local wake word ("Hey Jarvis") and local Whisper transcription. Push-to-talk with **Ctrl+Space** from any app. Full-duplex voice mode via Gemini Live. |
+| 🎙️ **Hands-free voice** | Local wake word ("Hey Jarvis") and Groq-hosted Whisper transcription using your Groq key. Speech recognition uses Groq online only; local Whisper is never loaded or used as a fallback. Push-to-talk with **Ctrl+Space** from any app. Full-duplex voice mode via Gemini Live. |
 | 🧠 **Any model, routed for you** | Bring keys for Groq, Gemini, OpenRouter, NVIDIA NIM, Mistral, Claude, OpenAI, Grok or Meta Llama. **Auto** ranks your models by benchmark and picks per request, falling back when one is rate-limited. Vertex AI (Google Cloud login) and offline Ollama work too. |
 | 🌐 **Browser autopilot** | Goal in, result out. Runs in your own signed-in Chrome through the JARVIS extension (in its own tabs, never yours), or in a browser JARVIS owns, with approvals for anything risky. Watch every step and screenshot in the Agent Activity panel. |
 | 🖥️ **Desktop control** | Opens, closes and operates Windows apps through UI Automation. Off until you arm it, with a live "JARVIS CONTROLLING" bar to pause or correct it. |
@@ -65,8 +65,8 @@ Sessions stop after five minutes or when JARVIS is hidden. See
 
 Grab the installer from the **[latest release](https://github.com/AnaaySampat/jarvis-windows/releases/latest)**.
 
-- It bundles everything (backend, Chromium, Whisper, the Piper voice), so it works
-  offline right after install. No Python needed.
+- It bundles the backend, Chromium and the Piper voice. Speech recognition needs
+  internet and a Groq key; wake-word detection and speech output run locally. No Python needed.
 - On first launch, paste one API key ([Groq](https://console.groq.com/keys) and
   [Gemini](https://aistudio.google.com/apikey) both have free tiers) and choose where
   JARVIS saves its files.
@@ -94,8 +94,11 @@ cd jarvis-studio-gui
 npm install
 cd ..
 
-# Launch both
+# Launch both (desktop build; rebuilds once after UI/native source changes)
 python start.py
+
+# Development with Vite/Tauri hot reload
+python start.py --dev
 ```
 
 `python jarvis-studio-backend\main.py --text` runs the backend with typed input
@@ -136,7 +139,7 @@ and JARVIS tells you what to `pip install`.
                                             ▼
   +------------------------------------------------------------------+
   |              Python backend (jarvis-studio-backend)               |
-  |  openWakeWord → faster-whisper → LLM router → TTS                 |
+  |  openWakeWord → Groq transcription → LLM router → TTS                 |
   |  autopilot.py (browser + desktop operators) · task_router.py      |
   |  actions/ · llm/ · server/ (ws + webrtc) · autonomy/ (pairing)    |
   +------------------------------------------------------------------+
@@ -287,6 +290,12 @@ works in its own tabs and never touches yours; Chrome's "started debugging this 
 bar has a Cancel that takes the tab back at once. Without the extension, browser tasks
 use JARVIS's own browser. Say "in your browser" to send one there anyway.
 
+Once the extension is installed, JARVIS opens its Chrome profile and wakes the link
+when a task starts; Chrome does not need to be open or linked beforehand. The
+connection tab closes after the working tab opens. Personal Chrome tasks attach
+directly and do not download Playwright's separate Chromium browser.
+After upgrading from extension 1.0, restart Chrome once to load extension 1.1.
+
 ## Two routers at home?
 
 The PC, the phone and the TV reach each other directly, so they need to be on one
@@ -331,8 +340,9 @@ can't cross into another router's network, so the sender has to be on the same o
 
 ## Privacy
 
-- Wake word and transcription run **on your PC**. Mic audio stays local, except in
-  the optional Gemini Live voice mode, which streams it to Google.
+- Wake-word detection runs **on your PC**. With Groq transcription selected,
+  recorded speech and voice notes go to Groq Whisper using your key; local Whisper
+  is neither loaded nor used as a fallback. Voice recognition requires an internet connection and a Groq key. Optional Gemini Live voice mode streams audio to Google.
 - What you say (as text), plus camera frames when you use OCR, goes to the AI
   provider you chose.
 - API keys and settings live in `%APPDATA%\Jarvis\`, never in the project folder.

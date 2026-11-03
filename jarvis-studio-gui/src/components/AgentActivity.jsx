@@ -29,7 +29,10 @@ function stepIcon(line) {
 const STATUS = {
   running: { label: "Running", cls: "tag--busy" },
   done:    { label: "Done", cls: "tag--ok" },
-  failed:  { label: "Stopped", cls: "tag--err" },
+  failed:  { label: "Failed", cls: "tag--err" },
+  unverified: { label: "Needs check", cls: "tag--off" },
+  partial: { label: "Partial", cls: "tag--off" },
+  blocked: { label: "Blocked", cls: "tag--err" },
   stopped: { label: "Stopped", cls: "tag--err" },
 };
 const KIND_ICON = { computer: "cursor", tv: "tv" };

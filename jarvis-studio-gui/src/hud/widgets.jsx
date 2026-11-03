@@ -195,13 +195,13 @@ export function SystemWidget({ d, live, open, onToggle, rings }) {
   const total = n0(d.ramTotalGb);
   const used = (n0(d.ram) / 100) * total;
   return (
-    <Widget id="system" icon="cpu" title="System" open={open} onToggle={onToggle}
+    <Widget id="system" icon="cpu" title="This laptop" open={open} onToggle={onToggle}
             meta={d.temp != null ? `${Math.round(n0(d.temp))}°C` : null}
             summary={`CPU ${pct(d.cpu)} · RAM ${pct(d.ram)}`}>
       {rings ? (<>
         <div className="rings">
-          <Ring value={d.cpu} label="CPU" sub={d.temp != null ? `${Math.round(n0(d.temp))}°C` : null} />
-          <Ring value={d.ram} label="Memory" sub={total ? `${Math.round(total)} GB` : null} />
+          <Ring value={d.cpu} label="Laptop CPU" sub={d.temp != null ? `${Math.round(n0(d.temp))}°C` : null} />
+          <Ring value={d.ram} label="Laptop memory" sub={total ? `${Math.round(total)} GB` : null} />
         </div>
         <div className="rings rings--mini">
           <Ring value={d.gpu} label="GPU" size={70} stroke={5} />
@@ -210,9 +210,9 @@ export function SystemWidget({ d, live, open, onToggle, rings }) {
         </div>
       </>) : (<>
       <div className="stat-pair">
-        <Stat label="CPU" value={pct(d.cpu)} bar={d.cpu} tone={loadTone(d.cpu)}
-              sub={d.temp != null ? `${Math.round(n0(d.temp))}°C` : "Processor load"} />
-        <Stat label="Memory" value={pct(d.ram)} bar={d.ram} tone={loadTone(d.ram)}
+        <Stat label="Laptop CPU" value={pct(d.cpu)} bar={d.cpu} tone={loadTone(d.cpu)}
+              sub={d.temp != null ? `${Math.round(n0(d.temp))}°C` : "All apps + Windows"} />
+        <Stat label="Laptop memory" value={pct(d.ram)} bar={d.ram} tone={loadTone(d.ram)}
               sub={total ? `${used.toFixed(1)} of ${Math.round(total)} GB` : "In use"} />
       </div>
       <Spark data={cpuHist} />
@@ -224,6 +224,11 @@ export function SystemWidget({ d, live, open, onToggle, rings }) {
         </div>
       </div>
       </>)}
+      {d.app && <div className="jarvis-resources"
+        title="Jarvis and its child processes. CPU is a share of total laptop CPU. Memory is private committed memory, backed by RAM or the pagefile.">
+        <span>{d.app.scope === "backend" ? "Jarvis backend" : "Jarvis"}</span>
+        <span>{pct(d.app.cpu)} CPU · {Math.round(n0(d.app.privateMiB))} MiB private memory</span>
+      </div>}
     </Widget>
   );
 }

@@ -1,20 +1,21 @@
 # Freeze jarvis-studio-backend into dist/jarvis-backend/ (PyInstaller --onedir)
 # and stage the result for Tauri under src-tauri/resources/jarvis-backend/.
 #
-# BUNDLED installer (default): the heavy runtime assets (Chromium ~170MB, the
-# Whisper base model ~150MB, the Piper neural voice ~60MB) are PREFETCHED at build
+# BUNDLED installer (default): the heavy runtime assets (Chromium ~170MB and the
+# Piper neural voice ~60MB) are PREFETCHED at build
 # time into preload-assets\ and shipped INSIDE the installer, so a fresh install
-# works fully OFFLINE with zero first-run downloads. The backend's provisioning.py
+# needs no first-run asset downloads; transcription uses Groq online. The backend's provisioning.py
 # auto-download stays in place as a SELF-REPAIR fallback for any missing/corrupt
 # bundled asset. Pass -Lean to skip bundling and ship the small download-on-first-run
 # installer instead.
 #
 # Usage: .\scripts\package-backend.ps1            # bundled (default)
 #        .\scripts\package-backend.ps1 -Lean      # download-on-first-run
-#        .\scripts\package-backend.ps1 -SkipAssets browser,speech,voice
+#        .\scripts\package-backend.ps1 -SkipAssets browser,voice
 
 param(
     [switch]$Lean,
+    [switch]$SkipDependencyInstall,
     [string]$SkipAssets = ""
 )
 
@@ -24,6 +25,17 @@ $Backend = Join-Path $Root "jarvis-studio-backend"
 $GuiRes  = Join-Path $Root "jarvis-studio-gui\src-tauri\resources\jarvis-backend"
 $Venv    = Join-Path $Backend ".venv-build"
 $Dist    = Join-Path $Backend "dist\jarvis-backend"
+
+function Assert-PackagePath([string]$Target) {
+    $resolved = [IO.Path]::GetFullPath($Target)
+    $workspacePrefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    if (-not $resolved.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to modify a packaging path outside the workspace: $resolved"
+    }
+    return $resolved
+}
+$Dist = Assert-PackagePath $Dist
+$GuiRes = Assert-PackagePath $GuiRes
 
 Write-Host "Packaging JARVIS Python backend (one-folder)..." -ForegroundColor Cyan
 
@@ -47,8 +59,10 @@ try {
         throw "$req is required for the non-OCR installer bundle."
     }
     Write-Host "Using $req (non-OCR installer bundle)" -ForegroundColor DarkGray
-    & $python -m pip install -q -r $req pyinstaller
-    if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)." }
+    if (-not $SkipDependencyInstall) {
+        & $python -m pip install -q -r $req pyinstaller
+        if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)." }
+    }
 
     # winrt-runtime ships its own old msvcp140.dll (14.29). Loaded first, it makes
     # onnxruntime (Piper, wake word) crash with an access violation, which kills
@@ -71,22 +85,22 @@ try {
         throw "Expected $Dist\jarvis-backend.exe was not produced."
     }
 
-    # ── Bundle the heavy runtime assets (Chromium / Whisper / Piper) ─────────────
+    # ── Bundle the heavy runtime assets (Chromium / Piper) ─────────────
     # Prefetch them into preload-assets\ next to the frozen exe so a fresh install
     # works OFFLINE with no first-run download. The backend reads this folder via
-    # <exe dir>\preload-assets\ (browser.py / whisper_transcriber.py / tts_engine.py).
+    # <exe dir>\preload-assets\ (browser.py / tts_engine.py).
     # provisioning.py still self-repairs anything missing on first launch.
     #
     # We fetch into a PERSISTENT cache (.preload-cache, gitignored) and copy into the
     # freshly-built dist — so a --clean rebuild reuses the ~380MB download instead of
     # re-fetching it every time.
-    $Preload = Join-Path $Dist "preload-assets"
+    $Preload = Assert-PackagePath (Join-Path $Dist "preload-assets")
     if ($Lean) {
         Write-Host "Lean build (-Lean): assets will download on first launch, not bundled." -ForegroundColor Yellow
         if (Test-Path $Preload) { Remove-Item -Recurse -Force $Preload }
     } else {
         $Cache = Join-Path $Backend ".preload-cache"
-        Write-Host "Prefetching bundled assets (Chromium + Whisper + Piper)..." -ForegroundColor DarkGray
+        Write-Host "Prefetching bundled assets (Chromium + Piper; transcription uses Groq online)..." -ForegroundColor DarkGray
         $prefetch = Join-Path $Root "scripts\prefetch_preload_assets.py"
         # Build the arg list so an EMPTY -SkipAssets isn't passed as a bare "--skip"
         # (PowerShell drops empty-string args to native exes → argparse "expected one argument").
@@ -97,7 +111,14 @@ try {
         Write-Host "Copying bundled assets into dist..." -ForegroundColor DarkGray
         if (Test-Path $Preload) { Remove-Item -Recurse -Force $Preload }
         New-Item -ItemType Directory -Force -Path $Preload | Out-Null
-        Copy-Item -Path (Join-Path $Cache "*") -Destination $Preload -Recurse -Force
+        # Copy the supported runtime assets explicitly. An older persistent cache
+        # can contain whisper-base; it must never be staged into a new installer.
+        foreach ($assetDirectory in @("ms-playwright", "piper")) {
+            $assetPath = Join-Path $Cache $assetDirectory
+            if (Test-Path -LiteralPath $assetPath) {
+                Copy-Item -LiteralPath $assetPath -Destination $Preload -Recurse -Force
+            }
+        }
         $pMb = [math]::Round((Get-ChildItem $Preload -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
         Write-Host "Bundled assets staged at $Preload ($pMb MB)" -ForegroundColor DarkGray
     }
@@ -105,7 +126,10 @@ try {
     Write-Host "Staging backend for Tauri resources..." -ForegroundColor DarkGray
     # Keep the tracked README.md placeholder; clear everything else.
     New-Item -ItemType Directory -Force -Path $GuiRes | Out-Null
-    Get-ChildItem $GuiRes -Force | Where-Object Name -ne "README.md" | Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath $GuiRes -Force | Where-Object Name -ne "README.md" | ForEach-Object {
+        $stagedPath = Assert-PackagePath $_.FullName
+        Remove-Item -LiteralPath $stagedPath -Recurse -Force
+    }
     Copy-Item -Path (Join-Path $Dist "*") -Destination $GuiRes -Recurse -Force
 
     $sizeMb = [math]::Round((Get-ChildItem $GuiRes -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)

@@ -18,11 +18,13 @@ import autopilot as ap
 class FakeSurface:
     """Records commands and replays scripted (ok, msg, extras) results."""
 
-    def __init__(self, results=None, default=(True, "Did it.", None)):
+    def __init__(self, results=None, default=(True, "Did it.", None), page_text=""):
         self.results = list(results or [])
         self.default = default
         self.commands = []
         self.observations = 0
+        self.page_text = page_text
+        self.reads = 0
 
     def observe(self):
         self.observations += 1
@@ -35,10 +37,15 @@ class FakeSurface:
         ok, msg, extras = (self.results.pop(0) if self.results else self.default)
         return ok, msg, dict(extras or {})
 
+    def read_page(self):
+        self.reads += 1
+        return True, self.page_text
+
 
 def run_loop(test, *, kind="browser", goal="do the thing", replies=(),
              browser=None, computer=None, consent=("browser", "computer"),
              foreground=None, verdicts=(), lanes=None, calls=None, scores=None,
+             verify_inputs=None, vision=False, on_decision=None, focus_signature=None,
              **kwargs):
     """Drive ap.run_task with everything external stubbed. Returns (result, surfaces)."""
     browser = browser or FakeSurface()
@@ -54,9 +61,14 @@ def run_loop(test, *, kind="browser", goal="do the thing", replies=(),
             return ""                       # skip planning — not under test here
         if system is ap._VERIFY_SYSTEM:
             step_calls["verify"] += 1       # completion checker: scripted, else agrees
+            if verify_inputs is not None:
+                verify_inputs.append((user, _kw))
             return verify_replies.pop(0) if verify_replies else '{"verdict":"pass"}'
         step_calls["n"] += 1
-        return step_replies.pop(0) if step_replies else '{"do":"fail","reason":"script exhausted"}'
+        reply = step_replies.pop(0) if step_replies else '{"do":"fail","reason":"script exhausted"}'
+        if on_decision is not None:
+            on_decision(step_calls["n"])
+        return reply
 
     patches = {
         "quick_completion": quick_completion,
@@ -66,8 +78,8 @@ def run_loop(test, *, kind="browser", goal="do the thing", replies=(),
         # that need it to change mid-task (an expiring window).
         "_consent_ok": consent if callable(consent) else (lambda k: k in consent),
         "_common_folders_note": lambda: "",
-        "autopilot_vision_enabled": lambda: False,
-        "autopilot_model_is_vision": lambda: False,
+        "autopilot_vision_enabled": lambda: vision,
+        "autopilot_model_is_vision": lambda: vision,
         "autopilot_thinking_budget": lambda: None,
         # The real lanes read this PC's keys, ranking and quota state.
         "autopilot_lane_models": lanes or (lambda lane: []),
@@ -80,8 +92,11 @@ def run_loop(test, *, kind="browser", goal="do the thing", replies=(),
     # The real foreground window would make desktop runs depend on this PC's desktop.
     real_fg, real_sig, real_settle = (ap.computer.foreground_app,
                                       ap.computer.focus_signature, ap._settle)
+    real_read, real_shot = ap.browser.read_page, ap.browser.screenshot_b64
+    ap.browser.read_page = browser.read_page
+    ap.browser.screenshot_b64 = lambda: (True, "BROWSER_SCREENSHOT")
     ap.computer.foreground_app = foreground or (lambda: {"hwnd": 1, "title": "App"})
-    ap.computer.focus_signature = lambda: "sig"      # no real UIA, no settle waits
+    ap.computer.focus_signature = focus_signature or (lambda: "sig")
     ap._settle = lambda *_a: None
     try:
         result = asyncio.run(ap.run_task(kind, goal, **kwargs))
@@ -90,6 +105,7 @@ def run_loop(test, *, kind="browser", goal="do the thing", replies=(),
             setattr(ap, name, value)
         ap.computer.foreground_app = real_fg
         ap.computer.focus_signature, ap._settle = real_sig, real_settle
+        ap.browser.read_page, ap.browser.screenshot_b64 = real_read, real_shot
     return result, {"browser": browser, "computer": computer, "steps": step_calls["n"],
                     "verify": step_calls["verify"]}
 
@@ -246,6 +262,69 @@ class TruthfulnessTests(unittest.TestCase):
             browser=FakeSurface(default=(True, "Clicked “Next”.", None)))
         self.assertFalse(result["ok"])
         self.assertIn("Keychron K2 is $89", result.get("findings", []))
+
+
+class CompletionEvidenceTests(unittest.TestCase):
+    def test_completion_reads_body_once_when_controls_do_not_show_saved_message(self):
+        surface = FakeSurface(page_text="Your changes have been saved.")
+        checks = []
+        result, _ = run_loop(
+            self, goal="Save the changes", browser=surface, verify_inputs=checks,
+            replies=['{"do":"click","target":"1"}',
+                     '{"do":"done","summary":"Saved the changes."}'])
+        self.assertTrue(result["ok"])
+        self.assertEqual(surface.reads, 1)
+        self.assertIn("CURRENT PAGE TEXT (read just now):\nYour changes have been saved.", checks[0][0])
+        self.assertTrue(any("changes have been saved" in item["detail"] for item in result["evidence"]))
+
+    def test_earlier_actual_read_and_recorded_notes_survive_navigation_for_checker(self):
+        surface = FakeSurface(results=[(True, "read the page", {"page_text": "Listed price: $89"})],
+                              page_text="A different page is now open.")
+        checks = []
+        result, _ = run_loop(
+            self, goal="Find the keyboard price and report it", browser=surface,
+            verify_inputs=checks,
+            replies=['{"do":"read"}', '{"do":"note","text":"Keyboard costs $89"}',
+                     '{"do":"click","target":"1"}',
+                     '{"do":"done","summary":"The keyboard costs $89."}'])
+        self.assertTrue(result["ok"])
+        prompt = checks[0][0]
+        self.assertIn("Page: test — step 1\nListed price: $89", prompt)
+        self.assertIn("OPERATOR'S RECORDED NOTES (not independent proof):\n- Keyboard costs $89", prompt)
+        self.assertIn("A different page is now open.", prompt)
+
+    def test_ordinary_done_checker_receives_the_operator_screenshot(self):
+        checks = []
+        result, _ = run_loop(
+            self, goal="Check the image", vision=True, verify_inputs=checks,
+            replies=['{"do":"done","summary":"The image is visible."}'])
+        self.assertTrue(result["ok"])
+        self.assertEqual(checks[0][1]["image_b64"], "BROWSER_SCREENSHOT")
+
+    def test_fenced_verdict_is_accepted_but_malformed_verdict_stays_unverified(self):
+        for verdict, expected in [('```json\n{"verdict":"pass"}\n```', True),
+                                  ('{"verdict":', False)]:
+            with self.subTest(verdict=verdict):
+                result, surfaces = run_loop(
+                    self, goal="Save the changes", verdicts=[verdict],
+                    replies=['{"do":"click","target":"1"}',
+                             '{"do":"done","summary":"Saved the changes."}'])
+                self.assertEqual(result["ok"], expected)
+                self.assertEqual(len(surfaces["browser"].commands), 1)
+                if not expected:
+                    self.assertEqual(result["status"], "unverified")
+
+    def test_completion_read_failure_does_not_hide_other_verifiable_evidence(self):
+        class UnreadableSurface(FakeSurface):
+            def read_page(self):
+                self.reads += 1
+                raise RuntimeError("Page changed during read")
+        surface = UnreadableSurface()
+        result, _ = run_loop(
+            self, goal="Check the page", browser=surface,
+            replies=['{"do":"done","summary":"The page is visible."}'])
+        self.assertTrue(result["ok"])
+        self.assertEqual(surface.reads, 1)
 
 
 class PredictedFinishTests(unittest.TestCase):

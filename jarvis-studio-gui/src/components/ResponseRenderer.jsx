@@ -276,11 +276,11 @@ function ActionCard({ results, runAction }) {
   return (
     <div className="action-cards">
       {results.map((r, i) => (
-        <div key={i} className={`action-card${r.ok ? "" : " action-card--fail"}`}>
+        <div key={i} className={`action-card${r.ok ? "" : ["unverified", "partial"].includes(r.status) ? " action-card--uncertain" : " action-card--fail"}`}>
           <div className="action-card-row">
             <span className="action-ico">{icon(r.type)}</span>
             <span className="action-msg">{r.message}</span>
-            <span className="action-state">{r.ok ? "✓" : "✕"}</span>
+            <span className="action-state">{r.ok ? "✓" : r.status === "unverified" ? "?" : r.status === "partial" ? "◐" : "✕"}</span>
           </div>
           {r.image && (
             r.type === "generate_image" ? (

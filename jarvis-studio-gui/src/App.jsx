@@ -7,6 +7,7 @@ import SetupProgress from "./components/SetupProgress";
 import BootOverlay from "./components/BootOverlay";
 import Customize from "./components/Customize";
 import AgentActivity from "./components/AgentActivity";
+import CameraOCR from "./components/CameraOCR";
 import CommandPalette from "./components/CommandPalette";
 import { Icon } from "./hud/icons";
 import { AGENT_PICKS, agentPick } from "./hud/agents";
@@ -16,6 +17,8 @@ import { useGestureModes } from "./gestures/useGestureModes";
 import { WebcamCamera } from "./gestures/webcam";
 import { windowsGestureHost } from "./gestures/windowsHost";
 import GestureWorkspace from "./gestures/GestureWorkspace";
+import { syncAuxiliaryWindow, voiceOverlayVisible } from "./components/auxiliaryWindows";
+import { controlPresentation, shouldShowControlTint, startControlTintLease } from "./components/controlTint";
 
 // Section name (as JARVIS says it) → panels-state key. Module-scope constant —
 // it never changes, so there's no reason to rebuild it on every render.
@@ -71,10 +74,10 @@ function ClarifyPrompt({ request, onRespond }) {
 
 export default function App() {
   const {
-    status, messages, warnings, sysInfo, isConnected,
+    status, messages, warnings, sysInfo, isConnected, ocrResult, sendOcr,
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
     commands, recordings, browserState, controlState, screen, alwaysOn, conversationMode,
-    overlay, agentTasks, conversations, setupProgress,
+    overlay, activeApp, agentTasks, conversations, setupProgress,
     devicePairing, devices, tvState, waState, mcpState, connState,
     createPairing, listDevices, revokeDevice, taskPasskeyState, loadTaskPasskey, setTaskPasskey,
     dismissWarning, clearAgentTasks, sendConfig, refreshModels, rerankModels, repairSetup, sendMessage,
@@ -113,6 +116,7 @@ export default function App() {
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [toast, setToast] = useState(null);   // {text, id} — brief confirmation pill
   const notify = useCallback((text) => setToast({ text, id: Date.now() }), []);
@@ -140,7 +144,7 @@ export default function App() {
       }
       if (e.key !== "Escape" || e.defaultPrevented || showSettings || paletteOpen || blocking) return;
       const open = [
-        [customizeOpen, setCustomizeOpen], [activityOpen, setActivityOpen], [memoryOpen, setMemoryOpen],
+        [cameraOpen, setCameraOpen], [customizeOpen, setCustomizeOpen], [activityOpen, setActivityOpen], [memoryOpen, setMemoryOpen],
         [powerOpen, setPowerOpen], [chatOpen, setChatOpen], [skillsOpen, setSkillsOpen], [capsOpen, setCapsOpen],
       ].find(([isOpen]) => isOpen);
       if (open) { e.preventDefault(); open[1](false); }
@@ -148,7 +152,7 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [openSettings, showSettings, paletteOpen, blocking, customizeOpen, activityOpen, memoryOpen,
-      powerOpen, chatOpen, skillsOpen, capsOpen]);
+      powerOpen, chatOpen, skillsOpen, capsOpen, cameraOpen]);
 
   // Effective HUD config: the base preset recolored by the user/JARVIS screen
   // settings. Memoized so it keeps a stable identity across the many re-renders
@@ -251,18 +255,37 @@ export default function App() {
 
   // ── Browser companion panel (right rail beside Playwright Chromium) ─────────
   const browserPanelOpen = !!browserState.open
+    || !!browserState.setup
     || (agentTasks || []).some((t) => t.kind === "browser" && t.status === "running");
   useEffect(() => {
     syncBrowserPanel(browserPanelOpen, wsSend);
   }, [browserPanelOpen, wsSend]);
 
+  const voiceOverlayOpen = voiceOverlayVisible(activeApp, overlay, permissionRequest);
+  useEffect(() => {
+    syncAuxiliaryWindow("overlay", voiceOverlayOpen);
+  }, [voiceOverlayOpen]);
+
   // ── "JARVIS CONTROLLING" overlay (shown during desktop computer control) ────
   // Driven from the main window (a hidden window can't reliably show itself).
-  const controlOverlayActive = !!controlState.armed
-    || (agentTasks || []).some((t) => t.kind === "computer" && t.status === "running");
+  const computerTaskRunning = (agentTasks || []).some((t) => t.kind === "computer" && t.status === "running");
+  const controlOverlayActive = !!controlState.armed || computerTaskRunning;
   useEffect(() => {
     syncControlOverlay(controlOverlayActive);
   }, [controlOverlayActive]);
+
+  const controlTintActive = shouldShowControlTint(isConnected, controlState, agentTasks);
+  useEffect(() => {
+    let disposed = false;
+    let stop = () => {};
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        if (!disposed) stop = startControlTintLease(controlTintActive, invoke);
+      } catch { /* browser preview has no native screen overlay */ }
+    })();
+    return () => { disposed = true; stop(); };
+  }, [controlTintActive]);
 
   // Memory view: pull a fresh snapshot on open, and again after any executed
   // action while it's open (a spoken "remember…"/"forget…" changes what it shows).
@@ -299,6 +322,8 @@ export default function App() {
       return;
     }
     switch (cmd) {
+      case "open_camera": case "open_ocr": setCameraOpen(true); break;
+      case "close_camera": case "close_ocr": setCameraOpen(false); break;
       case "open_chat": case "open_conversation": case "conversation": setChatOpen(true); break;
       case "close_chat": setChatOpen(false); break;
       case "open_settings": case "settings": openSettings(); break;
@@ -384,6 +409,8 @@ export default function App() {
         () => setConversationModeOn(!conversationMode), { keywords: "natural brief chatty", state: conversationMode ? "On" : null }),
 
       cmd("screenshot", "Tools", "Take a screenshot", "camera", () => runAction({ type: "screenshot" }), { keywords: "capture screen" }),
+      cmd("camera", "Tools", "Camera text & translation", "camera", () => setCameraOpen(true),
+        { keywords: "camera webcam optic ocr read translate text" }),
       rec("audio", "audio"), rec("video", "webcam"), rec("screen", "screen"),
       ...(browserState.available ? [cmd("browser", "Tools", browserState.open ? "Close JARVIS's browser" : "Open JARVIS's browser",
         "globe", () => setBrowserOpen(!browserState.open), { keywords: "web chromium", state: browserState.open ? "Open" : null })] : []),
@@ -512,6 +539,7 @@ export default function App() {
         panels={panels} onTogglePanel={togglePanel}
         chatOpen={chatOpen} setChatOpen={setChatOpen}
         skillsOpen={skillsOpen} setSkillsOpen={setSkillsOpen}
+        onOpenCamera={() => { setSkillsOpen(false); setCameraOpen(true); }}
         capsOpen={capsOpen} setCapsOpen={setCapsOpen}
         powerOpen={powerOpen} setPowerOpen={setPowerOpen}
         memoryOpen={memoryOpen} setMemoryOpen={setMemoryOpen}
@@ -543,7 +571,7 @@ export default function App() {
           {controlState.armed && (
             <div className="hud-armed-banner hud-armed-banner--control">
               <span className="hud-armed-dot" />
-              <span><Icon name="keyboard" size={15} /> JARVIS is controlling your mouse and keyboard</span>
+              <span><Icon name="keyboard" size={15} /> {controlPresentation(controlState.armed, computerTaskRunning, controlState.paused).banner}</span>
               <button className="hud-armed-disarm hud-armed-disarm--stop" onClick={stopControl}>Stop</button>
             </div>
           )}
@@ -632,6 +660,11 @@ export default function App() {
           onClose={() => setActivityOpen(false)}
           onClear={clearAgentTasks}
         />
+      )}
+
+      {cameraOpen && (
+        <CameraOCR onClose={() => setCameraOpen(false)} sendOcr={sendOcr}
+                   result={ocrResult} connected={isConnected} onNotify={notify} />
       )}
 
       {/* Booting: shown until the backend WebSocket connects (frozen backend start

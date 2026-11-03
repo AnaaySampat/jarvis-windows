@@ -55,8 +55,10 @@ class FakeSMTP:
 class SendToMeTests(unittest.TestCase):
     def setUp(self):
         self.loop = asyncio.new_event_loop()
-        threading.Thread(target=self.loop.run_forever, daemon=True).start()
-        self.addCleanup(self.loop.call_soon_threadsafe, self.loop.stop)
+        self.addCleanup(self.loop.close)
+        thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (self.loop.call_soon_threadsafe(self.loop.stop), thread.join(5)))
         self.ch = FakeChannel()
         send_me.attach_main(self.loop, lambda: self.ch)
         self.dir = tempfile.mkdtemp()

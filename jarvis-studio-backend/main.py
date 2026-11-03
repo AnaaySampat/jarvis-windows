@@ -3,6 +3,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import contextvars
 import datetime as _dt
 import os
 import re
@@ -22,7 +23,7 @@ for _stream in (sys.stdout, sys.stderr):
 from server.websocket_server import (
     add_tap, remove_tap,
     emit, send_to, start as start_websocket, register_handler, on_connect,
-    on_disconnect, send_to_current, current_client_id,
+    on_disconnect, send_to_current, current_client_id, local_client_view, client_accepts_event,
     configure_device_identity, set_remote_allowed, set_ready_info,
     emit_task_event, subscribe_task, subscribe_local_clients, unsubscribe_task,
     is_current_sender_remote, current_authenticated_device,
@@ -44,7 +45,7 @@ from llm.groq_bridge import (
     get_always_on, set_always_on, set_conversation_mode, get_agent_mode, set_agent_mode, get_task_tier, set_task_tier,
     get_active_agent, set_active_agent,
     get_system_alerts, set_system_alerts, get_overlay, set_overlay,
-    quick_completion, CAPABILITY_INDEX,
+    quick_completion, CAPABILITY_INDEX, get_stt,
 )
 from llm import gemini_bridge, live_audio, live_tools, model_discovery, vertex_auth
 from actions import (execute_actions, run_specs, run_action, needs_permission, _BROWSER_READONLY,
@@ -65,6 +66,13 @@ import places
 import whatsapp_channel
 import activity
 import agents
+import agent_results
+import workflow_store
+
+
+async def _in_context(fn, *args):
+    """Executor work must retain the workflow identity and consultation policy."""
+    return await asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn, *args)
 # First-run asset provisioning is OPTIONAL. If the module is missing from a frozen
 # build, or fails to import for any reason, the backend MUST still start — the
 # assets then fall back to lazy download-on-first-use. Never let it brick startup.
@@ -133,6 +141,7 @@ def _setup_snapshot_for_replay():
 from wake_word.base import WakeWordDetector
 from transcription.whisper_transcriber import (
     transcribe, transcribe_clip, transcribe_voice_note, preload as preload_whisper,
+    set_stt as set_transcriber_stt, TranscriptionError,
 )
 from wake_word.capture import command_after_wake, is_noise as is_noise_transcript
 from tts.tts_engine import TTSEngine
@@ -166,6 +175,45 @@ def _interrupted() -> bool:
 # `paused` / `corrections` callbacks below.
 _control_paused: bool = False
 _pending_corrections: "list[str]" = []
+
+# Only live operator invocations belong here. Persisted workflows may still say
+# "running" after interruption, so they must never restore a controlling HUD.
+_active_agent_tasks: dict[str, tuple[dict, asyncio.Task]] = {}
+
+
+def _forget_agent_task(task_id: str, owner=None) -> None:
+    entry = _active_agent_tasks.get(task_id)
+    if entry is not None and (owner is None or entry[1] is owner):
+        _active_agent_tasks.pop(task_id, None)
+
+
+def _agent_task_for_replay(task_id: str):
+    entry = _active_agent_tasks.get(task_id)
+    if entry is None:
+        return None
+    if entry[1].done():
+        _forget_agent_task(task_id, entry[1])
+        return None
+    return dict(entry[0])
+
+
+async def _emit_agent_task(data: dict) -> None:
+    """Keep minimal current HUD state, with the executing task as its lifetime."""
+    task_id = data["id"]
+    owner = asyncio.current_task()
+    public = {key: data[key] for key in ("id", "kind", "goal", "source", "agent") if key in data}
+    _active_agent_tasks[task_id] = (public, owner)
+    owner.add_done_callback(lambda done: _forget_agent_task(task_id, done))
+    try:
+        await emit("agent_task", data)
+    except BaseException:
+        _forget_agent_task(task_id, owner)
+        raise
+
+
+async def _emit_agent_task_end(data: dict) -> None:
+    _forget_agent_task(data["id"])
+    await emit("agent_task_end", data)
 
 
 def _control_is_paused() -> bool:
@@ -233,6 +281,7 @@ _user_busy: bool = False
 
 # Pending Approve/Deny requests, keyed by request id → Future resolved by the GUI.
 _pending_perms: "dict[str, asyncio.Future]" = {}
+_pending_permission_prompts: dict[str, dict] = {}
 
 
 async def request_permission(kind: str, description: str, timeout: float = 120.0) -> bool:
@@ -247,7 +296,8 @@ async def request_permission(kind: str, description: str, timeout: float = 120.0
     req_id = f"{time.time()}"
     fut: "asyncio.Future" = loop.create_future()
     _pending_perms[req_id] = fut
-    await emit("permission_request", {"id": req_id, "kind": kind, "description": description})
+    _pending_permission_prompts[req_id] = {"id": req_id, "kind": kind, "description": description}
+    await emit("permission_request", _pending_permission_prompts[req_id])
     print(f"[Permission] Awaiting approval: {description}", flush=True)
     # A WhatsApp turn: nobody may be at the PC, so ask in the chat too. Either answer
     # counts; the chat is the owner's own (whatsapp_channel.admit).
@@ -263,6 +313,7 @@ async def request_permission(kind: str, description: str, timeout: float = 120.0
         if remote is not None:
             remote.cancel()
         _pending_perms.pop(req_id, None)
+        _pending_permission_prompts.pop(req_id, None)
         # The request is broadcast to every window (HUD + floating overlay);
         # answering in one must dismiss it everywhere, including on timeout.
         await emit("permission_request", None)
@@ -509,6 +560,23 @@ _REMOTE_HEARTBEAT_S = 60
 
 
 async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str) -> None:
+    journal = _get_workflow_journal()
+    run = journal.begin(goal, [{"agent": kind, "task": goal}])
+    run.update(remote_task_id=task_id, device_id=current_authenticated_device(),
+               pending={"agent": kind, "task": goal, "state": "intent_recorded"})
+    journal.save(run)
+    token = workflow_store.current.set((journal, run))
+    try:
+        await _run_remote_task_owned(task_id, kind, goal, device_name)
+    finally:
+        _forget_agent_task(task_id)
+        if run["state"] == "running":
+            run["state"] = "suspended"
+        journal.save(run)
+        workflow_store.current.reset(token)
+
+
+async def _run_remote_task_owned(task_id: str, kind: str, goal: str, device_name: str) -> None:
     """Run one phone-submitted autopilot task, streaming progress to THAT phone
     only (emit_task_event is per-subscriber, never the broadcast bus → G1/G2).
 
@@ -557,7 +625,7 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
     # and screenshots) and the home screen's "Working on it…". It used to get only the
     # task.* events, which it never drew, so a task from the phone ran with nothing on
     # the PC's screen. (emit is loopback-only: these never reach a phone.)
-    await emit("agent_task", {"id": task_id, "kind": kind, "goal": goal, "source": "phone"})
+    await _emit_agent_task({"id": task_id, "kind": kind, "goal": goal, "source": "phone"})
 
     async def on_step(line: str) -> None:
         await _emit("task.event",
@@ -611,7 +679,7 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
             await _emit("task.status",
                         {"task_id": task_id, "state": "failed",
                          "summary": arm_msg, "v": REMOTE_PROTOCOL_VERSION})
-            await emit("agent_task_end", {"id": task_id, "ok": False, "stopped": False,
+            await _emit_agent_task_end({"id": task_id, "ok": False, "stopped": False,
                                           "summary": arm_msg})
             return
 
@@ -661,7 +729,8 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
                 res = {"ok": bool(image), "stopped": stopped,
                        "summary": "Screen capture cancelled." if stopped else "Here is your PC's screenshot." if image else
                        ("Screen capture failed on the PC." if approved else "Screen capture was not approved on your phone."),
-                       "artifacts": [{"id": task_id + ":screenshot", "kind": "image", "data_url": image}] if image else []}
+                       "artifacts": [{"id": task_id + ":screenshot", "kind": "image", "data_url": image}] if image else [],
+                       "evidence": [agent_results.receipt("screenshot", "Captured the PC screen", "screen")] if image else []}
             else:
                 res = await autopilot.run_task(
                     "browser" if web else kind,
@@ -669,26 +738,33 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
                     on_step=on_step, on_shot=on_shot, ask=ask, reconsent=reconsent,
                     hint=playbooks.autopilot_hint(goal), interrupted=_interrupted,
                 )
-        ok = bool(res.get("ok"))
+        contract = agent_results.result(res, goal, require_evidence=True)
+        ok = contract["ok"]
         stopped = bool(res.get("stopped"))
-        summary = (res.get("summary") or "").strip()
-        findings = [str(f)[:200] for f in (res.get("findings") or [])[:12] if str(f).strip()]
+        summary = contract["summary"].strip()
+        findings = contract["findings"]
         state = "cancelled" if stopped else ("succeeded" if ok else "failed")
         _audit({"event": "task.result", "device_id": device_id, "task_id": task_id,
                 "ok": ok, "stopped": stopped})
-        terminal = {"task_id": task_id, "state": state, "summary": summary,
+        terminal = {**contract, "task_id": task_id, "state": state, "summary": summary,
                     "findings": findings, "v": REMOTE_PROTOCOL_VERSION}
         if res.get("artifacts"):
             terminal["artifacts"] = res["artifacts"]
         if ok:
             # The phone gates completion on proof.passed + a non-empty evidence list.
-            # passed mirrors autopilot's OWN verdict (res.ok already runs the
-            # _summary_looks_incomplete gate) — not a fabricated pass; evidence ids
-            # are the real findings, or the task id (audit-log correlator) if none.
+            # Only actual executor/checker receipts can back the signed proof.
             terminal["proof"] = {"passed": True,
-                                 "evidence_ids": ([a["id"] for a in res.get("artifacts", [])] or findings or [task_id])}
+                                 "evidence_ids": [e["id"] for e in contract["evidence"]]}
+        active = workflow_store.current.get()
+        if active:
+            active[1]["results"].append(contract)
+            active[1]["pending"] = None
+            active[1]["state"] = "succeeded" if ok else "suspended"
+            active[1]["terminal"] = terminal
+            active[0].save(active[1])
         await _emit("task.status", terminal)
-        await emit("agent_task_end", {"id": task_id, "ok": ok, "stopped": stopped,
+        await _emit_agent_task_end({"id": task_id, "ok": ok, "stopped": stopped,
+                                      "status": contract["status"],
                                       "summary": summary or ("Done." if ok else "Didn't finish.")})
         print(f"[Remote] task {task_id} ({kind}) {'✓' if ok else '✗'} {goal!r}", flush=True)
     except Exception as exc:  # noqa: BLE001
@@ -696,10 +772,11 @@ async def _run_remote_task(task_id: str, kind: str, goal: str, device_name: str)
         await _emit("task.status",
                     {"task_id": task_id, "state": "failed",
                      "summary": f"error: {exc}", "v": REMOTE_PROTOCOL_VERSION})
-        await emit("agent_task_end", {"id": task_id, "ok": False, "stopped": False,
+        await _emit_agent_task_end({"id": task_id, "ok": False, "stopped": False,
                                       "summary": f"Failed: {exc}"})
         print(f"[Remote] task {task_id} failed: {exc}", flush=True)
     finally:
+        _forget_agent_task(task_id)
         hb.cancel()
         if personal_target or kind == "research":
             browser.set_target("")      # back to JARVIS's own browser for single actions
@@ -794,6 +871,16 @@ async def handle_task_submit(data) -> None:
     # (running or just finished) instead of rejecting it as "busy" or re-running it.
     if task_id == _remote_task_id or task_id in _remote_finished:
         await handle_task_subscribe({"task_id": task_id, "resume_after_seq": 0})
+        return
+    saved = _get_workflow_journal().remote(task_id, device_id)
+    if saved:
+        # A restart erased the in-memory replay cache, not the submitted intent.
+        # Return the saved outcome or uncertainty; never execute that id again.
+        subscribe_task(task_id)
+        await emit_task_event(task_id, "task.status", saved.get("terminal") or {
+            "task_id": task_id, "state": "failed", "status": "unverified",
+            "summary": "Execution was interrupted. Check the PC before retrying; this task was not replayed.",
+        })
         return
     # Single-flight: autopilot.run_task drives the one shared desktop/HUD, so two
     # concurrent remote tasks would fight over the mouse. Reject the second.
@@ -1907,9 +1994,9 @@ async def _completion_check(user_text: str, observed_results: "list[dict]",
     loop = asyncio.get_running_loop()
     if tool_sink:
         specs = [live_tools.to_spec(c.get("name", ""), c.get("args")) for c in tool_sink]
-        results = await loop.run_in_executor(None, run_specs, specs)
+        results = await _in_context(run_specs, specs)
     else:
-        _clean, results = await loop.run_in_executor(None, execute_actions, raw)
+        _clean, results = await _in_context(execute_actions, raw)
     if not results:
         return []
     print(f"[Check] recovered {len(results)} missed task(s)", flush=True)
@@ -2133,7 +2220,7 @@ async def _handle_web_search(result: dict, *, speak: bool = True) -> str:
             "sources": [{"title": s.get("title", ""), "uri": s.get("uri", "")}
                         for s in sources[:5]],
         }])
-    if answer and speak and _tts and not skills.is_muted():
+    if answer and speak and _tts and not skills.is_muted() and not agent_results.prompt_scope.get():
         await emit("status", "speaking")
         await _tts.speak(answer)
     return answer
@@ -2169,6 +2256,7 @@ async def _persist_generated_image(card: dict, data_url: str, caption: str) -> N
     if saved_ok:
         card["target"] = os.path.basename(path)
         card["message"] = f"{caption} Saved to {path}."
+        card["artifacts"] = [{"uri": path, "kind": "image"}]
 
 
 async def _handle_image_gen(result: dict) -> None:
@@ -2183,7 +2271,7 @@ async def _handle_image_gen(result: dict) -> None:
     print(f"[Image] {'✓' if ok else '✗'} {card['message'][:100]}", flush=True)
     await emit("action", [card])
     await _log_commands([{**card, "target": result.get("prompt", "")[:40]}])
-    if msg and _tts and not skills.is_muted():
+    if msg and _tts and not skills.is_muted() and not agent_results.prompt_scope.get():
         await emit("status", "speaking")
         await _tts.speak(msg)
 
@@ -2220,6 +2308,8 @@ async def _run_autopilot_task(result: dict, *, speak: bool = True,
                "I won't run it again on my own, sir — check what it left and ask me to "
                "try again if you'd like.")
         print(f"[Autopilot:{kind}] not re-run this request: {goal!r}", flush=True)
+        if report is not None:
+            report.update(agent_results.result({"status": "blocked", "summary": msg}, goal))
         await emit("response", msg)
         if speak and _tts and not skills.is_muted():
             await emit("status", "speaking")
@@ -2233,6 +2323,8 @@ async def _run_autopilot_task(result: dict, *, speak: bool = True,
                 "give me a moment." if _autopilot_owner == "remote" else
                 "I'm already working on another task, sir — stop it first or give me "
                 "a moment.")
+        if report is not None:
+            report.update(agent_results.result({"status": "blocked", "summary": busy}, goal))
         await emit("response", busy)
         return busy
     _autopilot_owner = "local"
@@ -2299,11 +2391,10 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
     # the operator saw (the browser page for browser tasks; the screen for desktop
     # tasks, when autopilot vision is on). These rows are read-only auditability;
     # they never bypass the consent gates.
-    await emit("agent_task", {"id": sid, "kind": kind, "goal": goal,
+    await _emit_agent_task({"id": sid, "kind": kind, "goal": goal,
                               "source": "whatsapp" if _wa_chat is not None else "",
                               **({"agent": label} if label else {})})
     lines = [f"{icon} On it, sir — {goal}"]
-    await emit("stream_delta", {"sid": sid, "text": "\n".join(lines)})
 
     async def on_step(line: str) -> None:
         # Live progress in the chat bubble (display only — never spoken). The
@@ -2346,7 +2437,9 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
         return granted
 
     final = "I couldn't finish that, sir."
+    contract = None
     try:
+        await emit("stream_delta", {"sid": sid, "text": "\n".join(lines)})
         if kind == "tv":                 # the TV, by sight (tv_operator.py)
             res = await tv_operator.run_task(goal, interrupted=_interrupted,
                                              on_step=on_step, on_shot=on_shot, ask=ask,
@@ -2370,33 +2463,36 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
             finally:
                 if kind == "research" or personal:
                     browser.set_target("")
-        summary = (res.get("summary") or "").strip()
+        # The TV operator has its own visual completion check and still returns
+        # a legacy result; receipt enforcement here applies to the PC operators.
+        contract = agent_results.result(res, goal, require_evidence=kind != "tv")
+        summary = contract["summary"].strip()
         if res.get("stopped"):
             final = "Stopped, sir."
             summary = ""
         else:
-            final = summary or ("Done, sir." if res.get("ok")
+            final = summary or ("Done, sir." if contract["ok"]
                                 else "I couldn't finish that, sir.")
+        contract["summary"] = final
+        if report is not None:
+            report.update(contract)
+            report["stopped"] = bool(res.get("stopped"))
+        steps = res.get("steps") or []
+        if steps and not contract["ok"] and not res.get("stopped"):
+            _acted_and_failed.add(kind)
         await emit("response_end", {"sid": sid, "text": f"{icon} {final}", "actions": []})
-        await emit("agent_task_end", {"id": sid, "ok": bool(res.get("ok")),
+        await _emit_agent_task_end({"id": sid, "ok": contract["ok"], "status": contract["status"],
                                       "summary": final, "stopped": bool(res.get("stopped"))})
-        card = {"type": f"{kind}_task", "ok": bool(res.get("ok")), "message": goal[:80],
+        card = {"type": f"{kind}_task", "ok": contract["ok"], "status": contract["status"], "message": final,
                 "target": goal[:60]}
         findings = res.get("findings") or []
-        if report is not None:
-            report.update(ok=bool(res.get("ok")) and not res.get("stopped"),
-                          stopped=bool(res.get("stopped")), summary=final,
-                          findings=[str(f)[:300] for f in findings[:12]])
         if findings:
             card["findings"] = [str(f)[:200] for f in findings[:12]]
         await emit("action", [card])
         await _log_commands([card])
-        steps = res.get("steps") or []
-        if steps and not res.get("ok") and not res.get("stopped"):
-            _acted_and_failed.add(kind)
-        print(f"[Autopilot:{kind}] {'✓' if res.get('ok') else '✗'} {goal!r} "
+        print(f"[Autopilot:{kind}] {'✓' if contract['ok'] else '✗'} {goal!r} "
               f"({len(steps)} steps) → {final}", flush=True)
-        if steps and not res.get("ok"):
+        if steps and not contract["ok"]:
             did = " Steps attempted: " + "; ".join(str(s)[:90] for s in steps[-10:]) + "."
         elif res.get("trace"):
             did = " I did: " + "; ".join(str(t) for t in (res.get("trace") or [])[:12]) + "."
@@ -2404,10 +2500,14 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
             did = " I noted: " + "; ".join(str(f)[:120] for f in findings[:8]) + "."
         else:
             did = ""
+        outcome_label = ("stopped by user" if res.get("stopped") else
+                         {"succeeded": "completed", "partial": "partially completed",
+                          "unverified": "completion unverified", "blocked": "blocked",
+                          "failed": "failed"}[contract["status"]])
         note_outcome(f"({kind} autopilot task) goal: {goal!r} → "
-                     f"{'completed' if res.get('ok') else 'stopped before finishing'}: "
+                     f"{outcome_label}: "
                      f"{final}{did}")
-        if res.get("ok") and not res.get("stopped") and kind != "tv":
+        if contract["ok"] and not res.get("stopped") and kind != "tv":
             try:
                 playbooks.capture_auto(goal, res.get("trace") or [])
             except Exception:  # noqa: BLE001
@@ -2416,15 +2516,40 @@ async def _run_autopilot_task_owned(result: dict, kind: str, goal: str, *,
             await emit("status", "speaking")
             await _tts.speak(summary)
     except Exception as exc:  # noqa: BLE001
+        # Display, memory and speech failures do not undo an observed outcome.
+        # In particular, never follow a successful task with a failed terminal event.
+        if contract is not None:
+            print(f"[Autopilot:{kind}] outcome reporting failed: {exc}", flush=True)
+            return final
         print(f"[Autopilot:{kind}] failed: {exc}", flush=True)
+        if report is not None:
+            report.update(agent_results.result({"status": "failed", "summary": final}, goal))
         await emit("response_end", {"sid": sid, "text": f"{icon} {final}", "actions": []})
-        await emit("agent_task_end", {"id": sid, "ok": False, "summary": final, "stopped": False})
+        await _emit_agent_task_end({"id": sid, "ok": False, "status": "failed", "summary": final, "stopped": False})
     finally:
-        await emit("status", "idle")
+        _forget_agent_task(sid)
+        with contextlib.suppress(Exception):
+            await emit("status", "idle")
     return final
 
 
-async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]":
+async def _resolve_consultations(results: list[dict]) -> list[dict]:
+    resolved = []
+    for res in results:
+        if not res.get("needs_consultation"):
+            resolved.append(res)
+            continue
+        answer = await _agent_consult(agent_results.current_agent.get())(
+            res.get("question", ""), res.get("agent", ""))
+        resolved.append({"type": "consult_agent", "ok": bool(answer),
+                         "message": answer or "The helper could not answer that question.",
+                         "findings": [answer] if answer else [],
+                         "feed_to_model": {"content": answer or "No verified answer was available."}})
+    return resolved
+
+
+async def _surface_results(results: "list[dict]", user_text: str,
+                           observed: "list | None" = None) -> "list[dict]":
     """Emit cards / command-log / memory / side-effects for a follow-up step's
     actions, handle gated (permission), vision and image-gen results, and return
     the feed_to_model payloads (plus a fresh browser observation after a page
@@ -2433,7 +2558,7 @@ async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]
     Unlike the old follow-up — which ran a step's actions but DISCARDED the results
     (no cards, gated actions silently dropped, no further feedback) — this surfaces
     everything the first turn does and keeps the loop fed."""
-    results = _autopilot_fallbacks(results, user_text)
+    results = await _resolve_consultations(_autopilot_fallbacks(results, user_text))
     immediate = [r for r in results if not r.get("needs_permission")
                  and not r.get("needs_vision") and not r.get("needs_image_gen")
                  and not r.get("needs_autopilot") and not r.get("needs_web_search")]
@@ -2475,7 +2600,9 @@ async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]
 
     # Autopilot goals: run the silent operator loop; it reports once at the end.
     for a in autop:
-        await _run_autopilot_task(a)
+        report = {}
+        await _run_autopilot_task(a, report=report)
+        observed_results.append({"type": a.get("type"), **report})
 
     # Gated actions — ask before doing, so a follow-up read/delete isn't silently
     # dropped (the old follow-up never even surfaced these).
@@ -2491,7 +2618,7 @@ async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]
             approved = await request_permission(kind, p.get("description", "that action"))
         if approved:
             grant(kind)
-            res = await loop.run_in_executor(None, run_action, p["spec"])
+            res = await _in_context(run_action, p["spec"])
             # An approved see_screen / generate_image / autopilot goal returns a
             # DEFERRED result that still has to be run — route it through the
             # shared handlers instead of dropping it.
@@ -2505,7 +2632,9 @@ async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]
                 await _handle_web_search(res)
                 continue
             if res.get("needs_autopilot"):
-                await _run_autopilot_task(res)
+                report = {}
+                await _run_autopilot_task(res, report=report)
+                observed_results.append({"type": res.get("type"), **report})
                 continue
             await emit("action", [res])
             _remember_outcomes([res])
@@ -2515,6 +2644,7 @@ async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]
                 feeds.append(res["feed_to_model"])
         else:
             msg = _spoken_refusal(p.get("description"))
+            observed_results.append({"ok": False, "status": "blocked", "message": msg})
             await emit("action", [{"type": p.get("type"), "ok": False, "message": msg}])
 
     # Feed failures back so the model can self-correct, and re-observe the page
@@ -2522,13 +2652,15 @@ async def _surface_results(results: "list[dict]", user_text: str) -> "list[dict]
     # next step.
     feeds += _failure_feeds(observed_results)
     await _observe_browser_if_needed(feeds, observed_results)
+    if observed is not None:
+        observed.extend(observed_results)
     return feeds
 
 
 async def _agentic_loop(feeds: "list[dict]", user_text: str = "",
                         instruction: "str | None" = None,
                         max_steps: int = _MAX_AGENTIC_STEPS,
-                        task_tier: str = "") -> None:
+                        task_tier: str = "", observed: "list | None" = None) -> None:
     """Observe→act loop for the text pipeline: feed the previous actions' results
     back, let the model take the NEXT action, and repeat until it stops emitting
     actions (or the step cap). This is what lets JARVIS actually COMPLETE multi-step
@@ -2559,9 +2691,9 @@ async def _agentic_loop(feeds: "list[dict]", user_text: str = "",
             return
         if tool_sink:
             specs = [live_tools.to_spec(c.get("name", ""), c.get("args")) for c in tool_sink]
-            results = await loop.run_in_executor(None, run_specs, specs)
+            results = await _in_context(run_specs, specs)
         else:
-            _clean, results = await loop.run_in_executor(None, execute_actions, full_raw)
+            _clean, results = await _in_context(execute_actions, full_raw)
         if not results:            # model answered with no further action → done
             # This final turn IS the answer (a file summary, the gathered info) —
             # speak it once, now that we know no more actions follow.
@@ -2570,12 +2702,12 @@ async def _agentic_loop(feeds: "list[dict]", user_text: str = "",
                 disp = _strip_reasoning(disp,
                                         quote_only=reply_is_quote_wrapped(prompt, task_tier))
             disp = disp.strip()
-            if disp and _tts and not skills.is_muted() and not _interrupted():
+            if disp and _tts and not skills.is_muted() and not _interrupted() and not agent_results.prompt_scope.get():
                 await emit("status", "speaking")
                 await _tts.speak(disp)
             return
         said += [r["message"] for r in _shown(results) if r.get("message")]
-        feeds = await _surface_results(results, user_text)
+        feeds = await _surface_results(results, user_text, observed) if observed is not None else await _surface_results(results, user_text)
     if feeds and not _interrupted():
         await _answer_at_step_cap(feeds, user_text, said, task_tier)
 
@@ -2668,7 +2800,9 @@ async def _execute_voice_tool(call: dict) -> dict:
         return respond({"result": msg})
 
     # Everything else runs synchronously via run_action (blocking → executor).
-    res = await loop.run_in_executor(None, run_action, spec)
+    res = await _in_context(run_action, spec)
+    if res.get("needs_consultation"):
+        res = (await _resolve_consultations([res]))[0]
 
     # see_screen / tv_control look → ask the vision model about the screen (the
     # PC's, or the TV image the result carries); hand the answer back so JARVIS
@@ -2783,7 +2917,8 @@ async def _run_native_audio_turn() -> None:
             await _run_pipeline(text, emit_transcription=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[LiveAudio] fallback voice turn failed: {exc}", flush=True)
-            await emit("response", "I couldn't hear you clearly, sir — check the microphone.")
+            await emit("response", str(exc) if isinstance(exc, TranscriptionError)
+                       else "I couldn't hear you clearly, sir — check the microphone.")
             await emit("status", "idle")
         return
 
@@ -2893,6 +3028,7 @@ async def _run_pipeline(text: str, emit_transcription: bool = True,
 async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
                          shown: str = "") -> None:
     """The body of one pipeline turn; the caller holds _pipeline_lock."""
+    agent_results.consultations.set([0])
     if _interrupt is not None:
         _interrupt.clear()          # fresh turn — forget any earlier Stop
     _acted_and_failed.clear()       # a new request may try any task again
@@ -2938,7 +3074,7 @@ async def _pipeline_turn(text: str, emit_transcription: bool, task_tier: str,
 
 
 async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
-                     context: str = "") -> None:
+                     context: str = "", report: "dict | None" = None) -> None:
     """The chat agent: one ordinary turn — stream, act, follow up. A Files, Scheduling
     or Content agent's turn is this with its tool groups always loaded and its brief
     (agents.TURN_AGENTS); ``context`` is what the other agents found."""
@@ -2951,6 +3087,7 @@ async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
     speaking = False
     tts_queue: "asyncio.Queue" = asyncio.Queue()
     consumer: "asyncio.Task | None" = None
+    all_observed: list[dict] = []
 
     async def _enqueue(sentence: str) -> None:
         nonlocal consumer, speaking
@@ -2970,7 +3107,7 @@ async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
         set_skill_context("\n\n".join(
             x for x in (brief, context, playbooks.context_block(text)) if x))
 
-        speak_ok = _tts is not None and not skills.is_muted()
+        speak_ok = _tts is not None and not skills.is_muted() and not agent_results.prompt_scope.get()
         leaky = model_leaks_reasoning(text, task_tier)
         quote_only = reply_is_quote_wrapped(text, task_tier)
         # Native function/tool calls land here (empty unless the model called
@@ -3031,13 +3168,13 @@ async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
             if leaky:
                 clean = _strip_reasoning(clean, quote_only=quote_only)
                 await emit("stream_delta", {"sid": sid, "text": clean})
-            results = await loop.run_in_executor(None, run_specs, specs)
+            results = await _in_context(run_specs, specs)
         else:
-            clean, results = await loop.run_in_executor(None, execute_actions, full_raw)
+            clean, results = await _in_context(execute_actions, full_raw)
             if leaky:
                 clean = _strip_reasoning(clean, quote_only=quote_only)   # recover reply
                 await emit("stream_delta", {"sid": sid, "text": clean})
-        results = _autopilot_fallbacks(results, text)
+        results = await _resolve_consultations(_autopilot_fallbacks(results, text))
         immediate = [r for r in results if not r.get("needs_permission")
                      and not r.get("needs_vision") and not r.get("needs_image_gen")
                      and not r.get("needs_autopilot") and not r.get("needs_web_search")
@@ -3050,6 +3187,7 @@ async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
         autop = [r for r in results if r.get("needs_autopilot")]
         feeds = [r["feed_to_model"] for r in immediate if r.get("feed_to_model")]
         observed_results = list(immediate)
+        all_observed = observed_results
         for r in immediate:
             tag = "✓" if r.get("ok") else "✗"
             print(f"[Action] {tag} {r.get('type')} → {r.get('message')}", flush=True)
@@ -3093,7 +3231,9 @@ async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
             await _handle_location_set(ls)
 
         for a in autop:
-            observed_results.append(_autopilot_record(a, await _run_autopilot_task(a)))
+            task_report = {}
+            await _run_autopilot_task(a, report=task_report)
+            observed_results.append({"type": a.get("type"), **task_report})
 
         for p in pending:
             spoken_msg = ""
@@ -3105,7 +3245,7 @@ async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
                 approved = await request_permission(kind, p.get("description", "that action"))
             if approved:
                 grant(kind)
-                res = await loop.run_in_executor(None, run_action, p["spec"])
+                res = await _in_context(run_action, p["spec"])
                 if res.get("needs_vision"):
                     await _handle_vision(res)
                     continue
@@ -3116,8 +3256,9 @@ async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
                     await _handle_web_search(res)
                     continue
                 if res.get("needs_autopilot"):
-                    observed_results.append(
-                        _autopilot_record(res, await _run_autopilot_task(res)))
+                    task_report = {}
+                    await _run_autopilot_task(res, report=task_report)
+                    observed_results.append({"type": res.get("type"), **task_report})
                     continue
                 tag = "✓" if res.get("ok") else "✗"
                 print(f"[Action] {tag} (approved) {res.get('type')} → {res.get('message')}", flush=True)
@@ -3130,6 +3271,7 @@ async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
                     feeds.append(res["feed_to_model"])
             else:
                 spoken_msg = _spoken_refusal(p.get("description"))
+                observed_results.append({"ok": False, "status": "blocked", "message": spoken_msg})
                 await emit("action", [{"type": p.get("type"), "ok": False, "message": spoken_msg}])
             if spoken_msg and _tts and not skills.is_muted():
                 await emit("status", "speaking")
@@ -3161,13 +3303,15 @@ async def _chat_turn(text: str, task_tier: str, agent: str = "chat",
         feeds += _failure_feeds(observed_results)
         await _observe_browser_if_needed(feeds, observed_results)
         if feeds:
-            await _agentic_loop(feeds, text, task_tier=task_tier)
+            await _agentic_loop(feeds, text, task_tier=task_tier, observed=all_observed)
 
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001
         await _report_pipeline_error(exc, text)
     finally:
+        if report is not None:
+            report["actions"] = all_observed
         live_tools.force(())
         await _finish_tts(consumer, tts_queue)
         await emit("status", "idle")
@@ -3339,7 +3483,7 @@ async def _agent_step_task(kind: str, goal: str) -> "dict | None":
     loop = asyncio.get_running_loop()
     # Research asks for the browser's consent: it drives a browser (its own, headless).
     spec = {"type": f"{'browser' if kind == 'research' else kind}_task", "goal": goal}
-    res = (await loop.run_in_executor(None, run_specs, [spec]))[0]
+    res = (await _in_context(run_specs, [spec]))[0]
     if res.get("needs_permission"):
         pkind = res.get("kind", kind)
         if not consented(pkind):
@@ -3348,7 +3492,7 @@ async def _agent_step_task(kind: str, goal: str) -> "dict | None":
                 await emit("response", _spoken_refusal(res.get("description")))
                 return None
         grant(pkind)
-        res = await loop.run_in_executor(None, run_action, res["spec"])
+        res = await _in_context(run_action, res["spec"])
     if not res.get("needs_autopilot"):
         return None
     return {**res, "kind": "research"} if kind == "research" else res
@@ -3357,15 +3501,33 @@ async def _agent_step_task(kind: str, goal: str) -> "dict | None":
 def _agent_consult(asking: str):
     """An operator's mid-task question goes to the other agent when it can answer it
     (one tiny model call decides); "" sends it on to the user as before."""
-    async def consult(question: str) -> str:
-        raw = await quick_completion(agents.CONSULT_SYSTEM,
+    async def consult(question: str, preferred: str = "") -> str:
+        # Helpers cannot recursively consult helpers. Total requests are also
+        # bounded by the operator's own clarification budget.
+        if agent_results.readonly.get():
+            return ""
+        budget = agent_results.consultations.get()
+        if budget is None:
+            budget = [0]
+            agent_results.consultations.set(budget)
+        if budget[0] >= 3 or not question.strip():
+            return ""
+        budget[0] += 1
+        raw = preferred or await quick_completion(agents.CONSULT_SYSTEM,
                                      f"Asked by the {agents.NAMES[asking]}: {question}",
                                      max_tokens=5, task_tier="dumb")
         target = agents.consult_target(raw, asking)
         if target is None:
             return ""
         await emit("agent_message", agents.message(asking, target, "ask", question))
+        active = workflow_store.current.get()
+        if active:
+            active[1]["questions"].append({"from": asking, "to": target, "question": question, "state": "pending"})
+            active[0].save(active[1])
         answer = await _consult_agent(target, question, asking)
+        if active:
+            active[1]["questions"][-1].update(state="answered" if answer else "unanswered", answer=answer)
+            active[0].save(active[1])
         await emit("agent_message", agents.message(
             target, asking, "answer", answer or "I couldn't find that out — asking you."))
         return answer
@@ -3375,47 +3537,93 @@ def _agent_consult(asking: str):
 async def _consult_agent(kind: str, question: str, asking: str) -> str:
     """Run the other agent on one question, inside the asking agent's task (which is
     waiting on the answer), and return what it found ("" if it didn't)."""
-    gated, pkind, _desc = needs_permission({"type": f"{kind}_task", "goal": question})
+    token = agent_results.readonly.set(True)
+    try:
+        return await _consult_agent_readonly(kind, question, asking)
+    finally:
+        agent_results.readonly.reset(token)
+
+
+async def _consult_agent_readonly(kind: str, question: str, asking: str) -> str:
+    if kind not in agents.OPERATORS:
+        outcome = await _agent_turn_step(agents.Step(kind, agents.consult_goal(question)), "",
+                                        "INFORMATION-ONLY CONSULTATION. Do not save, send, publish or change anything.")
+        return outcome["summary"] if outcome["ok"] else ""
+    gated, pkind, _desc = needs_permission({"type": f"{'browser' if kind == 'research' else kind}_task", "goal": question})
     if gated and not consented(pkind):
         if not await request_permission(
                 pkind, f"let the {agents.NAMES[kind].lower()} look this up: {question[:80]}"):
             return ""
         grant(pkind)
     tid = f"{time.time()}"
-    await emit("agent_task", {"id": tid, "kind": kind, "goal": question,
+    await _emit_agent_task({"id": tid, "kind": kind, "goal": question,
                               "agent": f"{agents.NAMES[kind]} · asked by the "
                                        f"{agents.NAMES[asking].lower()}"})
 
     async def on_step(line: str) -> None:
         await emit("agent_step", {"id": tid, "line": line,
                                   "ok": not line.lstrip().startswith("✗")})
-    res = await autopilot.run_task(kind, agents.consult_goal(question),
-                                   interrupted=_interrupted, on_step=on_step,
-                                   on_shot=_agent_shot_feed(tid), max_steps=12)
-    ok = bool(res.get("ok")) and not res.get("stopped")
-    summary = (res.get("summary") or "").strip()
-    await emit("agent_task_end", {"id": tid, "ok": ok, "stopped": bool(res.get("stopped")),
+    previous_target = browser.get_target()
+    if kind == "research":
+        browser.set_target("headless")
+    try:
+        res = await autopilot.run_task("browser" if kind == "research" else kind, agents.consult_goal(question),
+                                       interrupted=_interrupted, on_step=on_step,
+                                       on_shot=_agent_shot_feed(tid), max_steps=12)
+    finally:
+        _forget_agent_task(tid)
+        if kind == "research":
+            browser.set_target(previous_target)
+    verified = agent_results.result(res, question, require_evidence=True)
+    ok = verified["ok"] and not res.get("stopped")
+    summary = verified["summary"].strip()
+    await _emit_agent_task_end({"id": tid, "ok": ok, "stopped": bool(res.get("stopped")),
+                                  "status": verified["status"],
                                   "summary": summary or ("Found it." if ok else "Couldn't find it.")})
     if not ok:
         return ""
-    findings = [str(f)[:200] for f in (res.get("findings") or [])[:6]]
+    findings = verified["findings"]
     return "; ".join(x for x in [summary, *findings] if x)
 
 
-async def _agent_turn_step(step: "agents.Step", task_tier: str, context: str) -> str:
+async def _agent_turn_step(step: "agents.Step", task_tier: str, context: str) -> dict:
     """A chat-turn agent's step (files, scheduling, content, chat), run as an ordinary
-    turn with that agent's tools and brief. Returns what it answered."""
+    turn with that agent's tools and brief. Returns a verified result contract."""
     events: list = []
 
     def tap(event: str, data) -> None:
-        if event in ("response_end", "response", "action"):
+        if event in ("response_end", "response", "action") and agent_results.current_agent.get() == step.agent:
             events.append((event, data))
+    report = {}
+    brief = agents.TURN_AGENTS.get(step.agent, ((), ""))[1]
+    token = agent_results.prompt_scope.set("\n\n".join(x for x in (brief, context) if x))
+    agent_token = agent_results.current_agent.set(step.agent)
+    tool_state = live_tools.snapshot_turn()
     add_tap(tap)
     try:
-        await _chat_turn(step.task, task_tier, agent=step.agent, context=context)
+        await _chat_turn(step.task, task_tier, agent=step.agent, context=context, report=report)
     finally:
         remove_tap(tap)
-    return whatsapp_channel.compose(events)[0].strip()
+        agent_results.prompt_scope.reset(token)
+        agent_results.current_agent.reset(agent_token)
+        live_tools.restore_turn(tool_state)
+    answer = whatsapp_channel.compose(events)[0].strip()
+    # Drafting is itself an output; external actions always require tool receipts.
+    actions = list(report.get("actions", []))
+    for event, data in events:
+        if event == "action" and isinstance(data, list):
+            actions.extend(a for a in data if isinstance(a, dict) and a not in actions)
+    if step.agent == "content" and answer and not actions and not re.search(
+            r"\b(send|save|publish|post|upload|schedule|email|remind|file|pdf|notepad|calendar|image)\b", step.task, re.I):
+        return agent_results.result({"ok": True, "summary": answer, "findings": [answer],
+                                    "evidence": [agent_results.receipt("generated_content", answer)]}, step.task)
+    outcome = agent_results.from_actions(answer, actions, step.task)
+    if outcome["evidence"]:
+        outcome = await agent_results.check_completion(step.task, outcome, lambda system, user:
+            quick_completion(system, user, max_tokens=400, task_tier="moderate"))
+    if not outcome["ok"]:
+        outcome["summary"] = "I couldn't verify completion of that part. " + "; ".join(outcome["remaining"])
+    return outcome
 
 
 async def _agent_next(text: str, results: "list[agents.StepResult]") -> "agents.Step | None":
@@ -3431,7 +3639,34 @@ async def _agent_next(text: str, results: "list[agents.StepResult]") -> "agents.
     return nxt
 
 
+_workflow_journal = None
+_workflow_recovered = []
+
+
+def _get_workflow_journal():
+    global _workflow_journal, _workflow_recovered
+    if _workflow_journal is None:
+        _workflow_journal = workflow_store.Journal()
+        _workflow_recovered = _workflow_journal.recover()
+    return _workflow_journal
+
+
 async def _run_agent_plan(text: str, plan: "agents.Plan", task_tier: str = "") -> None:
+    journal = _get_workflow_journal()
+    run = journal.begin(text, [vars(s) for s in plan.steps])
+    token = workflow_store.current.set((journal, run))
+    try:
+        await _run_agent_plan_steps(text, plan, task_tier)
+        run["state"] = ("succeeded" if len(run["results"]) == len(plan.steps) and
+                        all(r["ok"] for r in run["results"]) else "suspended")
+    finally:
+        if run["state"] == "running":
+            run["state"] = "suspended"
+        journal.save(run)
+        workflow_store.current.reset(token)
+
+
+async def _run_agent_plan_steps(text: str, plan: "agents.Plan", task_tier: str = "") -> None:
     """Run a plan's steps in order: each agent gets what the earlier ones found, and a
     failed or refused step ends the plan (later ones would build on something that
     didn't happen). When the planned steps are done and the request had more to it,
@@ -3440,29 +3675,35 @@ async def _run_agent_plan(text: str, plan: "agents.Plan", task_tier: str = "") -
     if len(plan.steps) > 1:
         await emit("response", agents.plan_text(plan))
     results: "list[agents.StepResult]" = []
-    spoke = False                   # the last step was a turn, which spoke for itself
+    spoke = False                   # the last step was a chat-turn specialist
     planned = len(plan.steps)
     i = 0
     while i < len(plan.steps) and not _interrupted():
         step = plan.steps[i]
-        context = agents.handover(results)
+        context = agents.task_context(text, step, results)
+        active = workflow_store.current.get()
+        if active:
+            active[1]["pending"] = {"step": i, "agent": step.agent, "task": step.task, "state": "intent_recorded"}
+            active[0].save(active[1])
         if results:                 # a failed step ended the plan, so this one is ok
             r = results[-1]
             await emit("agent_message", agents.message(
                 r.agent, step.agent, "next" if i >= planned else "handover",
                 r.summary, r.findings, step.task))
         if step.agent not in agents.OPERATORS:
-            answer = await _agent_turn_step(step, task_tier, context)
-            results.append(agents.StepResult(step.agent, step.task, bool(answer),
-                                             answer or "I couldn't do that part, sir."))
+            report = await _agent_turn_step(step, task_tier, context)
+            results.append(agents.StepResult(step.agent, step.task, report["ok"],
+                                             report["summary"], report["findings"], report))
             spoke = True
-            if not answer:
-                break
         else:
             res = await _agent_step_task(step.agent, step.task)
             if res is None:
-                results.append(agents.StepResult(step.agent, step.task, False,
-                                                 "Not approved, so I didn't start it."))
+                report = agent_results.result({"status": "blocked", "summary": "Not approved, so I didn't start it."}, step.task)
+                results.append(agents.StepResult(step.agent, step.task, False, report["summary"], result=report))
+                if active:
+                    active[1]["results"].append(report)
+                    active[1]["pending"] = None
+                    active[0].save(active[1])
                 break
             kind = res.get("kind") or step.agent
             report: dict = {}
@@ -3472,33 +3713,34 @@ async def _run_agent_plan(text: str, plan: "agents.Plan", task_tier: str = "") -
             final = await _run_autopilot_task(res, speak=False, context=hint,
                                               consult=_agent_consult(kind), report=report,
                                               label=label)
-            results.append(agents.StepResult(kind, step.task, bool(report.get("ok")), final,
-                                             list(report.get("findings") or [])))
+            report = agent_results.result({**report, "summary": final}, step.task, require_evidence=True)
+            results.append(agents.StepResult(kind, step.task, report["ok"], report["summary"],
+                                             report["findings"], report))
             spoke = False
-            if not report.get("ok"):
-                break
+        if active:
+            active[1]["results"].append(results[-1].result)
+            active[1]["pending"] = None
+            active[0].save(active[1])
+        if not results[-1].ok:
+            break
         i += 1
         if i == len(plan.steps) and len(plan.steps) < agents.MAX_STEPS \
                 and agents.may_continue(text, results) and not _interrupted():
             nxt = await _agent_next(text, results)
             if nxt is not None:
                 plan.steps.append(nxt)      # announced by its "next" agent_message
+                if active:
+                    active[1]["plan"] = [vars(s) for s in plan.steps]
+                    active[0].save(active[1])
     bubble, say = agents.outcome(plan, results)
     if len(plan.steps) > 1:
         await emit("response", bubble)
-    if spoke:
-        return                      # the turn already answered, aloud and in history
+    if spoke and len(plan.steps) == 1:
+        await emit("response", say)
     remember_turn_outcome(text, say)
     if say and _tts and not skills.is_muted() and not _interrupted():
         await emit("status", "speaking")
         await _tts.speak(say)
-
-
-def _autopilot_record(task: dict, outcome: str) -> dict:
-    """An autopilot run as a result the missed-task check can read. One goal covers
-    a whole compound ask ("open Notepad and write a list"); unrecorded, the check
-    read "nothing has been done yet" and ran the goal a second time."""
-    return {"type": task.get("type"), "ok": True, "message": f"{task.get('goal')} → {outcome}"}
 
 
 def _autopilot_fallbacks(results: "list[dict]", user_text: str) -> "list[dict]":
@@ -3615,7 +3857,7 @@ async def _run_direct_action(spec: dict) -> None:
                     await emit("action", [{"type": spec.get("type"), "ok": False, "message": msg}])
                     return
             loop = asyncio.get_running_loop()
-            res = await loop.run_in_executor(None, run_action, spec)
+            res = await _in_context(run_action, spec)
             if res.get("needs_web_search"):
                 await _handle_web_search(res)
                 return
@@ -3857,7 +4099,7 @@ async def handle_refresh_models(_data) -> None:
 
 async def handle_rerun_setup(_data) -> None:
     """Manual "Repair components" / "Retry" from the GUI: re-show the full setup
-    screen and re-fetch any missing/corrupt runtime asset (Chromium / Whisper / Piper).
+    screen and re-fetch any missing/corrupt runtime asset (Chromium / Piper).
     Runs in the background so the websocket handler returns immediately; guarded so a
     second click while one is running is ignored."""
     global _setup_in_progress
@@ -4309,6 +4551,14 @@ def _extract_upload_text(name: str, mime: str, blob: bytes) -> str:
         return ""
 
 
+async def handle_ocr_translate(data) -> None:
+    """Return camera text only to the local window that captured the frame."""
+    from camera_ocr import process_frame
+
+    result = await process_frame(data)
+    await send_to_current("ocr_result", result)
+
+
 async def handle_chat_upload(data) -> None:
     """A file the user attached in the chat. Images → the vision model; PDFs/text
     → extract locally then a follow-up turn (the same path JARVIS uses to 'read'
@@ -4477,13 +4727,21 @@ async def handle_set_manual_location(data) -> None:
 
 async def push_sysinfo(client=None) -> None:
     """Send current model + system info + cached HUD data to a new client."""
+    view = local_client_view(client)
     async def push(event: str, data) -> None:
+        if client is not None and not client_accepts_event(client, event):
+            return
         if client is None:
             await emit(event, data)
         else:
             await send_to(client, event, data)
 
-    info = get_sysinfo()   # builds once; reused below (it probes the OS for RAM)
+    info = get_sysinfo() if view == "main" else {}
+    if not is_current_sender_remote():
+        await push("status", activity.tracker.status)
+        pending = next((prompt for key, prompt in reversed(tuple(_pending_permission_prompts.items()))
+                        if key in _pending_perms and not _pending_perms[key].done()), None)
+        await push("permission_request", pending)
     await push("sysinfo", info)
     await push("config", info)
     # Replay the first-run/repair setup screen to a late-connecting or reloading HUD
@@ -4494,7 +4752,22 @@ async def push_sysinfo(client=None) -> None:
     await push("mute", skills.is_mute_toggled())
     await push("recordings", recorder.active_recordings())
     await push("browser_state", browser.state())
-    await push("control_state", computer.state())
+    await push("control_state", {**computer.state(), "paused": _control_paused})
+    # agent_task is a local HUD event. Reconnecting phones use their existing
+    # owner-scoped task subscription protocol, never this activity snapshot.
+    if not is_current_sender_remote():
+        for task_id in tuple(_active_agent_tasks):
+            active = _agent_task_for_replay(task_id)
+            if active is not None:
+                await push("agent_task", active)
+                # A lazily-created panel joins after the task has begun. Restore
+                # its recent observations as well as the live declaration.
+                current = activity.tracker.task
+                if view != "main" and current and current.get("id") == task_id:
+                    for line in current.get("steps", []):
+                        await push("agent_step", {"id": task_id, "line": line})
+                    if current.get("shot"):
+                        await push("agent_shot", {"id": task_id, "image": current["shot"]})
     await push("screen", get_screen())
     await push("overlay", get_overlay())
     await push("always_on", get_always_on())
@@ -4510,12 +4783,17 @@ async def push_sysinfo(client=None) -> None:
     if _last_schedule is not None:
         await push("schedule", _last_schedule)
 
+    if view != "main":
+        return  # panels neither load conversation history nor trigger greetings
+
     # Restore the visible conversation log from last session (the frontend only
     # applies this when its chat is still empty, so reconnects don't clobber a
     # live session).
     disp = _history_for_display()
     if disp:
         await push("history", disp)
+    for recovered in _workflow_recovered:
+        await push("response", f"An interrupted task is suspended: {recovered['objective']}. Check the result before retrying.")
 
     # Send the saved-conversations ("Recents") list so the chat history panel fills.
     # Non-fatal: a hiccup loading Recents must never block the greeting that follows.
@@ -4682,10 +4960,18 @@ async def telemetry_loop() -> None:
     context, and fire any rule-based proactive alerts."""
     global _last_telemetry
     tick = 0
+    armed_seen = None
     while True:
         try:
             _last_telemetry = telemetry.get_fast_stats()
             await emit("telemetry", _last_telemetry)
+            # Consent expires by clock, without an explicit disarm() callback.
+            # Publish that transition so the HUD cannot keep showing control
+            # armed after the backend has already stopped accepting input.
+            armed_now = computer.is_armed()
+            if armed_seen is not None and armed_now != armed_seen:
+                await _emit_control_state()
+            armed_seen = armed_now
             if tick % 3 == 0:                     # refresh model context ~every 4.5s
                 set_live_context(build_live_context())
             await maybe_alert(_last_telemetry)
@@ -5003,7 +5289,9 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
             except Exception as exc:  # noqa: BLE001
                 print(f"[Jarvis] Voice turn failed: {exc}", flush=True)
                 msg = (str(exc).lower())
-                if "pyaudio" in msg or "portaudio" in msg or "input" in msg or "mic" in msg:
+                if isinstance(exc, TranscriptionError):
+                    spoken = str(exc)
+                elif "pyaudio" in msg or "portaudio" in msg or "input" in msg or "mic" in msg:
                     spoken = ("I couldn't reach the microphone, sir — make sure no other "
                               "app is using it and try again.")
                 else:
@@ -5019,9 +5307,18 @@ async def wake_word_loop(detector: WakeWordDetector) -> None:
         detector_stop()
 
 
+def _schedule_voice_preloads() -> None:
+    """Only speech output is local; recognition always uses Groq online."""
+    set_transcriber_stt("groq")
+    if _tts is not None:
+        _track_task(_tts.preload(), "tts preload")
+
+
 async def main(use_text: bool) -> None:
     global _tts, _trigger_listen, _pipeline_lock, _interrupt, _main_loop, _always_on_event
     global _manual_coords, _remote_screen_lock, _remote_input_lock, _remote_emit_lock
+    with contextlib.suppress(Exception):
+        _get_workflow_journal()  # recover before accepting a new local or remote task
 
     _trigger_listen = asyncio.Event()
     _pipeline_lock = asyncio.Lock()
@@ -5038,12 +5335,7 @@ async def main(use_text: bool) -> None:
     add_tap(activity.tracker.on_event)
     browser.set_state_callback(_on_browser_state)
     computer.set_state_callback(_on_control_state)
-    # Warm the Playwright driver in the background now (no window opens), so the
-    # first time the user opens the browser it only pays the Chromium launch.
-    try:
-        browser.prewarm()
-    except Exception:  # noqa: BLE001
-        pass
+    # Playwright is started on the first browser action, not while standing by.
     # Likewise the installed-app index ("open BlueJ" needs a Start-Menu /
     # StartApps / program-dir scan that takes seconds cold).
     try:
@@ -5077,6 +5369,7 @@ async def main(use_text: bool) -> None:
     register_handler("browser_control", handle_browser_control)
     register_handler("browser_panel", handle_browser_panel)
     register_handler("chat_upload", handle_chat_upload)
+    register_handler("ocr_translate", handle_ocr_translate)
     register_handler("set_screen", handle_set_screen)
     register_handler("set_overlay", handle_set_overlay)
     register_handler("set_always_on", handle_set_always_on)
@@ -5120,7 +5413,8 @@ async def main(use_text: bool) -> None:
         configure_device_identity(_device_registry)
         # The phone learns this PC's network adapters on connect, to wake it later.
         from actions import wol
-        set_ready_info(lambda: {"wake": wol.local_macs()})
+        from ecosystem_contracts import peer_info
+        set_ready_info(lambda: {"wake": wol.local_macs(), **peer_info()})
         # A cryptographically paired + PIN-verified phone is trusted to drive the
         # whole TASK/CONTROL protocol — task forwarding, its lifecycle (cancel/
         # reconnect/answer/approve), and STOP. Authentication proves it's the owner;
@@ -5189,6 +5483,7 @@ async def main(use_text: bool) -> None:
         places.set_user_coords(_user_coords[0], _user_coords[1])
 
     await initialize()
+    set_transcriber_stt(get_stt())
     # Discover the per-key model list in the background (Phase 3), then re-broadcast
     # sysinfo so the GUI dropdown reflects the real available models (the first
     # on_connect push carries only the curated fallback until this lands).
@@ -5236,8 +5531,7 @@ async def main(use_text: bool) -> None:
     mcp_client.start(asyncio.get_running_loop(), on_change=_emit_mcp)
 
     # ── First-run asset provisioning ────────────────────────────────────────────
-    # The installer ships lean, so the heavy runtime assets (Chromium, the Whisper
-    # base model, the Piper voice) download ONCE here, on first launch, with progress
+    # The installer ships lean, so the heavy runtime assets (Chromium and the Piper voice) download ONCE here, on first launch, with progress
     # shown on the HUD (setup_progress events). Instant and silent on every later run
     # (all present). Awaited so the warm-ups below load from a complete cache and the
     # wake-word loop doesn't start mid-download. Best-effort — never blocks on error.
@@ -5251,13 +5545,9 @@ async def main(use_text: bool) -> None:
     finally:
         _setup_in_progress = False
 
-    # Warm the local Whisper model + Piper voice in the BACKGROUND (load the ONNX
-    # models into RAM; the DOWNLOADS are already done by provisioning above). Not
-    # awaited, so the app is responsive immediately and the wake-word loop starts at
-    # once: Whisper is the offline STT fallback (~40s cold load) and Piper is the
-    # daily-driver voice (~7s load) whose load would otherwise stall the first reply.
-    _track_task(preload_whisper(), "whisper preload")
-    _track_task(_tts.preload(), "tts preload")
+    # Cloud transcription never downloads or warms local Whisper. Offline speech
+    # synthesis and wake-word detection remain independent of transcription.
+    _schedule_voice_preloads()
 
     try:
         if use_text:

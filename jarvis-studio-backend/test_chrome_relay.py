@@ -93,6 +93,71 @@ class WhoMayConnectTests(unittest.TestCase):
 
 
 class OpenTheirChromeTests(unittest.TestCase):
+    def test_installed_extension_connects_without_a_previous_link_or_alarm_wait(self):
+        from unittest import mock
+        from actions import browser
+        with mock.patch.object(chrome_relay, "start"), \
+                mock.patch.object(chrome_relay, "connected", return_value=False), \
+                mock.patch.object(chrome_relay, "ever_connected", return_value=False), \
+                mock.patch.object(chrome_relay, "wait", return_value=True) as wait, \
+                mock.patch.object(browser, "_extension_profile", return_value="Profile 2"), \
+                mock.patch.object(browser, "_chrome_running", return_value=True), \
+                mock.patch.object(browser, "_find_chrome_exe", return_value="chrome.exe"), \
+                mock.patch.object(browser.subprocess, "Popen") as launch:
+            self.assertEqual(browser.ensure_personal_available(), (True, ""))
+            wait.assert_called_once_with(3.0)
+            self.assertIn("--profile-directory=Profile 2", launch.call_args.args[0])
+            self.assertEqual(launch.call_args.args[0][-1],
+                             f"chrome-extension://{chrome_relay.EXTENSION_ID}/connect.html")
+
+    def test_a_connected_extension_needs_no_launch_or_wait(self):
+        from unittest import mock
+        from actions import browser
+        with mock.patch.object(chrome_relay, "start"), \
+                mock.patch.object(chrome_relay, "connected", return_value=True), \
+                mock.patch.object(chrome_relay, "wait") as wait, \
+                mock.patch.object(browser.subprocess, "Popen") as launch:
+            self.assertEqual(browser.ensure_personal_available(), (True, ""))
+            launch.assert_not_called()
+            wait.assert_not_called()
+
+    def test_a_slow_start_gets_a_second_wake_within_the_same_short_budget(self):
+        from unittest import mock
+        from actions import browser
+        with mock.patch.object(chrome_relay, "start"), \
+                mock.patch.object(chrome_relay, "connected", return_value=False), \
+                mock.patch.object(browser, "_extension_profile", return_value="Default"), \
+                mock.patch.object(browser, "_find_chrome_exe", return_value="chrome.exe"), \
+                mock.patch.object(chrome_relay, "wait", side_effect=[False, True]) as wait, \
+                mock.patch.object(browser.subprocess, "Popen") as launch:
+            self.assertEqual(browser.ensure_personal_available(), (True, ""))
+            self.assertEqual(wait.call_args_list, [mock.call(3.0), mock.call(7.0)])
+            self.assertEqual(launch.call_count, 2)
+
+    def test_absent_extension_falls_back_without_launching_chrome(self):
+        from unittest import mock
+        from actions import browser
+        with mock.patch.object(chrome_relay, "start"), \
+                mock.patch.object(chrome_relay, "connected", return_value=False), \
+                mock.patch.object(chrome_relay, "ever_connected", return_value=False), \
+                mock.patch.object(browser, "_extension_profile", return_value=""), \
+                mock.patch.object(browser.subprocess, "Popen") as launch:
+            self.assertEqual(browser.ensure_personal_available(), (False, browser.NO_EXTENSION))
+            launch.assert_not_called()
+
+    def test_an_old_link_marker_does_not_wait_on_a_removed_or_disabled_extension(self):
+        from unittest import mock
+        from actions import browser
+        with mock.patch.object(chrome_relay, "start"), \
+                mock.patch.object(chrome_relay, "connected", return_value=False), \
+                mock.patch.object(chrome_relay, "ever_connected", return_value=True), \
+                mock.patch.object(browser, "_extension_profile", return_value=""), \
+                mock.patch.object(chrome_relay, "wait") as wait, \
+                mock.patch.object(browser.subprocess, "Popen") as launch:
+            self.assertEqual(browser.ensure_personal_available(), (False, browser.NO_EXTENSION))
+            launch.assert_not_called()
+            wait.assert_not_called()
+
     def test_chrome_opens_on_the_extensions_profile_not_the_picker(self):
         import json, os, tempfile
         from unittest import mock
@@ -115,8 +180,39 @@ class OpenTheirChromeTests(unittest.TestCase):
                 self.assertEqual(browser.ensure_personal_available(), (True, ""))
         self.assertIn("--profile-directory=Profile 3", linked[0])
 
+    def test_disabled_profiles_are_skipped_and_last_used_profile_is_preferred(self):
+        import json, os, tempfile
+        from unittest import mock
+        from actions import browser
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(tmp, "Google", "Chrome", "User Data")
+            for name, state in (("Default", 0), ("Profile 1", 1), ("Profile 2", 1)):
+                os.makedirs(os.path.join(root, name))
+                with open(os.path.join(root, name, "Secure Preferences"), "w") as f:
+                    json.dump({"extensions": {"settings": {chrome_relay.EXTENSION_ID: {"state": state}}}}, f)
+            with open(os.path.join(root, "Local State"), "w") as f:
+                json.dump({"profile": {"last_used": "Profile 2"}}, f)
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": tmp}):
+                self.assertEqual(browser._extension_profile(), "Profile 2")
+
 
 class OnlyJarvisOwnBrowserReachesTheHudTests(unittest.TestCase):
+    def test_personal_chrome_never_downloads_chromium_before_its_first_action(self):
+        from unittest import mock
+        from actions import browser
+        worker = browser._BrowserWorker.__new__(browser._BrowserWorker)
+        worker._mode, worker._ctx, worker._aborted = "personal", None, False
+        page = object()
+        with mock.patch.object(browser, "_chromium_ready", False), \
+                mock.patch.object(worker, "_ensure_chromium_job") as download, \
+                mock.patch.object(worker, "_page_count", return_value=0), \
+                mock.patch.object(worker, "_ensure_page", return_value=page), \
+                mock.patch.object(worker, "_adopt_newest_page"), \
+                mock.patch.object(worker, "push_state"), \
+                mock.patch.object(worker, "submit", side_effect=lambda job, *_: job()):
+            self.assertEqual(worker.with_page(lambda p: (p is page, "opened")), (True, "opened"))
+            download.assert_not_called()
+
     def test_a_headless_or_personal_page_is_the_autopilots_not_the_huds(self):
         from unittest import mock
         from actions import browser

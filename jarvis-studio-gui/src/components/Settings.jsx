@@ -885,7 +885,7 @@ const SECTIONS = [
   { id: "autopilot", label: "Autopilot", icon: "cursor", desc: "Agent mode, and the operator that drives the browser and desktop for multi-step tasks.",
     words: "autopilot browser desktop operator reasoning vision screenshot agent mode agents simple mode coordinator plan specialist" },
   { id: "voice", label: "Voice", icon: "volume", desc: "How JARVIS sounds, wakes up and speaks up on its own.",
-    words: "voice speech tts piper elevenlabs chirp wake word alerts heartbeat checklist digest nightly proactive" },
+    words: "voice speech transcription stt whisper groq microphone tts piper elevenlabs chirp wake word alerts heartbeat checklist digest nightly proactive" },
   { id: "interface", label: "Interface", icon: "layout", desc: "The floating pill, the home screen and keyboard shortcuts.",
     words: "overlay pill floating interface apps hide keyboard shortcuts customize theme" },
   { id: "files", label: "Files & Location", icon: "folder", desc: "Where JARVIS saves things, what it may read, and where you are.",
@@ -947,6 +947,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   const [ollamaUrl, setOllamaUrl] = useState(sysInfo.ollama_url ?? "http://localhost:11434");
   const pinnedLoc = sysInfo.manual_location;   // {lat,lon,label} or null = automatic
   const [tts,   setTts]   = useState(sysInfo.tts ?? "piper");
+  const stt = "groq";
   const [dirs, setDirs]   = useState(sysInfo.allowed_dirs ?? []);
   const [storageDir, setStorageDir] = useState(sysInfo.storage_dir ?? "");
   const [keys, setKeys] = useState({});   // key name -> text typed this session
@@ -984,7 +985,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
   };
 
   const cfg = {
-    model_override: model, tts, allowed_dirs: dirs, system_alerts: sysAlerts, heartbeat: hb, digest,
+    model_override: model, tts, stt, allowed_dirs: dirs, system_alerts: sysAlerts, heartbeat: hb, digest,
     overlay: { enabled: ovlEnabled, mode: ovlMode, apps: ovlApps },
     autopilot_model: autopilotModel.trim(),
     autopilot_thinking: autopilotThinking === "off" ? 0 : -1,
@@ -1262,6 +1263,14 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
             {current.id === "voice" && (<>
               {gestureControls && <GesturePanel controls={gestureControls} routines={gestureRoutines||[]}/>}
               <Card title="Speech">
+                <Row title="Speech-to-text" desc="Audio is transcribed online by Groq Whisper using your Groq key. Local speech models are never loaded or used as a fallback.">
+                  <span className="field">Groq Whisper — online</span>
+                </Row>
+                {stt === "groq" && !sysInfo.has_groq_key && (
+                  <div className="sx-card-body"><Note tone="warn">
+                    Add your Groq key in <button className="settings-link" onClick={() => go("keys")}>API Keys</button> to transcribe speech.
+                  </Note></div>
+                )}
                 <Row title="Text-to-speech" desc={ttsOpt?.desc}>
                   <select className="field" value={tts} onChange={e => setTts(e.target.value)} aria-label="Text-to-speech">
                     {TTS_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}

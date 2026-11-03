@@ -3,6 +3,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+mod control_tint;
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -111,9 +113,10 @@ fn spawn_bundled_backend(dir: &Path, token: &str) -> Option<Child> {
     let exe = dir.join("jarvis-backend.exe");
     let preload_assets = dir.join("preload-assets");
     let playwright_browsers = preload_assets.join("ms-playwright");
-    let whisper_model = preload_assets.join("whisper-base");
     let mut cmd = Command::new(&exe);
-    cmd.current_dir(dir).env("JARVIS_WS_TOKEN", token);
+    cmd.current_dir(dir)
+        .env("JARVIS_WS_TOKEN", token)
+        .env("JARVIS_APP_ROOT_PID", std::process::id().to_string());
     // Capture the frozen backend's stdout+stderr to a log file. Without this a
     // startup crash (e.g. a root module missing from the PyInstaller bundle) is
     // silent and the GUI just "can't connect" with no way to see why. The dir is
@@ -133,9 +136,6 @@ fn spawn_bundled_backend(dir: &Path, token: &str) -> Option<Child> {
     if playwright_browsers.is_dir() {
         cmd.env("PLAYWRIGHT_BROWSERS_PATH", &playwright_browsers);
     }
-    if whisper_model.is_dir() {
-        cmd.env("JARVIS_BUNDLED_WHISPER_MODEL", &whisper_model);
-    }
     apply_windows_no_window(&mut cmd);
     spawn_process(&mut cmd, &format!("frozen backend at {}", dir.display()))
 }
@@ -146,6 +146,7 @@ fn spawn_python_backend(dir: &Path, token: &str) -> Option<Child> {
     cmd.arg("main.py")
         .current_dir(dir)
         .env("JARVIS_WS_TOKEN", token)
+        .env("JARVIS_APP_ROOT_PID", std::process::id().to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     apply_windows_no_window(&mut cmd);
@@ -215,6 +216,36 @@ fn get_ws_token(state: State<'_, BackendState>) -> String {
     state.token.clone()
 }
 
+#[tauri::command]
+fn set_control_tint(window: tauri::WebviewWindow, state: State<'_, control_tint::ControlTint>, active: bool) -> Result<(), String> {
+    if window.label() != "main" { return Err("Only the main controller can renew the screen tint".into()); }
+    state.renew(active)
+}
+
+// Build auxiliary WebViews only when their feature is visible, then destroy
+// them to release their renderer and state. Async avoids Windows WebView builder
+// deadlocks when a create request originates in an IPC callback.
+#[tauri::command]
+async fn set_aux_window(app: tauri::AppHandle, window: tauri::WebviewWindow, label: String, active: bool) -> Result<(), String> {
+    if window.label() != "main" || !matches!(label.as_str(), "overlay" | "browser-panel" | "control-overlay") {
+        return Err("Only the main controller can manage auxiliary windows".into());
+    }
+    if !active {
+        if let Some(win) = app.get_webview_window(&label) {
+            win.destroy().map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    if app.get_webview_window(&label).is_none() {
+        let config = app.config().app.windows.iter().find(|c| c.label == label)
+            .ok_or_else(|| "Unknown auxiliary window".to_string())?;
+        tauri::WebviewWindowBuilder::from_config(&app, config)
+            .map_err(|e| e.to_string())?
+            .build().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -234,6 +265,7 @@ pub fn run() {
                 child: Mutex::new(child),
                 quitting: AtomicBool::new(false),
             });
+            app.manage(control_tint::ControlTint::new());
 
             #[cfg(desktop)]
             {
@@ -303,6 +335,7 @@ pub fn run() {
                             let _ = win.show();
                             let _ = win.unminimize();
                             let _ = win.set_focus();
+                            let _ = win.emit("jarvis-window-visibility", true);
                         }
                     }
                 })
@@ -327,8 +360,12 @@ pub fn run() {
                 let _ = win.set_focus();
             }
         })
-        .invoke_handler(tauri::generate_handler![get_ws_token])
+        .invoke_handler(tauri::generate_handler![get_ws_token, set_control_tint, set_aux_window])
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(true)) {
+                let visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+                let _ = window.emit("jarvis-window-visibility", visible);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // While quitting (tray → Quit), let windows close so the process exits.
                 // Otherwise the X button just hides the HUD/panel to the tray.
@@ -340,6 +377,7 @@ pub fn run() {
                 if !quitting && (window.label() == "main" || window.label() == "browser-panel") {
                     api.prevent_close();
                     let _ = window.hide();
+                    let _ = window.emit("jarvis-window-visibility", false);
                 }
             }
         })
@@ -347,6 +385,7 @@ pub fn run() {
         .expect("error while running JARVIS")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                if let Some(tint) = app.try_state::<control_tint::ControlTint>() { tint.shutdown(); }
                 if let Some(state) = app.try_state::<BackendState>() {
                     if let Ok(mut guard) = state.child.lock() {
                         if let Some(mut child) = guard.take() {

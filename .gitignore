@@ -59,4 +59,5 @@ graphify-out/
 # ── OS noise ─────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+.test-tmp/
 *.log

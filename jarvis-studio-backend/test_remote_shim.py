@@ -8,9 +8,11 @@ import unittest
 import tempfile
 import threading
 from types import SimpleNamespace
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import main
+import workflow_store
 
 
 class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
@@ -23,6 +25,14 @@ class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
         ))
         authorization.start()
         self.addCleanup(authorization.stop)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        journal_patch = patch.object(main, "_workflow_journal", workflow_store.Journal(Path(self.temp.name) / "workflows.sqlite3"))
+        journal_patch.start()
+        self.addCleanup(journal_patch.stop)
+        chrome_patch = patch.object(main, "_users_chrome", AsyncMock(return_value=False))
+        chrome_patch.start()
+        self.addCleanup(chrome_patch.stop)
         main._remote_task_busy = False
         main._remote_task_id = ""
         main._remote_task_owner = ""
@@ -39,7 +49,10 @@ class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
         async def fake_run_task(kind, goal, **kw):
             ran["v"] = True
             calls.append("run")
-            return result or {"ok": True, "summary": "done", "findings": []}
+            outcome = dict(result or {"ok": True, "summary": "done", "findings": []})
+            if outcome.get("ok"):
+                outcome.setdefault("evidence", [{"id": "observed-window", "kind": "observation", "detail": "Window is present"}])
+            return outcome
 
         async def fake_emit(task_id, event, data, **kw):
             events.append((task_id, event, data))
@@ -81,7 +94,8 @@ class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
 
         async def stepping_run_task(kind, goal, **kw):
             await kw["on_step"]("Opened Notepad")
-            return {"ok": True, "summary": "Notepad is open.", "findings": []}
+            return {"ok": True, "summary": "Notepad is open.", "findings": [],
+                    "evidence": [{"id": "observed-window", "kind": "observation", "detail": "Notepad visible"}]}
 
         with patch.object(main, "emit", fake_hud_emit):
             await self._submit(submit={"goal": "open notepad", "kind": "computer",
@@ -315,7 +329,20 @@ class RemoteShimTests(unittest.IsolatedAsyncioTestCase):
         terminal = next(d for tid, ev, d in events if ev == "task.status")
         self.assertEqual(terminal["state"], "succeeded")
         self.assertTrue(terminal["proof"]["passed"])
-        self.assertEqual(terminal["proof"]["evidence_ids"], ["saw the window"])
+        self.assertEqual(terminal["proof"]["evidence_ids"], ["observed-window"])
+
+    async def test_boolean_success_without_evidence_is_unverified(self):
+        _, events = await self._submit(result={"ok": True, "summary": "done", "evidence": []})
+        terminal = next(d for _, event, d in events if event == "task.status")
+        self.assertEqual(terminal["status"], "unverified")
+        self.assertNotIn("proof", terminal)
+
+    async def test_restart_resubmission_uses_journal_instead_of_repeating_action(self):
+        await self._submit(submit={"goal": "open notepad", "kind": "computer", "task_id": "task-restart"})
+        main._remote_finished.clear()
+        main._remote_task_id = ""
+        events = await self._replay({"goal": "open notepad", "kind": "computer", "task_id": "task-restart"})
+        self.assertEqual(events[-1][2]["state"], "succeeded")
 
     async def test_remote_task_arms_consent_and_restores_it(self):
         # autopilot.run_task re-checks the PC-side consent window every step, so

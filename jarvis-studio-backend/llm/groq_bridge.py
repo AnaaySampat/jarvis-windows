@@ -587,7 +587,7 @@ DEFAULT_CONFIG = {
     # many users find the CPU/RAM ones noisy; toggle on in Settings if wanted.
     "system_alerts": False,
     # Speech-to-text engine: "groq" = Groq Whisper Turbo (cloud, accurate, needs
-    # the Groq key) with a local fallback; "local" = offline faster-whisper.
+    # the Groq key). Local transcription and fallback are not supported.
     "stt": "groq",
     # Vertex AI (Gemini on Google Cloud) — serves Gemini via the user's ADC login
     # so usage draws from their GCP project + trial credits instead of an API key.
@@ -770,16 +770,12 @@ def set_system_alerts(on: bool) -> bool:
 
 
 def get_stt() -> str:
-    """Effective speech-to-text engine: 'groq' only if that's selected AND a Groq
-    key exists; otherwise 'local' (offline faster-whisper)."""
-    pref = (_config.get("stt") or "groq").lower()
-    if pref == "groq" and _api_key:
-        return "groq"
-    return "local"
+    """Selected transcription engine. Missing cloud credentials never opt into local inference."""
+    return "groq"  # includes legacy saved local preferences
 
 
 def set_stt(mode: str) -> str:
-    _config["stt"] = "local" if str(mode).lower() == "local" else "groq"
+    _config["stt"] = "groq"
     _save_config(_config)
     return _config["stt"]
 
@@ -789,7 +785,8 @@ async def transcribe_audio(wav_bytes: bytes, prompt: str = "",
     """Transcribe spoken audio via Groq Whisper (whisper-large-v3-turbo).
 
     Returns the recognised text, or None on any failure (no key, network, bad
-    response) so the caller can fall back to the local model. Never raises.
+    response). Cloud-mode callers report the failure without local inference.
+    Never raises.
     ``prompt`` is Whisper's vocabulary hint; ``filename``'s extension tells Groq the
     format (a WhatsApp voice note is Ogg/Opus)."""
     if not _api_key or not wav_bytes:
@@ -2013,7 +2010,7 @@ def get_sysinfo() -> dict:
         "heartbeat": _heartbeat_info(),
         "digest": _digest_info(),
         "skills_count": len(skill_files.catalog()),
-        "stt": _config.get("stt", "groq"),
+        "stt": get_stt(),
         "stt_active": get_stt(),
         "screen": get_screen(),
         "overlay": get_overlay(),
@@ -2156,12 +2153,13 @@ _LANG_NAMES = {
     "en": "English", "ja": "Japanese", "es": "Spanish", "fr": "French",
     "de": "German", "zh": "Chinese", "ko": "Korean", "hi": "Hindi",
     "it": "Italian", "pt": "Portuguese", "ru": "Russian", "ar": "Arabic",
+    "mr": "Marathi", "bn": "Bengali", "ta": "Tamil", "te": "Telugu",
     "auto": "the source language",
 }
 
 
 async def translate_text(text: str, from_lang: str = "auto", to_lang: str = "en") -> str:
-    """Translate OCR'd (or any) text via Groq. Used by the camera-OCR feature.
+    """Translate text through the configured provider and its fallback routes.
 
     Kept separate from send_prompt so it doesn't pollute the conversation history
     and so it can use a deterministic, translation-only system prompt.
@@ -2170,9 +2168,6 @@ async def translate_text(text: str, from_lang: str = "auto", to_lang: str = "en"
     if not text:
         return ""
     model = resolve_model("translate " + text)
-    if not _key_for(model):
-        return "(no API key configured — can't translate)"
-
     from_name = _LANG_NAMES.get(from_lang, from_lang)
     to_name = _LANG_NAMES.get(to_lang, to_lang)
     system = (
@@ -2181,39 +2176,9 @@ async def translate_text(text: str, from_lang: str = "auto", to_lang: str = "en"
         f"quotes, no transliteration. Preserve line breaks."
     )
 
-    if _provider_for(model) == "gemini":
-        try:
-            out = await gemini_bridge.gemini_send(
-                [{"role": "system", "content": system}, {"role": "user", "content": text}],
-                gemini_bridge.rest_model(model), _gemini_key, max_tokens=1024, temperature=0.1)
-        except gemini_bridge.GeminiError as exc:
-            return f"(translation failed: {exc})"
-        return (out or "").strip()
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": text},
-        ],
-        "max_completion_tokens": 1024,
-        "temperature": 0.1,
-        "stream": False,
-    }
-    _add_reasoning(payload)
-    try:
-        resp = await _client().post(
-            f"{GROQ_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {_api_key}",
-                     "Content-Type": "application/json"},
-            json=payload,
-        )
-        if resp.status_code != 200:
-            return f"(translation failed: HTTP {resp.status_code})"
-        data = resp.json()
-        return (data["choices"][0]["message"].get("content") or "").strip()
-    except Exception as exc:  # noqa: BLE001
-        return f"(translation error: {exc})"
+    out = await quick_completion(system, text, model=model,
+                                 max_tokens=1024, temperature=0.1)
+    return (out or "").strip() or "(translation failed — check your model connection and quota)"
 
 
 async def summarize_error(raw: str, context: str = "") -> str:
@@ -2685,6 +2650,8 @@ async def quick_completion(system: str, user: str, model: str = "",
     else:
         user_turn = {"role": "user", "content": user}
     msgs = [{"role": "system", "content": system}, user_turn]
+    import workflow_store
+    workflow_store.model_decision()
 
     # Walk the ladder from the requested model down. The autopilot fires this on
     # every step, so a spent route here used to cost a 429 per step; now the first
@@ -2777,48 +2744,53 @@ async def vision_query(image_url: str, question: str, task_tier: str = "") -> st
     """Ask a vision model about an image (e.g. a screenshot). Used for JARVIS's
     'eyes' on the desktop. Routes image uploads through the selected task tier's
     Gemini vision model, or Groq's dedicated vision model. Returns text or ''."""
-    if not image_url:
+    if not image_url or provider_mode() == "offline":
         return ""
     # An image always goes to a vision-capable endpoint.  For a chat upload, use
     # its selected tier to choose the Gemini vision model rather than consulting
     # the unrelated, persistent Settings selection.
     active_model = resolve_model(question, task_tier)
-    if _provider_for(active_model) == "gemini" and (_gemini_key or vertex_auth.enabled()):
-        vmodel = gemini_bridge.rest_model(active_model)
+    google = [*([active_model] if _provider_for(active_model) == "gemini" else []),
+              _AUTO_MID_GEMINI, _AUTO_FAST_GEMINI]
+    preferred = ([VISION_MODEL, *google] if _provider_for(active_model) == "groq"
+                 else [*google, VISION_MODEL])
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": question or "Describe what's on this screen."},
+        {"type": "image_url", "image_url": {"url": image_url}},
+    ]}]
+    deadline = time.monotonic() + 60
+    # Keep images on vision endpoints. Text-only models must never claim to
+    # interpret an image they did not receive. Reuse quota/key failover instead
+    # of abandoning image analysis after the first provider error.
+    async for route in _walk_routes(question, pinned=preferred, task_tier=task_tier):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
-            return await gemini_bridge.gemini_vision(image_url, question, vmodel, _gemini_key)
-        except gemini_bridge.GeminiError:
-            return ""
-    if not _api_key:
-        return ""
-    payload = {
-        "model": VISION_MODEL,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": question or "Describe what's on this screen."},
-                {"type": "image_url", "image_url": {"url": image_url}},
-            ],
-        }],
-        "max_completion_tokens": 600,
-        "temperature": 0.3,
-        "stream": False,
-    }
-    try:
-        resp = await _client().post(
-            f"{GROQ_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {_api_key}",
-                     "Content-Type": "application/json"},
-            json=payload,
-        )
-        if resp.status_code != 200:
-            print(f"[Vision] HTTP {resp.status_code}: {resp.text[:200]}")
-            return ""
-        data = resp.json()
-        return (data["choices"][0]["message"].get("content") or "").strip()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[Vision] failed: {exc}")
-        return ""
+            if route.provider == "gemini":
+                if (not route.model.startswith("gemini-")
+                        or gemini_bridge.is_image_model(route.model)
+                        or gemini_bridge.is_native_audio_model(route.model)):
+                    continue
+                out = await asyncio.wait_for(gemini_bridge.gemini_vision(
+                    image_url, question, gemini_bridge.rest_model(route.model), _credential(route)),
+                    min(25, remaining))
+                if out and out.strip():
+                    quota.on_success(route)
+                    return out.strip()
+            elif route.provider == "groq" and route.model == VISION_MODEL:
+                out = await asyncio.wait_for(_complete(route, messages, 600, 0.3), min(25, remaining))
+                if out:
+                    return out
+        except gemini_bridge.GeminiError as exc:
+            _bench_route(route, status=exc.status, message=exc.detail or str(exc),
+                         retry_after=exc.retry_after)
+        except RouteError as exc:
+            _bench_route(route, status=exc.status, message=exc.detail,
+                         retry_after=exc.retry_after)
+        except Exception:  # unavailable transport/device still permits another vision route
+            continue
+    return ""
 
 
 # The model that answers grounded web-search queries. Grounding is a Gemini
@@ -3263,16 +3235,26 @@ async def _stream_prompt(text: str, record_history: bool = True, slim: bool = Fa
         yield msg, msg
         return
 
+    import agent_results
+    scope = agent_results.prompt_scope.get()
     # Slim agentic steps use provider-aware history depth (more on Gemini).
     if not slim:
-        live_tools.begin_turn(text)     # this turn's tool groups (follow-ups keep them)
+        live_tools.begin_turn(text, isolated=bool(scope))
         if routines.mentioned(text):    # "movie night" alone runs that routine
             live_tools.activate(["planner"])
+    if scope:
+        record_history = False
     system_msgs = ([{"role": "system", "content": _AGENTIC_SYSTEM_PROMPT}]
                    if slim else _system_messages(text))
+    if scope:
+        system_msgs = [{"role": "system", "content": SYSTEM_CORE_TOOLS},
+                       {"role": "system", "content": "FILE STORAGE:\n" + storage.describe()},
+                       {"role": "system", "content": scope}]
     slim_turns = _slim_history_turns(model, text) if slim else None
-    hist = _history_for_prompt(max_turns=slim_turns, model=model, text=text)
+    hist = [] if scope else _history_for_prompt(max_turns=slim_turns, model=model, text=text)
     messages = [*system_msgs, *hist, {"role": "user", "content": text}]
+    import workflow_store
+    workflow_store.model_decision()
 
     temperature = _temperature_for(text)
     max_tokens = _max_tokens_for(text, slim=slim, model=model)
@@ -3342,7 +3324,7 @@ async def _stream_prompt(text: str, record_history: bool = True, slim: bool = Fa
         yield msg, msg
         return
 
-    if full and record_history:
+    if full and record_history and not scope:
         _history.append({"role": "user", "content": text})
         _history.append({"role": "assistant", "content": full})
         del _history[: max(0, len(_history) - _MAX_HISTORY_TURNS * 2)]

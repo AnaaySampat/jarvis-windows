@@ -566,6 +566,30 @@ def _offered_bearer(websocket: WebSocketServerProtocol) -> str:
     return parse_qs(urlparse(path).query).get("token", [""])[0]
 
 
+_AUX_EVENTS = {
+    "overlay": frozenset({"status", "screen", "overlay", "active_app", "permission_request"}),
+    "browser-panel": frozenset({"status", "screen", "browser_state", "control_state", "agent_task", "agent_step", "agent_shot", "agent_task_end"}),
+    "control-overlay": frozenset({"status", "screen", "control_state", "agent_task", "agent_step", "agent_shot", "agent_task_end"}),
+}
+
+
+def local_client_view(client) -> str:
+    """An optional local rendering profile; authentication/access rules are unchanged."""
+    if client is None or not _is_loopback(client):
+        return "main"
+    try:
+        _, path = _request_parts(client)
+        view = parse_qs(urlparse(path).query).get("view", ["main"])[0]
+        return view if view in _AUX_EVENTS else "main"
+    except (AttributeError, TypeError, ValueError):
+        return "main"
+
+
+def client_accepts_event(client, event: str) -> bool:
+    allowed = _AUX_EVENTS.get(local_client_view(client))
+    return allowed is None or event in allowed
+
+
 def _legacy_remote_bearer_valid(websocket: WebSocketServerProtocol) -> bool:
     return bool(
         _ALLOW_LEGACY_REMOTE_BEARER
@@ -971,7 +995,7 @@ async def emit(event: str, data):
             tap(event, data)
         except Exception as exc:  # noqa: BLE001 — a tap never breaks the HUD
             print(f"[WebSocket] event tap failed: {exc}", flush=True)
-    clients = [client for client in tuple(_clients) if _is_loopback(client)]
+    clients = [client for client in tuple(_clients) if _is_loopback(client) and client_accepts_event(client, event)]
     if not clients:
         return
     message = json.dumps({"event": event, "data": data})

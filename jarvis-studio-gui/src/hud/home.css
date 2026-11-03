@@ -246,12 +246,12 @@
 .orb:hover .orb-ball { transform: scale(1.035); }
 .orb:focus-visible .orb-ball { box-shadow: 0 0 0 3px var(--h-bg), 0 0 0 5px var(--ac); }
 .orb-swirl { position: absolute; inset: 0; animation: orb-spin var(--spin) linear infinite; }
-.orb-blob { position: absolute; border-radius: 50%; mix-blend-mode: screen; filter: blur(calc(var(--orb) * 0.13)); }
-.orb-blob--a { width: 68%; height: 68%; left: 10%; top: 8%; background: var(--ac); opacity: 0.8;
+.orb-blob { position: absolute; border-radius: 50%; }
+.orb-blob--a { width: 88%; height: 88%; left: -4%; top: -5%; background: radial-gradient(ellipse, var(--ac), transparent 70%); opacity: 0.8;
   animation: orb-float-a 9s ease-in-out infinite; }
-.orb-blob--b { width: 58%; height: 58%; right: 6%; bottom: 10%; background: var(--ac2); opacity: 0.55;
+.orb-blob--b { width: 78%; height: 78%; right: -5%; bottom: -4%; background: radial-gradient(ellipse, var(--ac2), transparent 70%); opacity: 0.55;
   animation: orb-float-b 11s ease-in-out infinite; }
-.orb-blob--c { width: 50%; height: 50%; left: 24%; bottom: 4%; background: color-mix(in oklab, var(--ac) 50%, white);
+.orb-blob--c { width: 70%; height: 70%; left: 15%; bottom: -6%; background: radial-gradient(ellipse, color-mix(in oklab, var(--ac) 50%, white), transparent 70%);
   opacity: 0.4; animation: orb-float-c 13s ease-in-out infinite; }
 .orb-shine {
   position: absolute; inset: 0; border-radius: 50%;
@@ -287,6 +287,20 @@
 @keyframes orb-float-c { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(-12%, -20%) scale(1.15); } }
 @keyframes orb-ripple { 0% { transform: scale(1); opacity: 0.55; } 100% { transform: scale(1.45); opacity: 0; } }
 @keyframes orb-talk { from { transform: scale(1); } to { transform: scale(1.055); } }
+
+/* Standing by must not continuously repaint the GPU. Status remains live, and
+   active listening/thinking/speaking retains its motion. Native visibility also
+   covers WebView2 windows whose document stays "visible" in the tray. */
+.home[data-status="idle"] *,
+.home[data-status="idle"] *::before,
+.home[data-status="idle"] *::after,
+html[data-window-visible="false"] *,
+html[data-window-visible="false"] *::before,
+html[data-window-visible="false"] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+.home[data-status="idle"] .home-top { backdrop-filter: none; }
 
 /* ── cards ── */
 .wd {
@@ -338,6 +352,8 @@
 .mini3 > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .mini3 span { font-size: 11.5px; color: var(--h-t3); }
 .mini3 b { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.jarvis-resources { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px;
+  padding-top: 10px; border-top: 1px solid var(--h-line); font-size: 11px; color: var(--h-t2); }
 
 /* power */
 .pwr2 { display: flex; align-items: center; gap: 14px; }

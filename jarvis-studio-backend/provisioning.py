@@ -4,10 +4,10 @@ The heavy runtime assets are normally BUNDLED into the installer (built by
 scripts/package-backend.ps1, which prefetches them into preload-assets\):
 
   • Chromium (~170MB)            — Playwright's browser, for web autopilot
-  • faster-whisper base (~150MB) — offline speech-to-text fallback
   • Piper neural voice (~60MB)   — offline British TTS (the daily-driver voice)
 
-So a fresh install works OFFLINE from the first launch. This module then runs as a
+Wake-word detection and speech output remain local. Recognition uses Groq online.
+This module runs as a
 GUARANTEE: on the very first launch it confirms each component is present (instant
 green ticks), and if any is missing or corrupt — a bundled file got deleted, or this
 is a `-Lean` (download-on-first-run) build — it RE-FETCHES just that one, with
@@ -16,8 +16,7 @@ events. Every later launch with everything present is silent (no events, no wait
 A manual "Repair components" / "Retry" path re-runs this on demand (force=True).
 
 Everything here is best-effort: a download that still fails after retries degrades
-the relevant feature (browser control reports a friendly "needs setup", STT falls
-back to cloud, TTS falls back to an OS voice) — it never crashes startup, and the
+the relevant feature (browser control reports a friendly "needs setup", TTS falls back to an OS voice) — it never crashes startup, and the
 next launch tries again.
 """
 
@@ -36,14 +35,6 @@ def _chromium_present() -> bool:
         return False
 
 
-def _whisper_present() -> bool:
-    try:
-        from transcription import whisper_transcriber as wt
-        return wt.model_present()
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _piper_present() -> bool:
     try:
         from tts import tts_engine
@@ -58,15 +49,6 @@ def _download_chromium() -> "tuple[bool, str]":
     return browser.download_chromium()
 
 
-def _download_whisper() -> "tuple[bool, str]":
-    from transcription import whisper_transcriber as wt
-    try:
-        wt._get_model()          # downloads to the HF cache AND warms it
-        return True, ""
-    except Exception as exc:  # noqa: BLE001
-        return False, str(exc)
-
-
 def _download_piper() -> "tuple[bool, str]":
     from tts import tts_engine
     return tts_engine.ensure_piper_voice()
@@ -75,9 +57,13 @@ def _download_piper() -> "tuple[bool, str]":
 # key, human label, presence-check, downloader
 _ASSETS = (
     ("browser", "browser engine", _chromium_present, _download_chromium),
-    ("speech",  "speech model",   _whisper_present,  _download_whisper),
     ("voice",   "neural voice",   _piper_present,    _download_piper),
 )
+
+
+def required_assets() -> tuple:
+    """Never provision local speech recognition, including legacy asset lists."""
+    return tuple(asset for asset in _ASSETS if asset[0] != "speech")
 
 
 def _safe(fn) -> bool:
@@ -89,7 +75,7 @@ def _safe(fn) -> bool:
 
 def missing_assets() -> "list[str]":
     """Keys of the assets not yet on disk (fast; never raises)."""
-    return [key for key, _label, present, _dl in _ASSETS if not _safe(present)]
+    return [key for key, _label, present, _dl in required_assets() if not _safe(present)]
 
 
 # A bundled installer ships every asset already on disk, so provisioning normally
@@ -163,9 +149,9 @@ async def provision(emit, *, force: bool = False) -> bool:
     first_run = force or not marker.exists()
 
     if first_run:
-        items = list(_ASSETS)                              # show every component once
+        items = list(required_assets())                   # selected components only
     else:
-        items = [a for a in _ASSETS if not _safe(a[2])]    # only the missing ones
+        items = [a for a in required_assets() if not _safe(a[2])]  # only missing ones
         if not items:
             return False
 

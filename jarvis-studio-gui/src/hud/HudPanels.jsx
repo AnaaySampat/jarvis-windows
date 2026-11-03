@@ -49,7 +49,7 @@ const RECORDERS = [
   { media: "screen", label: "Screen", icon: "monitor", note: "Your whole display" },
 ];
 
-export function SkillsOverlay({ open, onClose, recordings = {}, runAction, allowedDirs = [], onSaveDirs, onShowResult }) {
+export function SkillsOverlay({ open, onClose, recordings = {}, runAction, allowedDirs = [], onSaveDirs, onShowResult, onOpenCamera }) {
   const [tool, setTool] = useState(null);     // null | "qr" | "list" — the open quick-tool form
   const [text, setText] = useState("");
   const rec = (media) => {
@@ -103,6 +103,9 @@ export function SkillsOverlay({ open, onClose, recordings = {}, runAction, allow
           <section className="skill-sec">
             <h4>Quick tools</h4>
             <div className="skill-tools">
+              <button className="skill-tool" onClick={onOpenCamera}>
+                <Icon name="camera" size={18} /><span>Camera text</span>
+              </button>
               <button className={`skill-tool ${tool === "qr" ? "is-on" : ""}`} onClick={() => pickTool("qr")} aria-expanded={tool === "qr"}>
                 <Icon name="qr" size={18} /><span>QR code</span>
               </button>

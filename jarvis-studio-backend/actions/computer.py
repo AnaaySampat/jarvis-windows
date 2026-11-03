@@ -30,8 +30,36 @@ from __future__ import annotations
 import re
 import time
 
+_window_user32 = None
 
-def _is_jarvis_own_window(title: str) -> bool:
+
+def _window_api():
+    """Private, handle-width-correct Win32 entry points (HWND is 64-bit)."""
+    global _window_user32
+    if _window_user32 is None:
+        import ctypes
+        from ctypes import wintypes as w
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        signatures = {
+            "GetForegroundWindow": ([], w.HWND),
+            "GetWindowTextLengthW": ([w.HWND], ctypes.c_int),
+            "GetWindowTextW": ([w.HWND, w.LPWSTR, ctypes.c_int], ctypes.c_int),
+            "GetWindowThreadProcessId": ([w.HWND, ctypes.POINTER(w.DWORD)], w.DWORD),
+            "IsIconic": ([w.HWND], w.BOOL),
+            "ShowWindow": ([w.HWND, ctypes.c_int], w.BOOL),
+            "AttachThreadInput": ([w.DWORD, w.DWORD, w.BOOL], w.BOOL),
+            "BringWindowToTop": ([w.HWND], w.BOOL),
+            "SetForegroundWindow": ([w.HWND], w.BOOL),
+            "SetActiveWindow": ([w.HWND], w.HWND),
+        }
+        for name, (args, result) in signatures.items():
+            fn = getattr(u, name)
+            fn.argtypes, fn.restype = args, result
+        _window_user32 = u
+    return _window_user32
+
+
+def _is_jarvis_own_window(title: str, process: "str | None" = None) -> bool:
     """True ONLY for JARVIS's own HUD / overlay windows, matched by their EXACT
     brand title — the Tauri windows are titled 'J.A.R.V.I.S' / 'JARVIS', which both
     normalize to 'jarvis'. A window that merely CONTAINS 'jarvis' in its title (a
@@ -39,8 +67,10 @@ def _is_jarvis_own_window(title: str) -> bool:
     from JARVIS') is NOT ours and must stay controllable — the old substring check
     wrongly treated it as JARVIS's own window and blocked ALL control on it, and
     hid it from the window list (the Notepad-HTML failure)."""
+    if process:
+        return process.lower().removesuffix(".exe") in {"jarvis-studio-gui", "jarvis"}
     norm = (title or "").replace(".", "").replace(" ", "").lower()
-    return norm == "jarvis"
+    return norm in {"jarvis", "jarviscontroltint"}
 
 
 def active_window() -> str:
@@ -51,7 +81,8 @@ def active_window() -> str:
         w = gw.getActiveWindow()
         title = (w.title or "").strip() if w else ""
         # Don't report our own HUD window as 'what the user is looking at'.
-        return "" if _is_jarvis_own_window(title) else title
+        proc = _process_of(int(getattr(w, "_hWnd", 0) or 0)) if w else ""
+        return "" if _is_jarvis_own_window(title, proc) else title
     except Exception:  # noqa: BLE001
         return ""
 
@@ -61,7 +92,7 @@ def _process_of(hwnd: int) -> str:
     try:
         import ctypes
         pid = ctypes.c_ulong(0)
-        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        _window_api().GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if not pid.value:
             return ""
         import psutil
@@ -77,16 +108,15 @@ def foreground_app() -> dict:
     Returns ``{"app": <process name, lowercased, no .exe>, "title": <window
     title>, "on_jarvis": <True if that window IS the JARVIS HUD>, "hwnd": <int>}``. The overlay
     uses this to show itself only when the user is in another app (and to filter
-    by app). ``on_jarvis`` is decided from the window TITLE only — the JARVIS HUD
-    is titled "J.A.R.V.I.S" while the borderless pill itself has an empty title,
-    so clicking the pill never makes it think it's "on JARVIS" and hide.
+    by app). ``on_jarvis`` uses the owning process when known, with exact brand
+    titles as a fallback. A Notepad document titled "JARVIS" remains a document.
 
     Best-effort and never raises; everything empty/False on failure or non-Windows.
     """
     app, title = "", ""
     try:
         import ctypes
-        user32 = ctypes.windll.user32
+        user32 = _window_api()
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
             return {"app": "", "title": "", "on_jarvis": False, "hwnd": 0}
@@ -97,7 +127,7 @@ def foreground_app() -> dict:
         app = _process_of(hwnd)
     except Exception:  # noqa: BLE001
         return {"app": "", "title": "", "on_jarvis": False, "hwnd": 0}
-    return {"app": app, "title": title, "on_jarvis": _is_jarvis_own_window(title),
+    return {"app": app, "title": title, "on_jarvis": _is_jarvis_own_window(title, app),
             "hwnd": int(hwnd)}
 
 
@@ -122,10 +152,13 @@ def list_windows() -> "list[str]":
     try:
         import pygetwindow as gw
         titles: "list[str]" = []
-        for t in gw.getAllTitles():
+        windows = ([(w.title, int(getattr(w, "_hWnd", 0) or 0)) for w in gw.getAllWindows()]
+                   if hasattr(gw, "getAllWindows") else [(t, 0) for t in gw.getAllTitles()])
+        for t, hwnd in windows:
             t = (t or "").strip()
             norm = t.replace(".", "").replace(" ", "").lower()
-            if (t and not _is_jarvis_own_window(t) and t not in titles
+            own = _is_jarvis_own_window(t, _process_of(hwnd)) if _is_jarvis_own_window(t) else False
+            if (t and not own and t not in titles
                     and norm not in _JUNK_WINDOW_TITLES):
                 titles.append(t)
         return titles[:15]
@@ -144,7 +177,7 @@ def _force_foreground(hwnd: int) -> bool:
     Returns whether ``hwnd`` actually ended up foreground. Best-effort; never raises."""
     try:
         import ctypes
-        user32 = ctypes.windll.user32
+        user32 = _window_api()
         kernel32 = ctypes.windll.kernel32
         SW_RESTORE = 9
         if user32.IsIconic(hwnd):
@@ -173,7 +206,7 @@ def _force_foreground(hwnd: int) -> bool:
 
 
 def focus_window(title: str) -> "tuple[bool, str]":
-    """Bring the first window whose title contains `title` to the foreground.
+    """Bring one unambiguous app/window to the foreground and verify its HWND.
 
     An ACTUATION (it redirects keyboard focus), so it requires the armed-consent
     window — but unlike the other actuations it's allowed while JARVIS's own
@@ -193,19 +226,33 @@ def focus_window(title: str) -> "tuple[bool, str]":
     # it's in front" that makes the operator loop on focus (the Notepad trap).
     fg0 = foreground_app()
     if is_foreground(title, fg0):
+        if not _pin_window(int(fg0.get("hwnd") or 0)):
+            return False, "The focused window changed while I was checking it; observe it again."
         return True, f"“{fg0.get('title')}” is already in front."
     try:
         import pygetwindow as gw
         wins = [w for w in gw.getAllWindows()
-                if (w.title or "").strip() and not _is_jarvis_own_window(w.title.strip())]
-        # Exact title, then the app itself (process-aware — "word" must not pick a
-        # "Wordle" browser tab while Word is open), then any title containing it.
-        mine = set(app_windows(t))
-        ranked = ([w for w in wins if w.title.strip().lower() == t]
-                  + [w for w in wins if w.title.strip() in mine]
-                  + [w for w in wins if t in w.title.strip().lower()])
+                if (w.title or "").strip() and not (
+                    _is_jarvis_own_window(w.title.strip()) and _is_jarvis_own_window(
+                        w.title.strip(), _process_of(int(getattr(w, "_hWnd", 0) or 0))))]
+        from actions import app_launcher
+        want = _norm_app_for_window(t)
+        known_app = want in app_launcher._ALIASES or t.endswith(".exe")
+        mine = [w for w in wins if app_window_matches(
+            t, w.title.strip(), _process_of(int(getattr(w, "_hWnd", 0) or 0)))]
+        exact = [w for w in wins if w.title.strip().lower() == t
+                 and (not known_app or w in mine)]
+        # Unknown targets can be document-title fragments. Known app names must
+        # never degrade into a similarly named browser tab or another program.
+        partial = ([w for w in wins if re.search(
+            rf"(?<![\w+]){re.escape(t)}(?![\w+])", w.title.strip().lower())]
+                   if not known_app else [])
+        ranked = exact or mine or partial
         if not ranked:
             return False, f"I couldn't find a window matching “{title}”, sir."
+        if len(ranked) > 1:
+            return False, (f"More than one window matches “{title}”, sir — choose "
+                           "its full title from the current window list.")
         w = ranked[0]
         wt = w.title.strip()
         # Reliable foreground first (AttachThreadInput); fall back to
@@ -220,9 +267,12 @@ def focus_window(title: str) -> "tuple[bool, str]":
             except Exception:  # noqa: BLE001 — pygetwindow's activate() can
                 pass           # raise spuriously on Windows even when it worked
             time.sleep(0.4)
-        if forced or (foreground_app().get("title") or "").strip() == wt:
+        # Activation API return values alone are insufficient: another app can
+        # keep/reclaim focus, and distinct windows may have identical titles.
+        if hwnd and _pin_window(hwnd):
             return True, f"Focused “{wt}”."
-        return True, f"Tried to focus “{wt}” — check it's in front."
+        return False, (f"Couldn't bring “{wt}” to the front, sir — it may be busy "
+                       "or Windows may have refused activation. No input was sent.")
     except Exception as exc:  # noqa: BLE001
         return False, f"Couldn't focus that window: {exc}"
 
@@ -276,10 +326,11 @@ def app_windows(app: str) -> "list[str]":
         out: "list[str]" = []
         for w in gw.getAllWindows():
             t = (w.title or "").strip()
-            if (not t or t in out or _is_jarvis_own_window(t)
+            proc = _process_of(int(getattr(w, "_hWnd", 0) or 0))
+            if (not t or t in out or _is_jarvis_own_window(t, proc)
                     or t.replace(".", "").replace(" ", "").lower() in _JUNK_WINDOW_TITLES):
                 continue
-            if app_window_matches(app, t, _process_of(int(getattr(w, "_hWnd", 0) or 0))):
+            if app_window_matches(app, t, proc):
                 out.append(t)
         return out
     except Exception:  # noqa: BLE001
@@ -305,8 +356,7 @@ def wait_for_window(hint: str = "", before: "list[str] | None" = None,
 
     Resolution order, re-checked each poll:
       1) a NEW window (vs ``before``) whose title carries the app name — strongest;
-      2) the first NEW window once it's settled a beat (apps whose title doesn't
-         carry their name);
+      2) without a hint, the first NEW window once it's settled a beat;
       3) after a ~1s grace, an EXISTING window matching the name — the app was
          ALREADY running and the launch just re-focused it (this is what made
          're-open an already-open app' wrongly report 'hasn't appeared').
@@ -316,7 +366,7 @@ def wait_for_window(hint: str = "", before: "list[str] | None" = None,
     prior = set(before or [])
     start = time.monotonic()
     deadline = start + max(1.0, timeout)
-    first_new, first_new_at = "", 0.0
+    first_new = ""
     while time.monotonic() < deadline:
         wins = list_windows()
         new = [t for t in wins if t not in prior]
@@ -326,13 +376,13 @@ def wait_for_window(hint: str = "", before: "list[str] | None" = None,
                 if t in mine:
                     return True, t
         if new and not first_new:
-            first_new, first_new_at = new[0], time.monotonic()
-        if first_new and (not want or time.monotonic() - first_new_at > 2.5):
+            first_new = new[0]
+        if first_new and not want:
             return True, first_new              # (2) first new window, settled
         if want and time.monotonic() - start > 1.0 and mine:
             return True, mine[0]                # (3) already-open window, name match
         time.sleep(0.5)
-    if first_new:
+    if first_new and not want:
         return True, first_new
     mine = app_windows(want) if want else []
     return (True, mine[0]) if mine else (False, "")
@@ -411,12 +461,31 @@ _state_cb = None  # type: ignore[var-annotated]
 # of silently hitting a same-named control in a different app.
 _ui_cache: "list[tuple[str, str, str, int]]" = []
 _ui_cache_hwnd: int = 0
+_observed_hwnd: int = 0
+
+
+def _clear_observation() -> None:
+    global _ui_cache, _ui_cache_hwnd, _observed_hwnd
+    _ui_cache, _ui_cache_hwnd, _observed_hwnd = [], 0, 0
+
+
+def _pin_window(hwnd: int) -> bool:
+    """Remember only a window that still owns the foreground after observation."""
+    global _observed_hwnd
+    if not hwnd or _foreground_hwnd() != hwnd:
+        _clear_observation()
+        _observed_hwnd = -1  # input remains blocked until a fresh stable read
+        return False
+    if _ui_cache_hwnd and _ui_cache_hwnd != hwnd:
+        _clear_observation()
+    _observed_hwnd = hwnd
+    return True
 
 
 def _foreground_hwnd() -> int:
     try:
         import ctypes
-        return int(ctypes.windll.user32.GetForegroundWindow() or 0)
+        return int(_window_api().GetForegroundWindow() or 0)
     except Exception:  # noqa: BLE001
         return 0
 
@@ -507,6 +576,7 @@ def arm(minutes=None) -> "tuple[bool, str]":
     except (TypeError, ValueError):
         m = _ARM_DEFAULT_MIN
     m = max(1.0, min(m, _ARM_MAX_MIN))
+    _clear_observation()
     _armed_until = time.monotonic() + m * 60
     _emit_state()                               # light up the HUD STOP banner
     return True, (f"Computer control armed for {m:.0f} minutes, sir. Slam the mouse "
@@ -517,6 +587,8 @@ def disarm() -> "tuple[bool, str]":
     global _armed_until
     was_armed = is_armed()
     _armed_until = 0.0
+    _clear_observation()
+    release_inputs()
     if was_armed:
         _emit_state()                           # clear the HUD STOP banner
     return True, "Computer control disarmed, sir."
@@ -526,9 +598,12 @@ def is_armed() -> bool:
     return time.monotonic() < _armed_until
 
 
-def _guard() -> "str | None":
-    """The common pre-flight: deps present, consent window open, and the target
-    is NOT JARVIS itself (so it can never click its own Approve dialog)."""
+def _guard(check_window: bool = True) -> "str | None":
+    """Require consent, an external app, and the last observed foreground HWND.
+
+    Read/list operations can refresh a changed window; input cannot silently
+    follow a focus switch while an operator decision is in flight.
+    """
     if not control_available():
         return _CONTROL_UNAVAILABLE
     if not is_armed():
@@ -538,6 +613,9 @@ def _guard() -> "str | None":
     if fg.get("on_jarvis"):
         return ("The JARVIS window is in focus — bring the app you want me to "
                 "control to the front first, sir.")
+    if check_window and _observed_hwnd and int(fg.get("hwnd") or 0) != _observed_hwnd:
+        return ("The focused window has changed since the last observation, sir — "
+                "read or list the current window again before sending input.")
     return None
 
 
@@ -549,7 +627,7 @@ def _walk_controls(readouts: "list | None" = None):
     same walk (a second walk would double the 4s budget)."""
     import ctypes
     import uiautomation as auto
-    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    hwnd = _foreground_hwnd()
     if not hwnd:
         return
     root = auto.ControlFromHandle(hwnd)
@@ -714,7 +792,7 @@ def list_ui() -> "tuple[bool, str, str]":
     human message, full listing) — the LISTING is internal observation data
     for the model; the message is what a card may show (never the numbers)."""
     global _ui_cache, _ui_cache_hwnd
-    err = _guard()
+    err = _guard(check_window=False)
     if err:
         return False, err, ""
     fg = foreground_app()
@@ -773,6 +851,8 @@ def list_ui() -> "tuple[bool, str, str]":
     except Exception as exc:  # noqa: BLE001
         _ui_cache, _ui_cache_hwnd = [], 0     # never leave a stale cache behind
         return False, f"I couldn't read that window's controls: {exc}", ""
+    if not _pin_window(hwnd):
+        return False, "The focused window changed while I was reading it; scan it again.", ""
     _ui_cache = [(selector, name, ctype, ordinal)
                  for name, ctype, _k, _x, selector, _p, ordinal in found]
     _ui_cache_hwnd = hwnd
@@ -815,14 +895,14 @@ def read_window(max_chars: int = _READ_MAX_CHARS) -> "tuple[bool, str]":
     browser's page read, for goals that ASK something ("what does this email
     say", "read me that error", "which files are in here"). Touches nothing, but
     is gated like the actuations: it reads whatever the user has open."""
-    err = _guard()
+    err = _guard(check_window=False)
     if err:
         return False, err
     try:
-        import ctypes
         import uiautomation as auto
+        hwnd = _foreground_hwnd()
         with auto.UIAutomationInitializerInThread(debug=False):
-            root = auto.ControlFromHandle(ctypes.windll.user32.GetForegroundWindow())
+            root = auto.ControlFromHandle(hwnd)
             parts: "list[str]" = []
             seen: "set[str]" = set()
             total = 0
@@ -848,6 +928,8 @@ def read_window(max_chars: int = _READ_MAX_CHARS) -> "tuple[bool, str]":
                     total += len(text) + 1
     except Exception as exc:  # noqa: BLE001
         return False, f"I couldn't read that window: {exc}"
+    if not _pin_window(hwnd):
+        return False, "The focused window changed while I was reading it; read it again."
     return True, "\n".join(parts)[:max_chars]
 
 
@@ -884,7 +966,8 @@ def _find_control(target: str, editable: bool = False):
     numbered = bool(want_name or want_sel)
     sel_matches = []
     positional = None
-    fallback = None
+    exact_matches, partial_matches = [], []
+    named_seen = set()
     seen = 0
     for c, kind, name in _walk_controls():
         if editable and not numbered and kind not in _EDITABLE_KINDS:
@@ -905,9 +988,14 @@ def _find_control(target: str, editable: bool = False):
                     positional = (c, f"“{name}”")
                 seen += 1
         elif low and low in name.lower():
+            identity = _selector_for(c) or id(c)
+            if identity in named_seen:
+                continue
+            named_seen.add(identity)
             if name.lower() == low:
-                return c, f"“{name}”"
-            fallback = fallback or (c, f"“{name}”")
+                exact_matches.append((c, f"“{name}”"))
+            else:
+                partial_matches.append((c, f"“{name}”"))
     if numbered:
         if len(sel_matches) == 1:
             return sel_matches[0]
@@ -916,12 +1004,16 @@ def _find_control(target: str, editable: bool = False):
             # unique. Ambiguity is not a licence to guess.
             return None, (f"“{want_name}” matches more than one control now, sir — "
                           f"list the controls again and use a fresh number.")
-        if positional is not None:
+        if not want_sel and positional is not None:
             return positional
         return None, (f"“{want_name or t}” isn't in this window any more, sir — the "
                       f"view has changed. List the controls again.")
-    if fallback:
-        return fallback
+    matches = exact_matches or partial_matches
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return None, (f"“{t}” matches more than one control, sir — list the controls "
+                      "and use the specific number instead of guessing.")
     return None, (f"I couldn't find “{t}” in this window, sir — the view may have "
                   f"changed. List the controls again.")
 
@@ -938,6 +1030,7 @@ def click_ui(target, right: bool = False, double: bool = False) -> "tuple[bool, 
         return False, "What should I click, sir? List the controls first."
     try:
         import uiautomation as auto
+        hwnd = _foreground_hwnd()
         with auto.UIAutomationInitializerInThread(debug=False):
             try:
                 ctrl, label = _find_control(target)
@@ -946,6 +1039,9 @@ def click_ui(target, right: bool = False, double: bool = False) -> "tuple[bool, 
                                f"— list the controls again, sir.")
             if ctrl is None:
                 return False, label
+            err = _guard()
+            if err or _foreground_hwnd() != hwnd:
+                return False, err or "The focused window changed while locating the control; list it again."
             if right:
                 ctrl.RightClick(simulateMove=False, waitTime=0.05)
                 return True, f"Right-clicked {label} — its menu is open."
@@ -1021,6 +1117,9 @@ def click_xy(x, y, double: bool = False) -> "tuple[bool, str]":
     try:
         import pyautogui
         pyautogui.FAILSAFE = True
+        err = _guard()
+        if err:
+            return False, err
         if double:
             pyautogui.doubleClick(px, py)
         else:
@@ -1236,11 +1335,19 @@ def _send_text(text: str) -> bool:
                 batch += [(0, scan, _KEYEVENTF_UNICODE),
                           (0, scan, _KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP)]
         if len(batch) >= 100:
+            err = _guard()
+            if err:
+                raise RuntimeError(err)
             if not send(batch):
-                return False
+                raise RuntimeError("Text input was only partly delivered; read the field before retrying.")
             batch = []
             time.sleep(0.02)
-    return send(batch)
+    err = _guard()
+    if err:
+        raise RuntimeError(err)
+    if not send(batch):
+        raise RuntimeError("Text input was only partly delivered; read the field before retrying.")
+    return True
 
 
 def _send_chord(vks: "list[int]") -> bool:
@@ -1250,7 +1357,12 @@ def _send_chord(vks: "list[int]") -> bool:
         return False
     down = [(vk, 0, 0) for vk in vks]
     up = [(vk, 0, _KEYEVENTF_KEYUP) for vk in reversed(vks)]
-    return send(down + up)
+    ok = send(down + up)
+    if not ok:
+        # A partially accepted SendInput can leave Ctrl/Shift pressed. Releasing
+        # keys is safe even after disarm and must not retry their key-downs.
+        send(up)
+    return ok
 
 
 # ── Clipboard paste: the text-entry path that survives modern editors ────────
@@ -1361,7 +1473,11 @@ def _paste_text(text: str, ctrl=None) -> bool:
         return False
     try:
         before = _doc_text(ctrl, 1_000_000) if ctrl is not None else None
-        _send_chord([_VK_CONTROL, _VK_V])
+        err = _guard()
+        if err:
+            raise RuntimeError(err)
+        if not _send_chord([_VK_CONTROL, _VK_V]):
+            raise RuntimeError("Paste was not fully delivered; read the field before retrying.")
         # "Changed", not "contains the text": a field that already held the same
         # words would otherwise look pasted before the app had read the clipboard.
         end = time.monotonic() + 2.0
@@ -1376,18 +1492,18 @@ def _paste_text(text: str, ctrl=None) -> bool:
     return True
 
 
-def _value_matches(ctrl, text: str) -> "bool | None":
+def _value_matches(ctrl, text: str, exact: bool = False) -> "bool | None":
     """Did the text land in the control? True/False when the control exposes its
     text (TextPattern for documents, else ValuePattern), None when it can't —
     absence of proof ≠ failure."""
     v = _doc_text(ctrl, 1_000_000)
     if v is None:
         return None
-    want = " ".join(text.split()).lower()
-    got = " ".join(v.split()).lower()
+    want = " ".join(text.split())
+    got = " ".join(v.split())
     if not want:
         return got == ""
-    return want[:40] in got
+    return got == want if exact else want in got
 
 
 _TEXT_TYPES = {"EditControl", "DocumentControl", "ComboBoxControl"}
@@ -1401,7 +1517,7 @@ _ACTIVATABLE_TYPES = {"ListItemControl", "TreeItemControl",
                       "RadioButtonControl"}
 
 
-def _await_value(ctrl, text: str, timeout: float = 1.5) -> "bool | None":
+def _await_value(ctrl, text: str, timeout: float = 1.5, exact: bool = False) -> "bool | None":
     """_value_matches, polled until it holds. SendInput only QUEUES keystrokes;
     the app applies them on its own UI thread, so one check 0.1s later read
     Notepad mid-way through a three-line list and reported a successful type as
@@ -1409,7 +1525,7 @@ def _await_value(ctrl, text: str, timeout: float = 1.5) -> "bool | None":
     tasks in the 2026-10-05 benchmark)."""
     end = time.monotonic() + timeout
     while True:
-        got = _value_matches(ctrl, text)
+        got = _value_matches(ctrl, text, exact=exact)
         if got is not False or time.monotonic() >= end:
             return got
         time.sleep(0.1)
@@ -1435,6 +1551,7 @@ def type_text(text: str, target=None, clear: bool = False) -> "tuple[bool, str]"
         return False, "What should I type, sir?"
     try:
         import uiautomation as auto
+        hwnd = _foreground_hwnd()
         with auto.UIAutomationInitializerInThread(debug=False):
             ctrl, label = None, "the focused element"
             if tgt:
@@ -1442,22 +1559,23 @@ def type_text(text: str, target=None, clear: bool = False) -> "tuple[bool, str]"
                     found, lbl = _find_control(tgt, editable=True)
                 except Exception as exc:  # noqa: BLE001
                     return False, f"I couldn't locate “{tgt}” in this window: {exc}"
-                if found is None and tgt.isdigit():
-                    return False, lbl          # a stale number: fail loudly
+                if found is None:
+                    return False, lbl
                 if found is not None and found.ControlTypeName in _TEXT_TYPES:
                     ctrl, label = found, lbl
                 else:
-                    # Not a text field. Either the name matched no field (it named
-                    # the window: "type 12*34= into Calculator") or the number is a
-                    # button/menu item, which focusing and then typing would PRESS
-                    # on any newline. The keys go where the focus already is.
-                    tgt = ""
+                    return False, (f"{lbl} isn't a text field, sir — select the "
+                                   "actual editor before typing. No text was sent.")
             if tgt:
                 try:
                     ctrl.SetFocus()
                     time.sleep(0.15)
-                except Exception:  # noqa: BLE001 — focus is best-effort; typing
-                    pass           # may still land if the control already had it
+                except Exception:  # it may already have focus; verify rather than assume
+                    pass
+                focused = auto.GetFocusedControl()
+                selector = _selector_for(ctrl)
+                if focused is not ctrl and (not selector or _selector_for(focused) != selector):
+                    return False, f"I couldn't focus {label}, sir — no text was sent."
             else:
                 try:
                     ctrl = auto.GetFocusedControl()
@@ -1481,34 +1599,39 @@ def type_text(text: str, target=None, clear: bool = False) -> "tuple[bool, str]"
                                f"which Enter would open or press. Click (or target) the "
                                f"text field first, then type.")
             done = False
+            err = _guard()
+            if err or not _pin_window(hwnd):
+                return False, err or "The focused window changed before typing; read it again."
             if clear and ctrl is not None:
                 # Fastest, layout-proof path: set the whole value in one go.
                 try:
                     ctrl.GetValuePattern().SetValue(body)
-                    done = bool(_await_value(ctrl, body, timeout=0.5))
+                    done = bool(_await_value(ctrl, body, timeout=0.5, exact=True))
                 except Exception:  # noqa: BLE001
                     pass
                 if not done:
                     # No (working) ValuePattern → select-all, then type over it.
-                    _send_chord([_VK_CONTROL, _VK_A])
+                    if not _send_chord([_VK_CONTROL, _VK_A]):
+                        return False, "Selecting the field's text failed; no replacement was attempted."
                     time.sleep(0.05)
                     if not body:
-                        _send_chord([_VK_DELETE])
+                        if not _send_chord([_VK_DELETE]):
+                            return False, "The field could not be cleared."
 
             if body and not done and not _paste_text(body, ctrl) and not _send_text(body):
-                try:                       # ancient fallback — ASCII only
-                    import pyautogui
-                    pyautogui.FAILSAFE = True
-                    pyautogui.write(body, interval=0.02)
-                except Exception as exc:  # noqa: BLE001
-                    return False, f"Typing failed: {exc}"
-            verified = _await_value(ctrl, body) if ctrl is not None else None
+                return False, "No text-input backend was available; no alternative typing was attempted."
+            verified = _await_value(ctrl, body, exact=clear) if ctrl is not None and (body or clear) else None
+            if verified is False:
+                return False, (f"The full text wasn't verified in {label}, sir — "
+                               "some text may already have landed. No Enter was sent; "
+                               "read the field before retrying.")
             for _ in range(enters):
-                _send_chord([_VK_RETURN])
+                err = _guard()
+                if err or _foreground_hwnd() != hwnd:
+                    return False, err or "The focused window changed before Enter; read it again."
+                if not _send_chord([_VK_RETURN]):
+                    return False, "The text was entered but Enter did not register; check before retrying."
                 time.sleep(0.05)
-            if verified is False and tgt:
-                return False, (f"I typed into {label} but the text didn't land, "
-                               f"sir — the field may be read-only or filtered.")
             into = f" into {label}" if tgt else ""
             # Say the Enter out loud: a cut-off preview hid it, and the model pressed
             # Enter again — into the editor, after the Save dialog had closed.
@@ -1543,6 +1666,9 @@ def press_keys(keys: str) -> "tuple[bool, str]":
     try:
         import pyautogui
         pyautogui.FAILSAFE = True
+        err = _guard()
+        if err:
+            return False, err
         if len(parts) > 1:
             pyautogui.hotkey(*parts)
         else:
@@ -1669,12 +1795,15 @@ def scroll_amount(amount) -> "tuple[bool, str]":
     except (TypeError, ValueError):
         n = 600
     if abs(n) > 20:             # pixel-style value → wheel notches
-        n = n // 100 or (1 if n > 0 else -1)
+        n = int(n / 100) or (1 if n > 0 else -1)
     n = max(-20, min(20, n))
     try:
         import pyautogui
         pyautogui.FAILSAFE = True
-        pyautogui.scroll(-n * 120)   # pyautogui: positive = up; 120 = one notch
+        err = _guard()
+        if err:
+            return False, err
+        pyautogui.scroll(-n)  # pyautogui accepts wheel NOTCHES, not Win32 delta units
         return True, f"Scrolled {'down' if n >= 0 else 'up'}."
     except Exception as exc:  # noqa: BLE001
         return False, f"Scrolling failed: {exc}"
