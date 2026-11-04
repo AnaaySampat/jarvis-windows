@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { MODES } from "./engine";
 import ActivityView from "./ActivityView";
-import GesturePanel from "./GesturePanel";
+import GestureTune from "./GestureTune";
+import GestureSessionOverlay from "./GestureSessionOverlay";
 import PoseGuide from "./PoseGuide";
 import { practicePoses, poseName } from "./poseGuides";
 import "./gestures.css";
@@ -17,7 +18,7 @@ export default function GestureWorkspace({
     dialog = useRef(null);
   const [tab, setTab] = useState("control");
   const [target, setTarget] = useState(practicePoses[0]);
-  const [baseline, setBaseline] = useState(0);
+
   const { config, status, cursor } = controls;
   const active = status.running || status.starting;
   const activeTimers =
@@ -64,12 +65,11 @@ export default function GestureWorkspace({
   const selectTab = (next) => {
     setTab(next);
     controls.setPractice(next === "learn");
-    setBaseline(controls.practiceCount || 0);
+    if (next === "learn") controls.setPracticeTarget(target);
   };
-  if (!open && !active) return null;
-  const passed =
-    controls.practicePose === target &&
-    (controls.practiceCount || 0) > baseline;
+  if (!open)
+    return <GestureSessionOverlay controls={controls} onOpen={onOpen} />;
+  const passed = controls.practicePassed?.includes(target) || false;
   return (
     <>
       {cursor &&
@@ -257,7 +257,7 @@ export default function GestureWorkspace({
                   value={target}
                   onChange={(e) => {
                     setTarget(e.target.value);
-                    setBaseline(controls.practiceCount || 0);
+                    controls.setPracticeTarget(e.target.value);
                   }}
                 >
                   {practicePoses.map((pose) => (
@@ -277,12 +277,12 @@ export default function GestureWorkspace({
                 type="button"
                 disabled={!passed}
                 onClick={() => {
-                  setTarget(
+                  const next =
                     practicePoses[
                       (practicePoses.indexOf(target) + 1) % practicePoses.length
-                    ],
-                  );
-                  setBaseline(controls.practiceCount || 0);
+                    ];
+                  setTarget(next);
+                  controls.setPracticeTarget(next);
                 }}
               >
                 Next gesture
@@ -290,7 +290,7 @@ export default function GestureWorkspace({
             </section>
           )}
           {tab === "tune" && open && (
-            <GesturePanel controls={controls} routines={routines} />
+            <GestureTune controls={controls} routines={routines} />
           )}
           {tab === "control" && open && (
             <details className="activity-mappings">

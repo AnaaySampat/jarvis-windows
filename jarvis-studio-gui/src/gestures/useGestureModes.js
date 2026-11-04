@@ -1,8 +1,7 @@
 import { useActivityTimers } from "./timers";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ACTIONS,
-  POSES,
   GestureEngine,
   loadConfig,
   saveConfig,
@@ -11,6 +10,9 @@ import {
   readerPages,
   hasOwn,
   validLandmarks,
+  idleRecognition,
+  featureDistance,
+  MODES,
 } from "./engine";
 import {
   clampIndex,
@@ -20,12 +22,24 @@ import {
   safeStorage,
 } from "./storage";
 
+const policyKey = (config) =>
+  JSON.stringify([
+    config.mode,
+    config.holdMs,
+    config.releaseMs,
+    config.confidence,
+    config.bindings,
+    config.customPoses,
+    config.mirror,
+  ]);
+
 export function useGestureModes({
   camera,
   enabled,
   host,
   blocked,
   canListen,
+  listening = false,
   latestReply = "",
 }) {
   const [config, setConfigState] = useState(() => loadConfig(safeStorage()));
@@ -36,6 +50,8 @@ export function useGestureModes({
     summary: "Camera is off.",
   });
   const [busy, setBusy] = useState(false);
+  const controlBusy = useRef(false);
+  const controlToken = useRef(0);
   const [message, setMessage] = useState("");
   const [stepIndex, setStep] = useState(0);
   const [pageIndex, setPage] = useState(0);
@@ -45,33 +61,23 @@ export function useGestureModes({
   const bookmarksRef = useRef(bookmarks);
   const [calibrating, setCalibrating] = useState(false);
   const [cursor, setCursor] = useState(null);
-  const [paused, setPaused] = useState(false);
-  const [practice, setPractice] = useState(false);
-  const [practicePose, setPracticePose] = useState("");
-  const [practiceCount, setPracticeCount] = useState(0);
-  const sessionMode = useRef({ paused: false, practice: false });
+  const [recognition, setRecognition] = useState(idleRecognition);
+  const [practice, setPracticeState] = useState(false);
+  const practiceRef = useRef(false);
+  const [paused, setPausedState] = useState(false);
+  const pausedRef = useRef(false);
+  const [practiceTarget, setPracticeTargetState] = useState(null);
+  const targetRef = useRef(null);
+  const [practicePassed, setPracticePassed] = useState([]);
+  const passedRef = useRef([]);
+  const [history, setHistory] = useState([]);
+  const historySeq = useRef(0);
   const timers = useActivityTimers(host);
   const timersRef = useRef(timers);
   useEffect(() => {
     timersRef.current = timers;
   }, [timers]);
-  const makeEngine = () => {
-    const cfg = configRef.current;
-    return new GestureEngine(
-      sessionMode.current.practice
-        ? {
-            ...cfg,
-            mode: "voice",
-            bindings: {
-              ...cfg.bindings,
-              voice: Object.fromEntries(
-                POSES.map((pose) => [pose, "feedback"]),
-              ),
-            },
-          }
-        : cfg,
-    );
-  };
+  const navigationRevision = useRef(0);
   const pages = useMemo(() => readerPages(config.reader), [config.reader]);
   const steps = useMemo(
     () =>
@@ -83,13 +89,12 @@ export function useGestureModes({
   );
   const page = clampIndex(pageIndex, pages.length),
     step = clampIndex(stepIndex, steps.length);
-  const context = useRef({ host, blocked, canListen, step, page });
+  const context = useRef({ host, blocked, canListen, listening, step, page });
   const engine = useRef(null);
   if (engine.current === null) engine.current = new GestureEngine(config);
   const calibration = useRef(null);
   const actionBusy = useRef(false);
   const currentAction = useRef("");
-  const navigationRevision = useRef(0);
   const queuedNavigation = useRef(null);
   const drag = useRef(null);
   const latestFrame = useRef(-1);
@@ -100,33 +105,11 @@ export function useGestureModes({
   const alive = useRef(true);
   const cameraRef = useRef(camera);
   const refresh = useRef(() => {});
-  const policy = useMemo(
-    () =>
-      JSON.stringify([
-        config.mode,
-        config.holdMs,
-        config.releaseMs,
-        config.confidence,
-        config.bindings,
-        config.customPoses,
-        config.mirror,
-      ]),
-    [config],
-  );
 
   useEffect(() => {
-    context.current = { host, blocked, canListen, step, page };
+    context.current = { host, blocked, canListen, listening, step, page };
     cameraRef.current = camera;
-  }, [host, blocked, canListen, step, page, camera]);
-
-  // Only policy changes reset holds; host/camera object identity never does.
-  useEffect(() => {
-    if (pttOwned.current) context.current.host.cancelListen?.();
-    pttOwned.current = false;
-    pttAttempt.current++;
-    engine.current = makeEngine();
-    drag.current = null;
-  }, [policy]);
+  }, [host, blocked, canListen, listening, step, page, camera]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -156,30 +139,70 @@ export function useGestureModes({
     return () => clearTimeout(timer);
   }, [bookmarks]);
 
-  const changeConfig = (patch) => {
-    const current = configRef.current;
-    const next = sanitizeConfig({
-      ...current,
-      ...(typeof patch === "function" ? patch(current) : patch),
-    });
-    if (next.reader !== current.reader) {
-      setPage(0);
-      context.current.page = 0;
-      navigationRevision.current++;
-    }
-    if (next.steps !== current.steps) {
-      setStep(0);
-      context.current.step = 0;
-      navigationRevision.current++;
-    }
-    configRef.current = next;
-    setConfigState(next);
+  const resetInteraction = useCallback((next = configRef.current) => {
+    pttAttempt.current++;
+    if (pttOwned.current) context.current.host.cancelListen?.();
+    pttOwned.current = false;
+    session.current++;
+    engine.current = new GestureEngine(next);
+    queuedNavigation.current = null;
+    drag.current = null;
+    setCursor(null);
+    setRecognition(engine.current.recognition);
+  }, []);
+  const changeConfig = useCallback(
+    (patch) => {
+      const current = configRef.current;
+      const next = sanitizeConfig({
+        ...current,
+        ...(typeof patch === "function" ? patch(current) : patch),
+      });
+      if (next.reader !== current.reader) {
+        setPage(0);
+        context.current.page = 0;
+        navigationRevision.current++;
+      }
+      if (next.steps !== current.steps) {
+        setStep(0);
+        context.current.step = 0;
+        navigationRevision.current++;
+      }
+      configRef.current = next;
+      if (policyKey(current) !== policyKey(next)) resetInteraction(next);
+      if (current.mode !== next.mode) {
+        targetRef.current = null;
+        setPracticeTargetState(null);
+        passedRef.current = [];
+        setPracticePassed([]);
+        setMessage(
+          running.current ? "Lower your hand, then use your new controls." : "",
+        );
+      }
+      setConfigState(next);
+    },
+    [resetInteraction],
+  );
+  const setPractice = (value) => {
+    practiceRef.current = Boolean(value);
+    setPracticeState(Boolean(value));
+    pausedRef.current = false;
+    setPausedState(false);
+    resetInteraction();
+    setMessage(
+      value
+        ? "Practice only. No commands will run."
+        : "Lower your hand to start using gestures.",
+    );
   };
   const changeBookmarks = (update) => {
     const next = update(bookmarksRef.current);
     bookmarksRef.current = next;
     setBookmarks(next);
   };
+  const cancelPendingControl = useCallback(() => {
+    controlToken.current++;
+    controlBusy.current = false;
+  }, []);
 
   useEffect(() => {
     alive.current = true;
@@ -253,8 +276,13 @@ export function useGestureModes({
         await cameraRef.current.stop();
         return;
       }
+      if (event.kind === "action" && event.action === "voice.cancel") {
+        cancelPtt();
+        return;
+      }
+      if (practiceRef.current || (pausedRef.current && event.pose !== "manual"))
+        return;
       if (event.kind === "pointer") {
-        if (sessionMode.current.paused || sessionMode.current.practice) return;
         pointer(event);
         return;
       }
@@ -271,18 +299,6 @@ export function useGestureModes({
       }
       if (context.current.blocked || calibration.current || document.hidden)
         return;
-      if (sessionMode.current.practice) {
-        if (
-          event.pose &&
-          event.pose !== "manual" &&
-          !["UNKNOWN", "FIST"].includes(event.pose)
-        ) {
-          setPracticePose(event.pose);
-          setPracticeCount((count) => count + 1);
-        }
-        return;
-      }
-      if (event.pose !== "manual" && sessionMode.current.paused) return;
       const action = event.action;
       if (action === "voice.ptt") {
         if (!context.current.canListen || pttOwned.current) return;
@@ -296,6 +312,8 @@ export function useGestureModes({
             epoch !== session.current ||
             !running.current ||
             context.current.blocked ||
+            practiceRef.current ||
+            pausedRef.current ||
             document.hidden ||
             !engine.current.confirmPttStart()
           ) {
@@ -309,11 +327,22 @@ export function useGestureModes({
         return;
       }
       if (action === "voice.listen") {
-        if (context.current.canListen) h.listen?.();
+        if (context.current.listening) {
+          pttOwned.current = false;
+          pttAttempt.current++;
+          engine.current.reset();
+          h.finishListen?.();
+          setMessage("Finish listening requested.");
+        } else if (context.current.canListen) {
+          h.listen?.();
+          setMessage("Listening requested.");
+        } else
+          setMessage("Wait for JARVIS to finish, then try listening again.");
         return;
       }
       if (action === "voice.stop") {
         h.stopSpeech?.();
+        setMessage("Stop speaking requested.");
         return;
       }
       if (action === "feedback") {
@@ -342,6 +371,21 @@ export function useGestureModes({
       currentAction.current = action;
       if (navigation(action)) navigationRevision.current++;
       const selectionRevision = navigationRevision.current;
+      const commandId = ++historySeq.current;
+      const epoch = session.current;
+      setHistory((items) =>
+        [
+          {
+            id: commandId,
+            action,
+            pose: event.pose,
+            at: Date.now(),
+            state: "pending",
+            summary: "Waiting for the result…",
+          },
+          ...items,
+        ].slice(0, 6),
+      );
       setMessage("");
       try {
         let result;
@@ -418,6 +462,7 @@ export function useGestureModes({
           action === "reader.scrollUp"
         ) {
           const area =
+            document.querySelector("[data-gesture-reader='panel']") ||
             document.querySelector(".gesture-workspace__text") ||
             document.querySelector(".home-main");
           if (!area) throw new Error("No reading area is open.");
@@ -433,17 +478,52 @@ export function useGestureModes({
           const label =
             cfg.mode === "cooking" && instructionList.length
               ? `Step ${at + 1}: ${instructionList[at].slice(0, 120)}`
-              : "Activity";
+              : MODES[cfg.mode];
           result = await timersRef.current.start(cfg.timerSeconds, label);
         } else result = await h.perform(action, cfg, cameraRef.current);
-        if (
-          alive.current &&
-          (!navigation(action) ||
-            selectionRevision === navigationRevision.current)
-        )
-          setMessage(result?.summary || "Command sent.");
+        if (alive.current) {
+          const summary =
+            result?.summary || "Command sent; no result was provided.";
+          setHistory((items) =>
+            items.map((item) =>
+              item.id === commandId
+                ? {
+                    ...item,
+                    state:
+                      result?.ok === false
+                        ? "failed"
+                        : result?.ok === true
+                          ? "done"
+                          : "requested",
+                    summary,
+                  }
+                : item,
+            ),
+          );
+          if (
+            epoch === session.current &&
+            (!navigation(action) ||
+              selectionRevision === navigationRevision.current)
+          )
+            setMessage(summary);
+        }
       } catch (error) {
-        if (alive.current) setMessage(String(error?.message || error));
+        if (alive.current) {
+          const summary = String(error?.message || error);
+          setHistory((items) =>
+            items.map((item) =>
+              item.id === commandId
+                ? { ...item, state: "failed", summary }
+                : item,
+            ),
+          );
+          if (
+            epoch === session.current &&
+            (!navigation(action) ||
+              selectionRevision === navigationRevision.current)
+          )
+            setMessage(summary);
+        }
       } finally {
         actionBusy.current = false;
         currentAction.current = "";
@@ -452,6 +532,7 @@ export function useGestureModes({
         if (
           queued &&
           !disposed &&
+          (running.current || queued.event.pose === "manual") &&
           queued.epoch === session.current &&
           queued.mode === configRef.current.mode &&
           !context.current.blocked &&
@@ -483,21 +564,30 @@ export function useGestureModes({
       clearTimeout(timer);
       polling = true;
       const startedAt = performance.now();
+      const operation = controlToken.current;
       let delay = 1000;
       try {
         const snapshot = await cameraRef.current.poll();
         if (disposed) return;
+        if (operation !== controlToken.current) {
+          refreshPending = true;
+          return;
+        }
         if (snapshot.running && !running.current) {
           cancelPtt();
           session.current++;
           latestFrame.current = -1;
-          engine.current = makeEngine();
+          engine.current = new GestureEngine(configRef.current);
         }
         running.current = Boolean(snapshot.running);
         setStatus((old) =>
-          old.running === snapshot.running &&
-          old.starting === snapshot.starting &&
-          old.summary === snapshot.summary
+          (controlBusy.current &&
+            old.starting &&
+            !snapshot.running &&
+            !snapshot.starting) ||
+          (old.running === snapshot.running &&
+            old.starting === snapshot.starting &&
+            old.summary === snapshot.summary)
             ? old
             : snapshot,
         );
@@ -534,6 +624,17 @@ export function useGestureModes({
               }),
               Boolean(c),
             );
+            const feedback = engine.current.recognition;
+            if (
+              practiceRef.current &&
+              !pausedRef.current &&
+              feedback.phase === "recognized" &&
+              feedback.pose === targetRef.current &&
+              !passedRef.current.includes(feedback.pose)
+            ) {
+              passedRef.current = [...passedRef.current, feedback.pose];
+              setPracticePassed(passedRef.current);
+            }
             if (c) {
               if (!visible || context.current.blocked)
                 throw new Error(
@@ -547,25 +648,35 @@ export function useGestureModes({
                 );
               else if (
                 snapshot.frame.pose !== "FIST" &&
-                snapshot.frame.score >= configRef.current.confidence &&
+                (snapshot.frame.handCount === undefined ||
+                  snapshot.frame.handCount === 1) &&
+                Date.now() - snapshot.frame.observedAt >= 0 &&
+                Date.now() - snapshot.frame.observedAt <= 600 &&
                 validLandmarks(snapshot.frame.landmarks)
               ) {
                 c.samples.push(snapshot.frame.landmarks);
                 setMessage("Hold still: " + c.samples.length + " / 8 frames.");
                 if (c.samples.length >= 8) {
                   const template = calibratePose(c.name, c.samples, poseId());
+                  const similar = configRef.current.customPoses.find(
+                    (pose) =>
+                      featureDistance(pose.features, template.features) < 0.16,
+                  );
+                  if (similar)
+                    throw new Error(
+                      `This pose is too similar to ${similar.name}. Choose a more distinct hand shape.`,
+                    );
                   const next = sanitizeConfig({
                     ...configRef.current,
                     customPoses: [...configRef.current.customPoses, template],
                   });
-                  configRef.current = next;
-                  setConfigState(next);
+                  changeConfig(next);
                   calibration.current = null;
                   setCalibrating(false);
                   setMessage(
                     "Saved pose " +
                       template.name +
-                      ". Lower your hand, stop the camera and choose its action.",
+                      ". Choose its action on the gesture card.",
                   );
                 }
               }
@@ -585,7 +696,7 @@ export function useGestureModes({
       } finally {
         polling = false;
         if (!disposed) {
-          // Include bridge time in the period; never overlap native requests.
+          setRecognition(engine.current.recognition);
           const wait = refreshPending
             ? 0
             : Math.max(0, delay - (performance.now() - startedAt));
@@ -595,7 +706,7 @@ export function useGestureModes({
       }
     };
     refresh.current = () => {
-      if (enabled) void poll();
+      void poll();
     };
     const flush = () => {
       try {
@@ -639,6 +750,7 @@ export function useGestureModes({
     return () => {
       disposed = true;
       alive.current = false;
+      cancelPendingControl();
       clearTimeout(timer);
       refresh.current = () => {};
       cancelPtt();
@@ -647,19 +759,19 @@ export function useGestureModes({
       window.removeEventListener("beforeunload", flush);
       window.removeEventListener("jarvis:gesture-manual", manual);
     };
-  }, [enabled]);
+  }, [enabled, changeConfig, cancelPendingControl]);
 
   const control = async (start) => {
-    if (busy) return;
     if (start && !enabled) {
       setMessage(
-        "Camera gestures require a supported native app or the Windows webcam preview.",
+        "Camera gestures require the native Android app or Windows webcam preview.",
       );
       return;
     }
+    if (start && controlBusy.current) return;
+    const token = ++controlToken.current;
+    controlBusy.current = true;
     setBusy(true);
-    sessionMode.current.paused = false;
-    setPaused(false);
     setMessage("");
     try {
       if (!start) {
@@ -676,67 +788,86 @@ export function useGestureModes({
       if (start) {
         running.current = false;
         latestFrame.current = -1;
-        engine.current = makeEngine();
+        engine.current = new GestureEngine(configRef.current);
+        setStatus({
+          running: false,
+          starting: true,
+          summary: "Opening the gesture camera…",
+        });
       }
+      setRecognition(engine.current.recognition);
       const response = await (start
         ? cameraRef.current.start(configRef.current)
         : cameraRef.current.stop());
+      if (token !== controlToken.current) return;
       setMessage(response.ok ? "" : response.summary || "");
-      // Use the single polling loop, including during a pending bridge call.
+      // One serialized polling loop owns snapshots; control calls only request a
+      // refresh so Start/Stop cannot overlap a native bridge request.
       refresh.current();
     } catch (error) {
-      setMessage(String(error?.message || error));
+      if (token === controlToken.current) {
+        setMessage(String(error?.message || error));
+        if (start)
+          setStatus({
+            running: false,
+            starting: false,
+            summary: "Camera could not start.",
+          });
+        else
+          setStatus((old) => ({
+            ...old,
+            summary: "Could not confirm the camera stopped. Try Stop again.",
+          }));
+      }
     } finally {
-      setBusy(false);
+      if (token === controlToken.current) {
+        controlBusy.current = false;
+        setBusy(false);
+      }
     }
   };
   return {
     config,
     status,
     busy,
-    paused,
-    practice,
-    practicePose,
-    practiceCount,
     timers,
-    setPaused: (value) => {
-      if (pttOwned.current) host.cancelListen?.();
-      pttOwned.current = false;
-      pttAttempt.current++;
-      sessionMode.current.paused = value;
-      queuedNavigation.current = null;
-      calibration.current = null;
-      setCalibrating(false);
-      setPaused(value);
-      engine.current = makeEngine();
-      setMessage(
-        value
-          ? "Gestures paused. Camera stays on; buttons still work."
-          : "Gestures resumed. Lower your hand before making a pose.",
-      );
-    },
-    setPractice: (value) => {
-      if (pttOwned.current) host.cancelListen?.();
-      pttOwned.current = false;
-      pttAttempt.current++;
-      sessionMode.current = { paused: false, practice: value };
-      setPaused(false);
-      setPractice(value);
-      setPracticePose("");
-      engine.current = makeEngine();
-      queuedNavigation.current = null;
-      setMessage(
-        value
-          ? "Practice only. No activity actions run. A fist still stops the camera."
-          : "Practice ended. Lower your hand before using controls.",
-      );
-    },
     message,
     step,
     page,
     bookmarks,
     calibrating,
     cursor,
+    recognition,
+    practice,
+    paused,
+    listening,
+    setPaused: (value) => {
+      pausedRef.current = Boolean(value);
+      setPausedState(Boolean(value));
+      resetInteraction();
+      setMessage(
+        value
+          ? "Gestures paused. You can still use the buttons."
+          : "Lower your hand, then resume gestures.",
+      );
+    },
+    practiceTarget,
+    practicePassed,
+    setPractice,
+    setPracticeTarget: (pose) => {
+      targetRef.current = pose;
+      setPracticeTargetState(pose);
+      // Re-testing a pose requires fresh evidence too.
+      passedRef.current = passedRef.current.filter((p) => p !== pose);
+      setPracticePassed(passedRef.current);
+      resetInteraction();
+    },
+    switchMode: (mode) => {
+      if (hasOwn(MODES, mode)) changeConfig({ mode });
+    },
+    history,
+    blocked: Boolean(blocked),
+    availability: host.availability || {},
     supported: enabled,
     camera,
     latestReply,
@@ -750,6 +881,7 @@ export function useGestureModes({
       ),
     selectPage: (n) => {
       navigationRevision.current++;
+      queuedNavigation.current = null;
       if (actionBusy.current && currentAction.current.startsWith("reader."))
         host.stopSpeech?.();
       const value = clampIndex(n, readerPages(configRef.current.reader).length);
@@ -759,6 +891,7 @@ export function useGestureModes({
     },
     selectStep: (n) => {
       navigationRevision.current++;
+      queuedNavigation.current = null;
       if (actionBusy.current && currentAction.current.startsWith("steps."))
         host.stopSpeech?.();
       const value = clampIndex(

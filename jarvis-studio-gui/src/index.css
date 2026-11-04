@@ -1295,3 +1295,6 @@ kbd {
 .perm-dialog--ask { border-color: color-mix(in oklab, var(--accent) 45%, transparent);
   background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 6%, transparent), rgba(10,16,24,0.98)); }
 .perm-dialog--ask .perm-icon, .perm-dialog--ask .perm-kicker { color: var(--accent); }
+
+.explore-notice{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);z-index:80;max-width:calc(100vw - 28px);padding:9px 13px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:9px;color:var(--text-sec);font-size:11px;box-shadow:0 4px 16px #0004;}
+.explore-notice button{background:none;border:0;color:var(--accent);font:inherit;text-decoration:underline;cursor:pointer;}

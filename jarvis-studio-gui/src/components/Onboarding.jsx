@@ -73,6 +73,10 @@ export default function Onboarding({ sysInfo, onSave, onExplore }) {
         <button className="onboard-go" disabled={!canFinish} onClick={finish}>
           Start JARVIS →
         </button>
+        {onExplore && <>
+          <button type="button" className="btn btn--ghost" style={{width:"100%",marginTop:10}} onClick={onExplore}>Explore without an AI key</button>
+          <p className="onboard-hint" style={{marginTop:8}}>Try gesture practice, local controls and settings. AI chat needs a provider key, which you can add later in Settings.</p>
+        </>}
       </div>
     </div>
   );
