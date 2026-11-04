@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from "react";
 import QRCode from "qrcode";
-import GesturePanel from "../gestures/GesturePanel";
 import TaskPasskeySettings from "./TaskPasskeySettings";
 import { Icon } from "../hud/icons";
 import { Card, Row, Switch, Guide, Note, ConfirmButton, ChipList, AddField } from "./controls";
@@ -926,7 +925,7 @@ const SHORTCUTS = [
 export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocation, onRefreshModels, onRerankModels, onRepairSetup,
   taskPasskeyState, onLoadTaskPasskey, onSetTaskPasskey,
   devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState, mcpState, connState,
-  onOpenCustomize, initialSection, gestureControls, gestureRoutines }) {
+  onOpenCustomize, initialSection, onOpenHandsFree, gestureControls }) {
   // Re-discover models when the panel opens so the dropdown is current (e.g. a
   // local Ollama model pulled since launch, or a key just added in another client).
   // Cheap — the backend skips the network when credentials are unchanged.
@@ -1261,7 +1260,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
             </>)}
 
             {current.id === "voice" && (<>
-              {gestureControls && <GesturePanel controls={gestureControls} routines={gestureRoutines||[]}/>}
+              {gestureControls && <button type="button" className="btn" onClick={onOpenHandsFree}>Open Hands-free activities and gesture setup</button>}
               <Card title="Speech">
                 <Row title="Speech-to-text" desc="Audio is transcribed online by Groq Whisper using your Groq key. Local speech models are never loaded or used as a fallback.">
                   <span className="field">Groq Whisper — online</span>

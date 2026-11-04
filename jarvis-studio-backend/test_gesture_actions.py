@@ -123,3 +123,19 @@ class GestureTransportTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(self.runtime.send_to_current.call_args.args[1]["ok"])
         finally:
             self.runtime._pipeline_lock.release()
+
+    async def test_structured_timer_metadata_reaches_the_local_requester(self):
+        response = {"ok": True, "summary": "Started", "timers": [{"id": "activity_one", "deadline": 10000}]}
+        with patch("activity_timers.perform", return_value=response) as perform:
+            await self.submit("timer.start", token="one", seconds=60, label="Step 1")
+            await self.finish()
+            self.assertEqual(self.runtime.send_to_current.call_args.args[1]["timers"], response["timers"])
+            self.assertEqual(perform.call_args.args[0], "timer.start")
+
+    async def test_remote_cannot_list_or_cancel_local_activity_timers(self):
+        self.runtime.is_current_sender_remote = lambda: True
+        with patch("activity_timers.perform") as perform:
+            await self.submit("timer.list", request_id="gesture_list")
+            await self.submit("timer.cancel", request_id="gesture_cancel", timer_id="activity_one")
+            perform.assert_not_called()
+            self.assertEqual(len(self.jobs), 0)

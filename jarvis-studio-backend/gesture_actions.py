@@ -19,7 +19,7 @@ TV_ACTIONS = {
     "tv.up": ("volume_up", "5"), "tv.down": ("volume_down", "5"),
 }
 REMOTE_ACTIONS = frozenset(MEDIA_KEYS) | frozenset(SLIDE_KEYS) | {"mic.mute", "mic.unmute"}
-LOCAL_ACTIONS = REMOTE_ACTIONS | frozenset(TV_ACTIONS) | {"timer.start", "read_aloud"}
+LOCAL_ACTIONS = REMOTE_ACTIONS | frozenset(TV_ACTIONS) | {"timer.start", "timer.list", "timer.cancel", "read_aloud"}
 
 
 def microphone_mute(mute: bool) -> tuple[bool, str]:
@@ -105,6 +105,7 @@ async def submit(data: dict, runtime) -> None:
 
     async def run():
         ok, summary = False, "Gesture command failed."
+        extra = {}
         try:
             if runtime.is_current_sender_remote():
                 if runtime._remote_input_lock is None:
@@ -114,6 +115,12 @@ async def submit(data: dict, runtime) -> None:
                     if error:
                         raise ValueError(error)
                     ok, summary = await asyncio.get_running_loop().run_in_executor(None, execute, action, data)
+            elif action.startswith("timer."):
+                import activity_timers
+                response = await asyncio.get_running_loop().run_in_executor(None, activity_timers.perform, action, data)
+                ok, summary = response["ok"], response["summary"]
+                if "timers" in response:
+                    extra["timers"] = response["timers"]
             elif action == "read_aloud":
                 text = str(data.get("text") or "").strip()
                 if not text or len(text) > 4000:
@@ -136,7 +143,7 @@ async def submit(data: dict, runtime) -> None:
             raise
         except Exception as exc:  # noqa: BLE001 — return the real result
             summary = str(exc)
-        result = {"request_id": request_id, "ok": bool(ok), "summary": str(summary)}
+        result = {"request_id": request_id, "ok": bool(ok), "summary": str(summary), **extra}
         _results[key] = result
         while len(_results) > 256:
             completed = next((k for k, value in _results.items() if value is not None), None)

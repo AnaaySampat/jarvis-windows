@@ -50,13 +50,14 @@ jobs:
       - name: Backend tests
         working-directory: jarvis-studio-backend
         run: |
-          pip install websockets httpx cryptography rfc8785 numpy pyaudio faster-whisper pillow
+          pip install websockets httpx cryptography rfc8785 numpy pyaudio pillow fpdf2 pypdf jsonschema
           python -m unittest discover -s . -p "test_*.py" -t .
       - name: Frontend checks
         working-directory: jarvis-studio-gui
         run: |
           npm ci
           npm run icons
+          npm run typecheck
           npm run lint
           npm test
 

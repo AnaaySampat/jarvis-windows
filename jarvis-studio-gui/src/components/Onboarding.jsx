@@ -5,7 +5,7 @@ import { useState } from "react";
    storage folder, then hands them to the backend via the same set_config path
    the Settings panel uses. Keys are stored in app data — never in committed
    source. */
-export default function Onboarding({ sysInfo, onSave }) {
+export default function Onboarding({ sysInfo, onSave, onExplore }) {
   const defaultStorage = sysInfo.storage_dir || "";
   const [groqKey, setGroqKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
@@ -32,20 +32,20 @@ export default function Onboarding({ sysInfo, onSave }) {
           <span className="onboard-kicker">First-run setup</span>
           <h2>Welcome to JARVIS</h2>
           <p className="onboard-sub">
-            Add at least one AI provider key and choose where JARVIS should keep the files it
+            Connect an AI provider and choose where JARVIS should keep the files it
             creates. You can change all of this later in Settings.
           </p>
         </div>
 
         <div className="onboard-sec">
-          <label>Groq API keys {sysInfo.has_groq_key && <span className="onboard-ok">✓ set</span>}</label>
-          <textarea rows={2} value={groqKey} onChange={(e) => setGroqKey(e.target.value)}
+          <label htmlFor="onboard-groq">Groq API keys {sysInfo.has_groq_key && <span className="onboard-ok">✓ set</span>}</label>
+          <textarea id="onboard-groq" rows={2} value={groqKey} onChange={(e) => setGroqKey(e.target.value)}
                     placeholder="gsk_…  (groq.com/keys)" />
         </div>
 
         <div className="onboard-sec">
-          <label>Gemini API keys {sysInfo.has_gemini_key && <span className="onboard-ok">✓ set</span>}</label>
-          <textarea rows={2} value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)}
+          <label htmlFor="onboard-gemini">Gemini API keys {sysInfo.has_gemini_key && <span className="onboard-ok">✓ set</span>}</label>
+          <textarea id="onboard-gemini" rows={2} value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)}
                     placeholder="AIza…  (aistudio.google.com/apikey)" />
           <span className="onboard-hint">
             Free-tier limits are counted per key. Paste as many as you have, one per line,
@@ -54,8 +54,8 @@ export default function Onboarding({ sysInfo, onSave }) {
         </div>
 
         <div className="onboard-sec">
-          <label>Storage folder</label>
-          <input type="text" value={storageDir} onChange={(e) => setStorageDir(e.target.value)}
+          <label htmlFor="onboard-storage">Storage folder</label>
+          <input id="onboard-storage" type="text" value={storageDir} onChange={(e) => setStorageDir(e.target.value)}
                  placeholder="C:\Users\you\Jarvis" />
           <span className="onboard-hint">
             Created if it doesn't exist, with images / recordings / documents subfolders.
@@ -68,6 +68,8 @@ export default function Onboarding({ sysInfo, onSave }) {
           </div>
         )}
 
+        <button type="button" className="onboard-go" onClick={onExplore}>Explore without an AI key</button>
+        <p className="onboard-hint">Read text, follow steps and practice gestures now. Connect AI later in Settings.</p>
         <button className="onboard-go" disabled={!canFinish} onClick={finish}>
           Start JARVIS →
         </button>

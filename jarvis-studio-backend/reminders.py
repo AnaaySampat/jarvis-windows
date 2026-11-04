@@ -2,7 +2,9 @@
 5 minutes".
 
 Unlike :mod:`routines` (recurring, day-based), a reminder fires exactly **once**
-at an absolute moment, then deletes itself. Persisted via :mod:`memory_store` to
+at an absolute moment. Ordinary reminders are deleted after firing; Hands-free
+timers retain a bounded completion receipt for their activity view. Persisted
+via :mod:`memory_store` to
 ``<storage-root>/memory/reminders.json`` so a restart doesn't lose them.
 
 ``due()`` returns the reminders whose moment has arrived and removes them, so the
@@ -140,13 +142,21 @@ def due(now_epoch: "float | None" = None) -> list:
     nowt = now_epoch if now_epoch is not None else time.time()
     with _lock:
         items = _all()
-        fired = [r for r in items if (r.get("at") or 0) <= nowt]
+        fired = [r for r in items if (r.get("at") or 0) <= nowt
+                 and r.get("state") != "finished"]
         if fired:
-            _save([r for r in items if (r.get("at") or 0) > nowt])
+            # Hands-free keeps a bounded receipt so reloading its activity can
+            # distinguish completion from cancellation without re-firing it.
+            kept = [r for r in items if r not in fired]
+            kept += [{**r, "state": "finished"} for r in fired if r.get("source") == "hands-free"]
+            _save(kept)
     return fired
 
 
 def spoken_for(reminder: dict) -> str:
+    if reminder.get("source") == "hands-free":
+        duration = _fmt_duration(reminder.get("seconds", 0))
+        return f"{duration} timer finished for {reminder.get('label') or 'your activity'}."
     text = (reminder.get("text") or "").strip()
     if reminder.get("timer") and not text:
         return "Your timer's up, sir."
@@ -156,7 +166,7 @@ def spoken_for(reminder: dict) -> str:
 
 
 def list_text() -> str:
-    items = sorted(_all(), key=lambda r: r.get("at", 0))
+    items = sorted((r for r in _all() if r.get("state") != "finished"), key=lambda r: r.get("at", 0))
     if not items:
         return "You have no reminders set, sir."
     lines = []

@@ -1,3 +1,4 @@
+import HeaderTools from "./HeaderTools";
 /* HudApp.jsx — the home screen: a header (menus + quick controls), JARVIS at the
    centre (time, the orb, what it's doing, its last reply and an ask box), and the
    live cards in a column on each side. Responsive: it lays out for the window
@@ -12,6 +13,7 @@ import "./home.css";
 import Orb from "./Orb";
 import Reactor, { Waveform } from "./Reactor";
 import "./ironman.css";
+import "./responsive.css";
 import { plainPreview as plain } from "../utils/markdown";
 import { Icon } from "./icons";
 import {
@@ -104,6 +106,7 @@ export function JarvisHUD({
   config,
   screen,                       // home-screen look & layout (see the header comment)
   onArrange,                    // a card was dragged: the new {left, right} order
+  onOpenHandsFree,
   toolbar,                      // the quick controls (App owns their state)
   // live data
   status = "idle",
@@ -241,6 +244,7 @@ export function JarvisHUD({
       {hudCards && <div className="im-frame" aria-hidden="true" />}
 
       <header className="home-top">
+        <button type="button" className="home-hands-free" onClick={onOpenHandsFree}>Hands-free</button>
         <div className="home-brand">
           <span className="home-logo" aria-hidden />
           <span className="home-name">JARVIS</span>
@@ -258,7 +262,7 @@ export function JarvisHUD({
             </button>
           ))}
         </nav>
-        <div className="home-tools">{toolbar}</div>
+        <HeaderTools>{toolbar}</HeaderTools>
       </header>
 
       <main className="home-main">
@@ -310,7 +314,7 @@ export function JarvisHUD({
         open={skillsOpen} onClose={() => setSkillsOpen(false)}
         recordings={recordings} runAction={runAction}
         allowedDirs={allowedDirs} onSaveDirs={onSaveDirs}
-        onOpenCamera={onOpenCamera}
+        onOpenHandsFree={onOpenHandsFree} onOpenCamera={onOpenCamera}
         onShowResult={() => { setSkillsOpen(false); setChatOpen(true); }}
       />
       <CapabilitiesOverlay open={capsOpen} onClose={() => setCapsOpen(false)} onAsk={onAsk} />
