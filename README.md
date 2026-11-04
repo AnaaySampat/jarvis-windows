@@ -54,10 +54,13 @@ landed, and corrects itself when it didn't.
 
 ## Hand gestures (preview)
 
-Open **Settings → Voice → Hand gestures**, choose a webcam and a mode, then start.
+Open **Settings → Gestures**, choose a webcam and a mode, then start.
 The local camera worker supports media/TV, presentations, push-to-talk, instructions,
 timers, reading/bookmarks, routines, microphone mute, countdown photos, HUD pinch/drag
 and personal poses. Timing and mappings are adjustable; fist always stops the camera.
+Control has useful touch buttons; Learn teaches one illustrated gesture at a time.
+Pause hand actions, switch activities without restarting, and edit actions on their cards.
+Tune offers response presets. Touch controls work with the camera off (except photos).
 Sessions stop after five minutes or when JARVIS is hidden. See
 [gesture controls](docs/GESTURE-CONTROLS.md) for setup and physical-testing limits.
 

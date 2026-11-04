@@ -28,7 +28,8 @@ self.onmessage = async ({ data }) => {
           delegate: "CPU",
         },
         runningMode: "VIDEO",
-        numHands: 1,
+        numHands: 2,
+        cannedGesturesClassifierOptions: { maxResults: 2, scoreThreshold: 0 },
         minHandDetectionConfidence: 0.65,
         minHandPresenceConfidence: 0.65,
         minTrackingConfidence: 0.65,
@@ -51,7 +52,8 @@ self.onmessage = async ({ data }) => {
         data.image,
         performance.now(),
       );
-      const category = result.gestures[0]?.[0];
+      const categories = [...(result.gestures[0] || [])].sort((a, b) => b.score - a.score);
+      const category = categories[0];
       self.postMessage({
         type: "frame",
         frame: {
@@ -59,6 +61,8 @@ self.onmessage = async ({ data }) => {
           observedAt: data.observedAt,
           pose: labels[category?.categoryName] || "UNKNOWN",
           score: category?.score || 0,
+          runnerUpScore: categories[1]?.score || 0,
+          handCount: result.landmarks.length,
           landmarks: (result.landmarks[0] || []).map((p) => [p.x, p.y, p.z]),
         },
       });

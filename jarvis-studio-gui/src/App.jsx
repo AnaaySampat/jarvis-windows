@@ -34,6 +34,7 @@ const SETTINGS_PAGES = [
   ["routing", "Routing & Quota", "route", "rate limit benched rank"],
   ["autopilot", "Autopilot", "cursor", "operator browser desktop"],
   ["voice", "Voice", "volume", "tts wake word heartbeat digest alerts"],
+  ["gestures", "Gestures", "camera", "hand gesture camera practice motion hands free"],
   ["interface", "Interface", "layout", "overlay pill shortcuts"],
   ["files", "Files & Location", "folder", "storage folders location skills"],
   ["devices", "Devices", "phone", "phone pairing tv whatsapp"],
@@ -89,26 +90,11 @@ export default function App() {
     sendScreen, setAlwaysOnMode, setConversationModeOn, wsSend, gestureAction,
   } = useWebSocket();
 
-  const gestureCamera=useMemo(()=>new WebcamCamera(),[]);
-  const gestureHost=useMemo(()=>windowsGestureHost({
-    listen:triggerListen,pttStart,finishListen,stopSpeech,request:gestureAction,
-    order:screen?.order||{left:["system","power","agenda"],right:["weather","network","terminal"]},
-    sendScreen,routines:Array.isArray(memory?.routines)?memory.routines:[],runRoutine,
-    ready:status==="idle" && !agentTasks.some((task)=>task.status==="running"),
-    armControl:()=>runAction({type:"computer",do:"arm"}),
-  }),[triggerListen,pttStart,finishListen,stopSpeech,gestureAction,screen,sendScreen,memory,runRoutine,status,agentTasks,runAction]);
-  const gestures=useGestureModes({
-    camera:gestureCamera,enabled:true,host:gestureHost,
-    blocked:Boolean(permissionRequest||clarifyRequest),
-    canListen:status==="idle" && !agentTasks.some((task)=>task.status==="running"),
-    latestReply:[...messages].reverse().find((message)=>message.role==="jarvis")?.text||"",
-  });
-  useEffect(()=>()=>{void gestureCamera.stop();},[gestureCamera]);
-  useEffect(()=>{if(gestures.config.mode==="routines")listMemory();},[gestures.config.mode,listMemory]);
 
   // App owns the overlay state so JARVIS can drive them via ui_action too.
   const [chatOpen, setChatOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [exploring, setExploring] = useState(false);
   const [settingsPage, setSettingsPage] = useState(null);   // section to open Settings at
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [capsOpen, setCapsOpen] = useState(false);
@@ -130,6 +116,34 @@ export default function App() {
     setSettingsPage(page);
     setShowSettings(true);
   }, []);
+
+  const gestureCamera=useMemo(()=>new WebcamCamera(),[]);
+  const gestureHost=useMemo(()=>windowsGestureHost({
+    listen:triggerListen,pttStart,finishListen,stopSpeech,request:gestureAction,
+    order:screen?.order||{left:["system","power","agenda"],right:["weather","network","terminal"]},
+    sendScreen,routines:Array.isArray(memory?.routines)?memory.routines:[],runRoutine,
+    ready:status==="idle" && !agentTasks.some((task)=>task.status==="running"),
+    armControl:()=>runAction({type:"computer",do:"arm"}),
+    availability: {
+      pc: { ready: Boolean(isConnected && controlState.armed), detail: controlState.armed ? "PC controls are armed. Keep JARVIS visible beside your presentation." : isConnected ?
+        "Enable PC controls, then keep JARVIS visible beside your presentation." : "Connect JARVIS to its local backend first.",
+        setupLabel: "Enable PC controls", setup: () => runAction({type:"computer",do:"arm"}) },
+      tv: { ready: isConnected ? undefined : false, detail: "Pair your TV in Devices. Keep JARVIS visible while using gestures.",
+        setupLabel: "Open Devices", setup: () => openSettings("devices") },
+      media: { ready: isConnected, detail: isConnected ? "Controls music playing on this PC." : "Start the JARVIS backend to control music." },
+    },
+  }),[triggerListen,pttStart,finishListen,stopSpeech,gestureAction,screen,sendScreen,memory,runRoutine,status,agentTasks,runAction,isConnected,openSettings,controlState.armed]);
+  const gestures=useGestureModes({
+    camera:gestureCamera,enabled:true,host:gestureHost,
+    blocked:Boolean(permissionRequest||clarifyRequest),
+    listening:status==="listening",
+    canListen:status==="idle" && !agentTasks.some((task)=>task.status==="running"),
+    latestReply:[...messages].reverse().find((message)=>message.role==="jarvis")?.text||"",
+  });
+  useEffect(()=>()=>{void gestureCamera.stop();},[gestureCamera]);
+  useEffect(()=>{if(gestures.config.mode==="routines")listMemory();},[gestures.config.mode,listMemory]);
+
+
 
   // Keyboard: Ctrl+, opens Settings (the desktop-app convention), Ctrl+K the command
   // palette, and Esc closes the topmost panel. Panels that use Esc themselves first
@@ -516,6 +530,7 @@ export default function App() {
   return (
     <>
       <GestureWorkspace controls={gestures} />
+      {exploring && sysInfo.needs_setup && <div role="status" className="explore-notice">Exploring without AI · local features and gesture practice are available. <button type="button" onClick={() => openSettings("keys")}>Add an AI key</button></div>}
       <JarvisHUD
         config={hudConfig}
         toolbar={toolbar}
@@ -673,13 +688,13 @@ export default function App() {
       <BootOverlay connected={isConnected} />
 
       {/* First-run setup: API keys + storage location (blocks until done) */}
-      {isConnected && sysInfo.needs_setup && (
-        <Onboarding sysInfo={sysInfo} onSave={(cfg) => sendConfig(cfg)} />
+      {isConnected && sysInfo.needs_setup && !exploring && (
+        <Onboarding sysInfo={sysInfo} onSave={(cfg) => sendConfig(cfg)} onExplore={() => setExploring(true)} />
       )}
 
       {/* First-run asset download (Chromium / Whisper / Piper). Shown after the
           API-key onboarding so the flow reads keys → setup → ready. */}
-      {isConnected && !sysInfo.needs_setup && (
+      {isConnected && (!sysInfo.needs_setup || exploring) && (
         <SetupProgress progress={setupProgress} onRepair={repairSetup} />
       )}
 

@@ -886,6 +886,8 @@ const SECTIONS = [
     words: "autopilot browser desktop operator reasoning vision screenshot agent mode agents simple mode coordinator plan specialist" },
   { id: "voice", label: "Voice", icon: "volume", desc: "How JARVIS sounds, wakes up and speaks up on its own.",
     words: "voice speech transcription stt whisper groq microphone tts piper elevenlabs chirp wake word alerts heartbeat checklist digest nightly proactive" },
+  { id: "gestures", label: "Gestures", icon: "camera", desc: "Control JARVIS with your hands. Try a pose, practice and choose its action.",
+    words: "hand gesture camera practice motion hands free recognition poses" },
   { id: "interface", label: "Interface", icon: "layout", desc: "The floating pill, the home screen and keyboard shortcuts.",
     words: "overlay pill floating interface apps hide keyboard shortcuts customize theme" },
   { id: "files", label: "Files & Location", icon: "folder", desc: "Where JARVIS saves things, what it may read, and where you are.",
@@ -909,7 +911,7 @@ const AGENT_MODES = [
 
 const NAV_GROUPS = [
   { label: "Intelligence", ids: ["ai", "keys", "routing", "autopilot"] },
-  { label: "Experience", ids: ["voice", "interface", "files"] },
+  { label: "Experience", ids: ["voice", "gestures", "interface", "files"] },
   { label: "Connections", ids: ["devices", "connectors", "mcp"] },
   { label: "System", ids: ["system"] },
 ];
@@ -1260,8 +1262,14 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
               <QuotaSection sysInfo={sysInfo} onSave={onSave} />
             </>)}
 
+            {current.id === "gestures" && (
+              gestureControls
+                ? <GesturePanel controls={gestureControls} routines={gestureRoutines||[]}/>
+                : <Note>Gesture controls are unavailable in this session.</Note>
+            )}
+
             {current.id === "voice" && (<>
-              {gestureControls && <GesturePanel controls={gestureControls} routines={gestureRoutines||[]}/>}
+              <Note>For hands-free camera controls, <button type="button" className="settings-link" onClick={() => go("gestures")}>Open gesture controls</button>.</Note>
               <Card title="Speech">
                 <Row title="Speech-to-text" desc="Audio is transcribed online by Groq Whisper using your Groq key. Local speech models are never loaded or used as a fallback.">
                   <span className="field">Groq Whisper — online</span>

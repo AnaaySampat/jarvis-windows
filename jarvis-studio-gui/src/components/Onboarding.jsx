@@ -5,7 +5,7 @@ import { useState } from "react";
    storage folder, then hands them to the backend via the same set_config path
    the Settings panel uses. Keys are stored in app data — never in committed
    source. */
-export default function Onboarding({ sysInfo, onSave }) {
+export default function Onboarding({ sysInfo, onSave, onExplore }) {
   const defaultStorage = sysInfo.storage_dir || "";
   const [groqKey, setGroqKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
@@ -71,6 +71,10 @@ export default function Onboarding({ sysInfo, onSave }) {
         <button className="onboard-go" disabled={!canFinish} onClick={finish}>
           Start JARVIS →
         </button>
+        {onExplore && <>
+          <button type="button" className="btn btn--ghost" style={{width:"100%",marginTop:10}} onClick={onExplore}>Explore without an AI key</button>
+          <p className="onboard-hint" style={{marginTop:8}}>Try gesture practice, local controls and settings. AI chat needs a provider key, which you can add later in Settings.</p>
+        </>}
       </div>
     </div>
   );

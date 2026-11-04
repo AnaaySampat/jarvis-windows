@@ -15,6 +15,7 @@ interface Options {
   runRoutine: (id: string) => boolean;
   ready: boolean;
   armControl: () => unknown;
+  availability?: Record<string, { ready?: boolean; detail: string; setup?: () => unknown; setupLabel?: string }>;
 }
 export function windowsGestureHost(options: Options) {
   return {
