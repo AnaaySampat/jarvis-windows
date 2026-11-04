@@ -22,6 +22,11 @@ export function windowsGestureHost(options: Options) {
     ...options,
     cancelListen: options.stopSpeech,
     speak: (text: string) => options.request("read_aloud", { text }),
+    startTimer: (data: { seconds: number; label: string; token: string }) =>
+      options.request("timer.start", data),
+    listTimers: () => options.request("timer.list"),
+    cancelTimer: (id: string) =>
+      options.request("timer.cancel", { timer_id: id }),
     reorder(from: string, to: string) {
       const order = reorderCards(options.order, from, to);
       if (order !== options.order) options.sendScreen({ order });

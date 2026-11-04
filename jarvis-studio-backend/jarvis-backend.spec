@@ -56,6 +56,8 @@ hiddenimports = [
     "news",
     "memory_store",
     "reminders",
+    "activity_timers",
+    "gesture_actions",
     "routines",
     "playbooks",
     # Root modules main.py imports lazily (inside functions) or that are new.

@@ -1,3 +1,4 @@
+import { useActivityTimers } from "./timers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ACTIONS,
@@ -13,7 +14,13 @@ import {
   featureDistance,
   MODES,
 } from "./engine";
-import { clampIndex, documentId, loadBookmarks, poseId, safeStorage } from "./storage";
+import {
+  clampIndex,
+  documentId,
+  loadBookmarks,
+  poseId,
+  safeStorage,
+} from "./storage";
 
 const policyKey = (config) =>
   JSON.stringify([
@@ -48,7 +55,9 @@ export function useGestureModes({
   const [message, setMessage] = useState("");
   const [stepIndex, setStep] = useState(0);
   const [pageIndex, setPage] = useState(0);
-  const [bookmarks, setBookmarks] = useState(() => loadBookmarks(safeStorage()));
+  const [bookmarks, setBookmarks] = useState(() =>
+    loadBookmarks(safeStorage()),
+  );
   const bookmarksRef = useRef(bookmarks);
   const [calibrating, setCalibrating] = useState(false);
   const [cursor, setCursor] = useState(null);
@@ -63,6 +72,12 @@ export function useGestureModes({
   const passedRef = useRef([]);
   const [history, setHistory] = useState([]);
   const historySeq = useRef(0);
+  const timers = useActivityTimers(host);
+  const timersRef = useRef(timers);
+  useEffect(() => {
+    timersRef.current = timers;
+  }, [timers]);
+  const navigationRevision = useRef(0);
   const pages = useMemo(() => readerPages(config.reader), [config.reader]);
   const steps = useMemo(
     () =>
@@ -101,7 +116,9 @@ export function useGestureModes({
       try {
         saveConfig(configRef.current, localStorage);
       } catch {
-        setMessage("Could not save gesture settings: device storage is full or unavailable.");
+        setMessage(
+          "Could not save gesture settings: device storage is full or unavailable.",
+        );
       }
     }, 500);
     return () => clearTimeout(timer);
@@ -109,9 +126,14 @@ export function useGestureModes({
   useEffect(() => {
     const timer = setTimeout(() => {
       try {
-        localStorage.setItem("jarvis.gesture.bookmarks.v2", JSON.stringify(bookmarksRef.current));
+        localStorage.setItem(
+          "jarvis.gesture.bookmarks.v2",
+          JSON.stringify(bookmarksRef.current),
+        );
       } catch {
-        setMessage("Could not save bookmarks: device storage is full or unavailable.");
+        setMessage(
+          "Could not save bookmarks: device storage is full or unavailable.",
+        );
       }
     }, 500);
     return () => clearTimeout(timer);
@@ -135,6 +157,16 @@ export function useGestureModes({
         ...current,
         ...(typeof patch === "function" ? patch(current) : patch),
       });
+      if (next.reader !== current.reader) {
+        setPage(0);
+        context.current.page = 0;
+        navigationRevision.current++;
+      }
+      if (next.steps !== current.steps) {
+        setStep(0);
+        context.current.step = 0;
+        navigationRevision.current++;
+      }
       configRef.current = next;
       if (policyKey(current) !== policyKey(next)) resetInteraction(next);
       if (current.mode !== next.mode) {
@@ -142,7 +174,9 @@ export function useGestureModes({
         setPracticeTargetState(null);
         passedRef.current = [];
         setPracticePassed([]);
-        setMessage(running.current ? "Lower your hand, then use your new controls." : "");
+        setMessage(
+          running.current ? "Lower your hand, then use your new controls." : "",
+        );
       }
       setConfigState(next);
     },
@@ -155,7 +189,9 @@ export function useGestureModes({
     setPausedState(false);
     resetInteraction();
     setMessage(
-      value ? "Practice only. No commands will run." : "Lower your hand to start using gestures.",
+      value
+        ? "Practice only. No commands will run."
+        : "Lower your hand to start using gestures.",
     );
   };
   const changeBookmarks = (update) => {
@@ -169,7 +205,6 @@ export function useGestureModes({
   }, []);
 
   useEffect(() => {
-    if (!enabled) return;
     alive.current = true;
     let disposed = false,
       timer;
@@ -200,7 +235,11 @@ export function useGestureModes({
       if (event.phase === "up") {
         const start = drag.current;
         drag.current = null;
-        if (start?.card && card?.dataset.gestureCard && start.card !== card.dataset.gestureCard) {
+        if (
+          start?.card &&
+          card?.dataset.gestureCard &&
+          start.card !== card.dataset.gestureCard
+        ) {
           context.current.host.reorder?.(start.card, card.dataset.gestureCard);
         } else if (
           start?.button &&
@@ -218,7 +257,9 @@ export function useGestureModes({
       }
       const down = Boolean(drag.current);
       setCursor((old) =>
-        old?.x === x && old?.y === y && old?.down === down ? old : { x, y, down },
+        old?.x === x && old?.y === y && old?.down === down
+          ? old
+          : { x, y, down },
       );
     };
     const navigation = (action) =>
@@ -239,7 +280,8 @@ export function useGestureModes({
         cancelPtt();
         return;
       }
-      if (practiceRef.current || (pausedRef.current && event.pose !== "manual")) return;
+      if (practiceRef.current || (pausedRef.current && event.pose !== "manual"))
+        return;
       if (event.kind === "pointer") {
         pointer(event);
         return;
@@ -255,7 +297,8 @@ export function useGestureModes({
         }
         return;
       }
-      if (context.current.blocked || calibration.current || document.hidden) return;
+      if (context.current.blocked || calibration.current || document.hidden)
+        return;
       const action = event.action;
       if (action === "voice.ptt") {
         if (!context.current.canListen || pttOwned.current) return;
@@ -293,7 +336,8 @@ export function useGestureModes({
         } else if (context.current.canListen) {
           h.listen?.();
           setMessage("Listening requested.");
-        } else setMessage("Wait for JARVIS to finish, then try listening again.");
+        } else
+          setMessage("Wait for JARVIS to finish, then try listening again.");
         return;
       }
       if (action === "voice.stop") {
@@ -308,15 +352,25 @@ export function useGestureModes({
       if (!hasOwn(ACTIONS, action)) return;
       if (actionBusy.current) {
         if (navigation(action)) {
-          queuedNavigation.current = { event, epoch: session.current, mode: cfg.mode };
+          queuedNavigation.current = {
+            event,
+            epoch: session.current,
+            mode: cfg.mode,
+          };
           if (navigation(currentAction.current)) h.stopSpeech?.();
-          setMessage("Switching to your latest reading or instruction command...");
+          setMessage(
+            "Switching to your latest reading or instruction command...",
+          );
         } else
-          setMessage("An action is still finishing. Lower your hand and retry when it completes.");
+          setMessage(
+            "An action is still finishing. Lower your hand and retry when it completes.",
+          );
         return;
       }
       actionBusy.current = true;
       currentAction.current = action;
+      if (navigation(action)) navigationRevision.current++;
+      const selectionRevision = navigationRevision.current;
       const commandId = ++historySeq.current;
       const epoch = session.current;
       setHistory((items) =>
@@ -346,12 +400,23 @@ export function useGestureModes({
             throw new Error("Add instructions in gesture settings first.");
           const at = clampIndex(context.current.step, instructionList.length);
           const next = clampIndex(
-            at + (action === "steps.next" ? 1 : action === "steps.previous" ? -1 : 0),
+            at +
+              (action === "steps.next"
+                ? 1
+                : action === "steps.previous"
+                  ? -1
+                  : 0),
             instructionList.length,
           );
           setStep(next);
           context.current.step = next;
-          result = await h.speak(instructionList[next]);
+          const spoken = await h.speak(instructionList[next]);
+          result = spoken?.ok
+            ? {
+                ok: true,
+                summary: `Finished reading step ${next + 1} of ${instructionList.length}.`,
+              }
+            : spoken;
         } else if (action === "reader.next" || action === "reader.previous") {
           if (!readingPages.length) throw new Error("Add reading text first.");
           const next = clampIndex(
@@ -360,7 +425,10 @@ export function useGestureModes({
           );
           setPage(next);
           context.current.page = next;
-          result = { ok: true, summary: "Page " + (next + 1) + " of " + readingPages.length + "." };
+          result = {
+            ok: true,
+            summary: "Page " + (next + 1) + " of " + readingPages.length + ".",
+          };
         } else if (action === "reader.speak") {
           if (!readingPages.length) throw new Error("Add reading text first.");
           result = await h.speak(readingPages[pageAt]);
@@ -372,15 +440,27 @@ export function useGestureModes({
             page: pageAt,
             excerpt: readingPages[pageAt].slice(0, 120),
             at: Date.now(),
+            name:
+              bookmarksRef.current.find(
+                (b) => b.documentId === id && b.page === pageAt,
+              )?.name || "",
           };
           const next = [
             bookmark,
-            ...bookmarksRef.current.filter((b) => b.documentId !== id || b.page !== pageAt),
+            ...bookmarksRef.current.filter(
+              (b) => b.documentId !== id || b.page !== pageAt,
+            ),
           ].slice(0, 50);
           bookmarksRef.current = next;
           setBookmarks(next);
-          result = { ok: true, summary: "Bookmarked page " + (pageAt + 1) + "." };
-        } else if (action === "reader.scrollDown" || action === "reader.scrollUp") {
+          result = {
+            ok: true,
+            summary: "Bookmarked page " + (pageAt + 1) + ".",
+          };
+        } else if (
+          action === "reader.scrollDown" ||
+          action === "reader.scrollUp"
+        ) {
           const area =
             document.querySelector("[data-gesture-reader='panel']") ||
             document.querySelector(".gesture-workspace__text") ||
@@ -388,36 +468,61 @@ export function useGestureModes({
           if (!area) throw new Error("No reading area is open.");
           area.scrollBy({
             top:
-              (action === "reader.scrollDown" ? 1 : -1) * Math.max(150, area.clientHeight * 0.65),
+              (action === "reader.scrollDown" ? 1 : -1) *
+              Math.max(150, area.clientHeight * 0.65),
             behavior: "smooth",
           });
           result = { ok: true, summary: "Scrolled the reading area." };
+        } else if (action === "timer.start") {
+          const at = clampIndex(context.current.step, instructionList.length);
+          const label =
+            cfg.mode === "cooking" && instructionList.length
+              ? `Step ${at + 1}: ${instructionList[at].slice(0, 120)}`
+              : MODES[cfg.mode];
+          result = await timersRef.current.start(cfg.timerSeconds, label);
         } else result = await h.perform(action, cfg, cameraRef.current);
         if (alive.current) {
-          const summary = result?.summary || "Command sent; no result was provided.";
+          const summary =
+            result?.summary || "Command sent; no result was provided.";
           setHistory((items) =>
             items.map((item) =>
               item.id === commandId
                 ? {
                     ...item,
                     state:
-                      result?.ok === false ? "failed" : result?.ok === true ? "done" : "requested",
+                      result?.ok === false
+                        ? "failed"
+                        : result?.ok === true
+                          ? "done"
+                          : "requested",
                     summary,
                   }
                 : item,
             ),
           );
-          if (epoch === session.current) setMessage(summary);
+          if (
+            epoch === session.current &&
+            (!navigation(action) ||
+              selectionRevision === navigationRevision.current)
+          )
+            setMessage(summary);
         }
       } catch (error) {
         if (alive.current) {
           const summary = String(error?.message || error);
           setHistory((items) =>
             items.map((item) =>
-              item.id === commandId ? { ...item, state: "failed", summary } : item,
+              item.id === commandId
+                ? { ...item, state: "failed", summary }
+                : item,
             ),
           );
-          if (epoch === session.current) setMessage(summary);
+          if (
+            epoch === session.current &&
+            (!navigation(action) ||
+              selectionRevision === navigationRevision.current)
+          )
+            setMessage(summary);
         }
       } finally {
         actionBusy.current = false;
@@ -433,7 +538,9 @@ export function useGestureModes({
           !context.current.blocked &&
           !document.hidden
         ) {
-          void execute(queued.event).catch((error) => setMessage(String(error?.message || error)));
+          void execute(queued.event).catch((error) =>
+            setMessage(String(error?.message || error)),
+          );
         }
       }
     };
@@ -474,7 +581,10 @@ export function useGestureModes({
         }
         running.current = Boolean(snapshot.running);
         setStatus((old) =>
-          (controlBusy.current && old.starting && !snapshot.running && !snapshot.starting) ||
+          (controlBusy.current &&
+            old.starting &&
+            !snapshot.running &&
+            !snapshot.starting) ||
           (old.running === snapshot.running &&
             old.starting === snapshot.starting &&
             old.summary === snapshot.summary)
@@ -501,7 +611,9 @@ export function useGestureModes({
           );
           const c = calibration.current;
           if (c && Date.now() > c.until)
-            throw new Error("Calibration timed out. Keep one well-lit hand still and try again.");
+            throw new Error(
+              "Calibration timed out. Keep one well-lit hand still and try again.",
+            );
           if (snapshot.frame && snapshot.frame.seq !== latestFrame.current) {
             latestFrame.current = snapshot.frame.seq;
             consume(
@@ -525,7 +637,9 @@ export function useGestureModes({
             }
             if (c) {
               if (!visible || context.current.blocked)
-                throw new Error("Keep JARVIS visible and dismiss approvals before calibration.");
+                throw new Error(
+                  "Keep JARVIS visible and dismiss approvals before calibration.",
+                );
               if (Date.now() < c.startAt)
                 setMessage(
                   "Form your pose: capturing in " +
@@ -534,7 +648,8 @@ export function useGestureModes({
                 );
               else if (
                 snapshot.frame.pose !== "FIST" &&
-                (snapshot.frame.handCount === undefined || snapshot.frame.handCount === 1) &&
+                (snapshot.frame.handCount === undefined ||
+                  snapshot.frame.handCount === 1) &&
                 Date.now() - snapshot.frame.observedAt >= 0 &&
                 Date.now() - snapshot.frame.observedAt <= 600 &&
                 validLandmarks(snapshot.frame.landmarks)
@@ -544,7 +659,8 @@ export function useGestureModes({
                 if (c.samples.length >= 8) {
                   const template = calibratePose(c.name, c.samples, poseId());
                   const similar = configRef.current.customPoses.find(
-                    (pose) => featureDistance(pose.features, template.features) < 0.16,
+                    (pose) =>
+                      featureDistance(pose.features, template.features) < 0.16,
                   );
                   if (similar)
                     throw new Error(
@@ -558,7 +674,9 @@ export function useGestureModes({
                   calibration.current = null;
                   setCalibrating(false);
                   setMessage(
-                    "Saved pose " + template.name + ". Choose its action on the gesture card.",
+                    "Saved pose " +
+                      template.name +
+                      ". Choose its action on the gesture card.",
                   );
                 }
               }
@@ -579,7 +697,9 @@ export function useGestureModes({
         polling = false;
         if (!disposed) {
           setRecognition(engine.current.recognition);
-          const wait = refreshPending ? 0 : Math.max(0, delay - (performance.now() - startedAt));
+          const wait = refreshPending
+            ? 0
+            : Math.max(0, delay - (performance.now() - startedAt));
           refreshPending = false;
           timer = setTimeout(poll, wait);
         }
@@ -591,7 +711,10 @@ export function useGestureModes({
     const flush = () => {
       try {
         saveConfig(configRef.current, localStorage);
-        localStorage.setItem("jarvis.gesture.bookmarks.v2", JSON.stringify(bookmarksRef.current));
+        localStorage.setItem(
+          "jarvis.gesture.bookmarks.v2",
+          JSON.stringify(bookmarksRef.current),
+        );
       } catch {
         /* The debounced save reports failures while the app is visible. */
       }
@@ -606,18 +729,24 @@ export function useGestureModes({
       }
     };
     const manual = (event) => {
-      if (hasOwn(ACTIONS, event.detail?.action) && !context.current.blocked && !document.hidden) {
-        void execute({ kind: "action", action: event.detail.action, pose: "manual" }).catch(
-          (error) => {
-            if (!disposed) setMessage(String(error?.message || error));
-          },
-        );
+      if (
+        hasOwn(ACTIONS, event.detail?.action) &&
+        !context.current.blocked &&
+        !document.hidden
+      ) {
+        void execute({
+          kind: "action",
+          action: event.detail.action,
+          pose: "manual",
+        }).catch((error) => {
+          if (!disposed) setMessage(String(error?.message || error));
+        });
       }
     };
     document.addEventListener("visibilitychange", hidden);
     window.addEventListener("beforeunload", flush);
     window.addEventListener("jarvis:gesture-manual", manual);
-    void poll();
+    if (enabled) void poll();
     return () => {
       disposed = true;
       alive.current = false;
@@ -633,6 +762,12 @@ export function useGestureModes({
   }, [enabled, changeConfig, cancelPendingControl]);
 
   const control = async (start) => {
+    if (start && !enabled) {
+      setMessage(
+        "Camera gestures require the native Android app or Windows webcam preview.",
+      );
+      return;
+    }
     if (start && controlBusy.current) return;
     const token = ++controlToken.current;
     controlBusy.current = true;
@@ -654,7 +789,11 @@ export function useGestureModes({
         running.current = false;
         latestFrame.current = -1;
         engine.current = new GestureEngine(configRef.current);
-        setStatus({ running: false, starting: true, summary: "Opening the gesture camera…" });
+        setStatus({
+          running: false,
+          starting: true,
+          summary: "Opening the gesture camera…",
+        });
       }
       setRecognition(engine.current.recognition);
       const response = await (start
@@ -669,7 +808,11 @@ export function useGestureModes({
       if (token === controlToken.current) {
         setMessage(String(error?.message || error));
         if (start)
-          setStatus({ running: false, starting: false, summary: "Camera could not start." });
+          setStatus({
+            running: false,
+            starting: false,
+            summary: "Camera could not start.",
+          });
         else
           setStatus((old) => ({
             ...old,
@@ -687,6 +830,7 @@ export function useGestureModes({
     config,
     status,
     busy,
+    timers,
     message,
     step,
     page,
@@ -732,19 +876,31 @@ export function useGestureModes({
     stop: () => control(false),
     armControl: host.armControl,
     act: (action) =>
-      window.dispatchEvent(new CustomEvent("jarvis:gesture-manual", { detail: { action } })),
+      window.dispatchEvent(
+        new CustomEvent("jarvis:gesture-manual", { detail: { action } }),
+      ),
     selectPage: (n) => {
+      navigationRevision.current++;
+      queuedNavigation.current = null;
+      if (actionBusy.current && currentAction.current.startsWith("reader."))
+        host.stopSpeech?.();
       const value = clampIndex(n, readerPages(configRef.current.reader).length);
       context.current.page = value;
       setPage(value);
+      setMessage(`Page ${value + 1}.`);
     },
     selectStep: (n) => {
+      navigationRevision.current++;
+      queuedNavigation.current = null;
+      if (actionBusy.current && currentAction.current.startsWith("steps."))
+        host.stopSpeech?.();
       const value = clampIndex(
         n,
         configRef.current.steps.split("\n").filter((s) => s.trim()).length,
       );
       context.current.step = value;
       setStep(value);
+      setMessage(`Step ${value + 1}.`);
     },
     calibrate: (name) => {
       const clean = String(name || "")
@@ -754,7 +910,11 @@ export function useGestureModes({
         setMessage("Give the pose a name.");
         return;
       }
-      if (configRef.current.customPoses.some((p) => p.name.toLowerCase() === clean.toLowerCase())) {
+      if (
+        configRef.current.customPoses.some(
+          (p) => p.name.toLowerCase() === clean.toLowerCase(),
+        )
+      ) {
         setMessage("A pose with that name already exists.");
         return;
       }
@@ -776,7 +936,16 @@ export function useGestureModes({
       setMessage("Form your pose: capturing in 3 seconds...");
     },
     removePose: (id) =>
-      changeConfig((current) => ({ customPoses: current.customPoses.filter((p) => p.id !== id) })),
-    removeBookmark: (at) => changeBookmarks((previous) => previous.filter((b) => b.at !== at)),
+      changeConfig((current) => ({
+        customPoses: current.customPoses.filter((p) => p.id !== id),
+      })),
+    renameBookmark: (at, name) =>
+      changeBookmarks((previous) =>
+        previous.map((b) =>
+          b.at === at ? { ...b, name: name.slice(0, 80) } : b,
+        ),
+      ),
+    removeBookmark: (at) =>
+      changeBookmarks((previous) => previous.filter((b) => b.at !== at)),
   };
 }

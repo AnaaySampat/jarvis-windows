@@ -1,3 +1,5 @@
+import LocalFeatures from "./components/LocalFeatures";
+import { useLocalExploration } from "./hooks/useLocalExploration";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { JarvisHUD, DIRECTIONS } from "./hud/HudApp";
@@ -33,8 +35,8 @@ const SETTINGS_PAGES = [
   ["keys", "API Keys", "key", "groq gemini openai anthropic credentials"],
   ["routing", "Routing & Quota", "route", "rate limit benched rank"],
   ["autopilot", "Autopilot", "cursor", "operator browser desktop"],
-  ["voice", "Voice", "volume", "tts wake word heartbeat digest alerts"],
   ["gestures", "Gestures", "camera", "hand gesture camera practice motion hands free"],
+  ["voice", "Voice", "volume", "tts wake word heartbeat digest alerts"],
   ["interface", "Interface", "layout", "overlay pill shortcuts"],
   ["files", "Files & Location", "folder", "storage folders location skills"],
   ["devices", "Devices", "phone", "phone pairing tv whatsapp"],
@@ -74,6 +76,7 @@ function ClarifyPrompt({ request, onRespond }) {
 }
 
 export default function App() {
+  const [exploring, exploreLocal] = useLocalExploration();
   const {
     status, messages, warnings, sysInfo, isConnected, ocrResult, sendOcr,
     telemetry, netInfo, weather, schedule, uiCommand, permissionRequest, clarifyRequest, muted,
@@ -90,13 +93,14 @@ export default function App() {
     sendScreen, setAlwaysOnMode, setConversationModeOn, wsSend, gestureAction,
   } = useWebSocket();
 
-
   // App owns the overlay state so JARVIS can drive them via ui_action too.
   const [chatOpen, setChatOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [exploring, setExploring] = useState(false);
+  const [handsFreeOpen, setHandsFreeOpen] = useState(false);
+  const closeHandsFree = useCallback(() => setHandsFreeOpen(false), []);
   const [settingsPage, setSettingsPage] = useState(null);   // section to open Settings at
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const openHandsFree = useCallback(() => { setChatOpen(false); setSkillsOpen(false); setShowSettings(false); setHandsFreeOpen(true); }, []);
   const [capsOpen, setCapsOpen] = useState(false);
   const [powerOpen, setPowerOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -113,6 +117,7 @@ export default function App() {
   }, [toast]);
 
   const openSettings = useCallback((page = null) => {
+    setHandsFreeOpen(false);
     setSettingsPage(page);
     setShowSettings(true);
   }, []);
@@ -134,16 +139,13 @@ export default function App() {
     },
   }),[triggerListen,pttStart,finishListen,stopSpeech,gestureAction,screen,sendScreen,memory,runRoutine,status,agentTasks,runAction,isConnected,openSettings,controlState.armed]);
   const gestures=useGestureModes({
-    camera:gestureCamera,enabled:true,host:gestureHost,
+    camera:gestureCamera,enabled:true,host:gestureHost, listening:status === "listening",
     blocked:Boolean(permissionRequest||clarifyRequest),
-    listening:status==="listening",
     canListen:status==="idle" && !agentTasks.some((task)=>task.status==="running"),
     latestReply:[...messages].reverse().find((message)=>message.role==="jarvis")?.text||"",
   });
   useEffect(()=>()=>{void gestureCamera.stop();},[gestureCamera]);
   useEffect(()=>{if(gestures.config.mode==="routines")listMemory();},[gestures.config.mode,listMemory]);
-
-
 
   // Keyboard: Ctrl+, opens Settings (the desktop-app convention), Ctrl+K the command
   // palette, and Esc closes the topmost panel. Panels that use Esc themselves first
@@ -399,6 +401,7 @@ export default function App() {
       cmd("power", "Panels", "Power options", "power", () => setPowerOpen(true), { keywords: "shutdown restart sleep lock" }),
       cmd("customize", "Panels", "Customize the home screen", "palette", () => setCustomizeOpen(true),
         { keywords: "theme preset colour color accent font glow corners background picture image layout panels cards drag arrange iron man" }),
+      cmd("hands-free", "Panels", "Hands-free activities", "skills", openHandsFree, { keywords: "read reader reading steps recipe instructions music gestures practice" }),
       cmd("settings", "Panels", "Settings", "settings", () => openSettings(), { keys: ["Ctrl", ","] }),
       cmd("agent-mode", "Assistant", sysInfo.agent_mode ? "Switch to simple mode" : "Switch to agent mode", "route",
         toggleAgentMode,
@@ -441,7 +444,7 @@ export default function App() {
       ...SETTINGS_PAGES.map(([id, label, icon, words]) => cmd(`settings-${id}`, "Settings", `Settings: ${label}`, icon,
         () => openSettings(id), { keywords: `preferences configure ${words}` })),
     ];
-  }, [recordings, runAction, newConversation, running, openSettings, triggerListen, stopSpeech, muted, setMute,
+  }, [openHandsFree, recordings, runAction, newConversation, running, openSettings, triggerListen, stopSpeech, muted, setMute,
       alwaysOn, setAlwaysOnMode, conversationMode, setConversationModeOn, browserState.available, browserState.open,
       setBrowserOpen, setAllPanels, panels.terminal, togglePanel, memory?.routines, runRoutine, notify,
       sysInfo.agent_mode, sysInfo.active_agent, toggleAgentMode, pickAgent]);
@@ -529,59 +532,64 @@ export default function App() {
 
   return (
     <>
-      <GestureWorkspace controls={gestures} />
-      {exploring && sysInfo.needs_setup && <div role="status" className="explore-notice">Exploring without AI · local features and gesture practice are available. <button type="button" onClick={() => openSettings("keys")}>Add an AI key</button></div>}
-      <JarvisHUD
-        config={hudConfig}
-        toolbar={toolbar}
-        activeTask={agentTasks.find((t) => t.status === "running")}
-        agentMode={!!sysInfo.agent_mode}
-        activeAgent={sysInfo.active_agent || "auto"}
-        onToggleAgents={toggleAgentMode}
-        onPickAgent={pickAgent}
-        screen={screen}
-        onArrange={(order) => sendScreen({ order })}
-        status={status}
-        telemetry={telemetry}
-        weather={weather}
-        netInfo={netInfo}
-        schedule={schedule}
-        messages={messages}
-        commands={commands}
-        recordings={recordings}
-        isConnected={isConnected}
-        allowedDirs={sysInfo.allowed_dirs || []}
-        panels={panels} onTogglePanel={togglePanel}
-        chatOpen={chatOpen} setChatOpen={setChatOpen}
-        skillsOpen={skillsOpen} setSkillsOpen={setSkillsOpen}
-        onOpenCamera={() => { setSkillsOpen(false); setCameraOpen(true); }}
-        capsOpen={capsOpen} setCapsOpen={setCapsOpen}
-        powerOpen={powerOpen} setPowerOpen={setPowerOpen}
-        memoryOpen={memoryOpen} setMemoryOpen={setMemoryOpen}
-        memory={memory} onRemember={rememberFact} onForget={forgetMemory}
-        onSaveRoutine={saveRoutine} onRunRoutine={runRoutine} routineResult={routineResult}
-        onSend={sendMessage}
-        onAsk={askInChat}
-        onStop={stopSpeech}
-        onListen={triggerListen}
-        onReset={resetConversation}
-        onUpload={sendUpload}
-        onNotify={notify}
-        taskModelTiers={sysInfo.task_model_tiers || []}
-        taskTier={sysInfo.task_tier || "auto"}
-        onTaskTier={(t) => sendConfig({ task_tier: t === "auto" ? "" : t })}
-        runAction={runAction}
-        onSaveDirs={saveDirs}
-        conversations={conversations}
-        onNewChat={newConversation}
-        onOpenConversation={openConversation}
-        onDeleteConversation={deleteConversation}
-        onRefreshConversations={listConversations}
-        onClearConversations={clearConversations}
-      />
+      <GestureWorkspace controls={gestures} open={handsFreeOpen} onClose={closeHandsFree} onOpen={openHandsFree}
+        routines={Array.isArray(memory?.routines) ? memory.routines : []} />
+      <div className="app-shell">
+        {exploring && (!isConnected || sysInfo.needs_setup) &&
+          <LocalFeatures connected={isConnected} onConnect={() => openSettings("keys")} />}
+        <JarvisHUD
+          config={hudConfig}
+          toolbar={toolbar}
+          onOpenHandsFree={openHandsFree}
+          activeTask={agentTasks.find((t) => t.status === "running")}
+          agentMode={!!sysInfo.agent_mode}
+          activeAgent={sysInfo.active_agent || "auto"}
+          onToggleAgents={toggleAgentMode}
+          onPickAgent={pickAgent}
+          screen={screen}
+          onArrange={(order) => sendScreen({ order })}
+          status={status}
+          telemetry={telemetry}
+          weather={weather}
+          netInfo={netInfo}
+          schedule={schedule}
+          messages={messages}
+          commands={commands}
+          recordings={recordings}
+          isConnected={isConnected}
+          allowedDirs={sysInfo.allowed_dirs || []}
+          panels={panels} onTogglePanel={togglePanel}
+          chatOpen={chatOpen} setChatOpen={setChatOpen}
+          skillsOpen={skillsOpen} setSkillsOpen={setSkillsOpen}
+          onOpenCamera={() => { setSkillsOpen(false); setCameraOpen(true); }}
+          capsOpen={capsOpen} setCapsOpen={setCapsOpen}
+          powerOpen={powerOpen} setPowerOpen={setPowerOpen}
+          memoryOpen={memoryOpen} setMemoryOpen={setMemoryOpen}
+          memory={memory} onRemember={rememberFact} onForget={forgetMemory}
+          onSaveRoutine={saveRoutine} onRunRoutine={runRoutine} routineResult={routineResult}
+          onSend={sendMessage}
+          onAsk={askInChat}
+          onStop={stopSpeech}
+          onListen={triggerListen}
+          onReset={resetConversation}
+          onUpload={sendUpload}
+          onNotify={notify}
+          taskModelTiers={sysInfo.task_model_tiers || []}
+          taskTier={sysInfo.task_tier || "auto"}
+          onTaskTier={(t) => sendConfig({ task_tier: t === "auto" ? "" : t })}
+          runAction={runAction}
+          onSaveDirs={saveDirs}
+          conversations={conversations}
+          onNewChat={newConversation}
+          onOpenConversation={openConversation}
+          onDeleteConversation={deleteConversation}
+          onRefreshConversations={listConversations}
+          onClearConversations={clearConversations}
+        />
+      </div>
 
       {/* Top status stack — banners share one column so they never sit on top of each other */}
-      {(browserState.open || controlState.armed || !isConnected) && (
+      {(browserState.open || controlState.armed || (!isConnected && !exploring)) && (
         <div className="hud-top-stack" role="status">
           {controlState.armed && (
             <div className="hud-armed-banner hud-armed-banner--control">
@@ -597,7 +605,7 @@ export default function App() {
               <button className="hud-armed-disarm" onClick={() => setBrowserOpen(false)}>Close</button>
             </div>
           )}
-          {!isConnected && (
+          {!isConnected && !exploring && (
             <div className="hud-offline">
               <Icon name="warning" size={15} /> Can&apos;t reach JARVIS — start <code>python main.py</code> in <code>jarvis-studio-backend/</code>
             </div>
@@ -627,8 +635,7 @@ export default function App() {
 
       {showSettings && (
         <Settings
-          gestureControls={gestures}
-          gestureRoutines={Array.isArray(memory?.routines)?memory.routines:[]}
+          gestureControls={gestures} onOpenHandsFree={openHandsFree} gestureRoutines={Array.isArray(memory?.routines) ? memory.routines : []}
           sysInfo={sysInfo}
           initialSection={settingsPage}
           onClose={() => setShowSettings(false)}
@@ -685,16 +692,16 @@ export default function App() {
       {/* Booting: shown until the backend WebSocket connects (frozen backend start
           + first-run download). Client-side only, so it shows even if the backend
           is slow or failed to start. */}
-      <BootOverlay connected={isConnected} />
+      <BootOverlay connected={(isConnected && typeof sysInfo.needs_setup === "boolean") || exploring} onContinue={exploreLocal} />
 
       {/* First-run setup: API keys + storage location (blocks until done) */}
       {isConnected && sysInfo.needs_setup && !exploring && (
-        <Onboarding sysInfo={sysInfo} onSave={(cfg) => sendConfig(cfg)} onExplore={() => setExploring(true)} />
+        <Onboarding onExplore={exploreLocal} sysInfo={sysInfo} onSave={(cfg) => sendConfig(cfg)} />
       )}
 
       {/* First-run asset download (Chromium / Whisper / Piper). Shown after the
           API-key onboarding so the flow reads keys → setup → ready. */}
-      {isConnected && (!sysInfo.needs_setup || exploring) && (
+      {isConnected && !sysInfo.needs_setup && (
         <SetupProgress progress={setupProgress} onRepair={repairSetup} />
       )}
 

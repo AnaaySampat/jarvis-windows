@@ -928,7 +928,7 @@ const SHORTCUTS = [
 export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocation, onRefreshModels, onRerankModels, onRepairSetup,
   taskPasskeyState, onLoadTaskPasskey, onSetTaskPasskey,
   devicePairing, devices, onCreatePairing, onListDevices, onRevokeDevice, tvState, onTv, waState, mcpState, connState,
-  onOpenCustomize, initialSection, gestureControls, gestureRoutines }) {
+  onOpenCustomize, initialSection, onOpenHandsFree, gestureControls, gestureRoutines }) {
   // Re-discover models when the panel opens so the dropdown is current (e.g. a
   // local Ollama model pulled since launch, or a key just added in another client).
   // Cheap — the backend skips the network when credentials are unchanged.
@@ -1264,7 +1264,7 @@ export default function Settings({ sysInfo, onClose, onSave, onSaved, onSetLocat
 
             {current.id === "gestures" && (
               gestureControls
-                ? <GesturePanel controls={gestureControls} routines={gestureRoutines||[]}/>
+                ? <><button type="button" className="btn" onClick={onOpenHandsFree}>Open Hands-free activities</button><GesturePanel controls={gestureControls} routines={gestureRoutines||[]}/></>
                 : <Note>Gesture controls are unavailable in this session.</Note>
             )}
 

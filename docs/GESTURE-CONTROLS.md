@@ -168,3 +168,27 @@ state in the selected meeting app; photo saving; touch/voice fallback; thermal a
 battery cost; and Android 16 KB page-size devices.
 
 Active camera polling uses one serialized loop targeting a67ms period including bridge time. Start/Stop refresh immediately; new native builds retain upstream camera rotation, frame lifetime and callback crash fixes.
+
+
+## Daily activity workspace (2026-11-04)
+
+- **Control** keeps reading/step navigation beside the content. Pause leaves the
+  camera on while buttons remain usable; Stop releases the camera. Fist still
+  stops the camera during pause or practice.
+- **Bookmarks (n)** is beside the page counter. A saved place can be named and
+  restored after reload; opening it focuses the restored page. Bookmarks belong
+  to the exact pasted document and do not duplicate the document text.
+- **Steps timers** show their original step, deadline/countdown and completion
+  independently of navigation and speech feedback. The primary start control
+  prevents duplicate starts; **Start another timer** is explicit. Windows uses
+  the existing persisted reminder scheduler, exact timer IDs and reconciled
+  snapshots. Finished timers also appear in Chat.
+- Android hands timers to the system Clock. The workspace shows an estimate and
+  **Manage in Clock**; it does not claim that a particular system timer stopped.
+- Key-free exploration is an explicit local choice that survives reload. It
+  does not supply credentials or grant permissions. AI and unavailable speech
+  or device services continue to report their actual availability.
+
+The usability changes have browser/unit validation. New native UI/device
+acceptance is still needed; previous recognition/device evidence remains valid
+for the engine it exercised. See [implementation and validation](USABILITY-IMPLEMENTATION.md).

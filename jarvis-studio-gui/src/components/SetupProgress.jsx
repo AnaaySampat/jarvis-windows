@@ -98,8 +98,9 @@ export default function SetupProgress({ progress, onRepair }) {
             : `${done} of ${total} ready`}
         </div>
 
-        {progress.complete && anyError && <div className="setup-error-detail">Available features can still be used. You can retry missing components later in Settings → System.</div>}
-        {progress.complete && anyError && <button type="button" className="setup-retry" onClick={() => setDismissed(true)}>Continue with available features</button>}
+        {progress.complete && anyError && (
+          <button type="button" className="setup-retry" onClick={() => setDismissed(true)}>Continue with available features</button>
+        )}
         {showRetry && (
           <button className="setup-retry" onClick={handleRetry} disabled={retried}>
             {retried ? "Retrying…" : "Retry setup"}

@@ -29,7 +29,10 @@ beforeEach(async () => {
   vi.setSystemTime(T);
   store = new Map();
   saved = vi.fn((k, v) => store.set(k, v));
-  vi.stubGlobal("localStorage", { getItem: (k) => store.get(k) || null, setItem: saved });
+  vi.stubGlobal("localStorage", {
+    getItem: (k) => store.get(k) || null,
+    setItem: saved,
+  });
   const doc = new EventTarget();
   doc.hidden = false;
   doc.elementFromPoint = () => null;
@@ -45,7 +48,12 @@ beforeEach(async () => {
   publish = true;
   lastFrame = null;
   frameExtra = {};
-  const state = { running: false, starting: false, foreground: true, summary: "Off" };
+  const state = {
+    running: false,
+    starting: false,
+    foreground: true,
+    summary: "Off",
+  };
   camera = {
     start: vi.fn(async () => {
       state.running = true;
@@ -129,7 +137,13 @@ describe("gesture hook lifecycle regressions", () => {
     ]);
     await act(async () =>
       controls.changeConfig({
-        customPoses: [{ id: "custom_old", name: "Existing", features: poseFeatures(points) }],
+        customPoses: [
+          {
+            id: "custom_old",
+            name: "Existing",
+            features: poseFeatures(points),
+          },
+        ],
       }),
     );
     await start();
@@ -249,9 +263,13 @@ describe("gesture hook lifecycle regressions", () => {
     });
     expect(controls.config.holdMs).toBe(900);
     expect(controls.config.mode).toBe("reading");
-    expect(saved.mock.calls.filter(([key]) => key === "jarvis.gestures.v2")).toHaveLength(0);
+    expect(
+      saved.mock.calls.filter(([key]) => key === "jarvis.gestures.v2"),
+    ).toHaveLength(0);
     await advance(500);
-    expect(saved.mock.calls.filter(([key]) => key === "jarvis.gestures.v2")).toHaveLength(1);
+    expect(
+      saved.mock.calls.filter(([key]) => key === "jarvis.gestures.v2"),
+    ).toHaveLength(1);
   });
   it("keeps fist stop active during the calibration countdown", async () => {
     await start();
@@ -261,7 +279,9 @@ describe("gesture hook lifecycle regressions", () => {
     expect(camera.stop).toHaveBeenCalledTimes(1);
   });
   it("queues the latest navigation and interrupts old speech", async () => {
-    await act(async () => controls.changeConfig({ mode: "cooking", steps: "One\nTwo\nThree" }));
+    await act(async () =>
+      controls.changeConfig({ mode: "cooking", steps: "One\nTwo\nThree" }),
+    );
     await start();
     let release;
     host.speak.mockImplementationOnce(
@@ -270,7 +290,9 @@ describe("gesture hook lifecycle regressions", () => {
           release = resolve;
         }),
     );
-    host.stopSpeech.mockImplementation(() => release?.({ ok: true, summary: "Stopped" }));
+    host.stopSpeech.mockImplementation(() =>
+      release?.({ ok: true, summary: "Stopped" }),
+    );
     await act(async () => controls.act("steps.repeat"));
     await act(async () => controls.act("steps.next"));
     expect(host.stopSpeech).toHaveBeenCalled();
@@ -293,12 +315,17 @@ describe("gesture hook lifecycle regressions", () => {
   });
   it("uses bookmark IDs, bounds pages and catches quota failures on removal", async () => {
     const text = "Only one page";
-    await act(async () => controls.changeConfig({ mode: "reading", reader: text }));
+    await act(async () =>
+      controls.changeConfig({ mode: "reading", reader: text }),
+    );
     await start();
     await act(async () => controls.selectPage(999));
     expect(controls.page).toBe(0);
     await act(async () => controls.act("reader.bookmark"));
-    expect(controls.bookmarks[0]).toMatchObject({ documentId: documentId(text), page: 0 });
+    expect(controls.bookmarks[0]).toMatchObject({
+      documentId: documentId(text),
+      page: 0,
+    });
     expect(controls.bookmarks[0]).not.toHaveProperty("document");
     saved.mockImplementation(() => {
       throw new Error("QuotaExceededError");
@@ -321,7 +348,11 @@ describe("gesture session usability", () => {
     await show("OPEN_PALM");
     expect(host.stopSpeech).not.toHaveBeenCalled();
     await act(async () => controls.act("media.toggle"));
-    expect(host.perform).toHaveBeenCalledWith("media.toggle", controls.config, camera);
+    expect(host.perform).toHaveBeenCalledWith(
+      "media.toggle",
+      controls.config,
+      camera,
+    );
     await act(async () => controls.setPaused(false));
     await show("OPEN_PALM");
     expect(host.stopSpeech).not.toHaveBeenCalled();
@@ -343,7 +374,11 @@ describe("gesture session usability", () => {
     expect(host.perform).not.toHaveBeenCalled();
     await show("UNKNOWN", 500);
     await show("OPEN_PALM");
-    expect(host.perform).toHaveBeenCalledWith("media.toggle", controls.config, camera);
+    expect(host.perform).toHaveBeenCalledWith(
+      "media.toggle",
+      controls.config,
+      camera,
+    );
   });
 
   it("passes only the selected practice target and requires fresh evidence when retesting", async () => {
@@ -385,12 +420,17 @@ describe("gesture session usability", () => {
       pose: "manual",
       state: "pending",
     });
-    await act(async () => complete({ ok: false, summary: "No music player is available." }));
+    await act(async () =>
+      complete({ ok: false, summary: "No music player is available." }),
+    );
     expect(controls.history[0]).toMatchObject({
       state: "failed",
       summary: "No music player is available.",
     });
-    host.perform.mockResolvedValueOnce({ ok: true, summary: "Media command sent." });
+    host.perform.mockResolvedValueOnce({
+      ok: true,
+      summary: "Media command sent.",
+    });
     await act(async () => controls.act("media.next"));
     expect(controls.history[0]).toMatchObject({
       action: "media.next",
@@ -405,7 +445,10 @@ describe("gesture session usability", () => {
     await start();
     host.perform.mockResolvedValueOnce(undefined);
     await act(async () => controls.act("media.next"));
-    expect(controls.history[0]).toMatchObject({ action: "media.next", state: "requested" });
+    expect(controls.history[0]).toMatchObject({
+      action: "media.next",
+      state: "requested",
+    });
   });
 
   it("scrolls the inline reader before a hidden floating reading area", async () => {
@@ -417,7 +460,10 @@ describe("gesture session usability", () => {
     await act(async () => controls.switchMode("reading"));
     await start();
     await act(async () => controls.act("reader.scrollDown"));
-    expect(panel.scrollBy).toHaveBeenCalledWith({ top: 195, behavior: "smooth" });
+    expect(panel.scrollBy).toHaveBeenCalledWith({
+      top: 195,
+      behavior: "smooth",
+    });
     expect(floating.scrollBy).not.toHaveBeenCalled();
   });
 });
@@ -425,7 +471,11 @@ describe("gesture session usability", () => {
 it("executes explicit touch actions with the camera off", async () => {
   expect(controls.status.running).toBe(false);
   await act(async () => controls.act("media.toggle"));
-  expect(host.perform).toHaveBeenCalledWith("media.toggle", controls.config, camera);
+  expect(host.perform).toHaveBeenCalledWith(
+    "media.toggle",
+    controls.config,
+    camera,
+  );
   expect(controls.history[0]).toMatchObject({
     action: "media.toggle",
     pose: "manual",
@@ -470,13 +520,21 @@ it("stops an unresolved camera startup and ignores its later response", async ()
     await controls.stop();
   });
   expect(camera.stop).toHaveBeenCalledOnce();
-  expect(controls.status).toMatchObject({ running: false, starting: false, summary: "Stopped" });
+  expect(controls.status).toMatchObject({
+    running: false,
+    starting: false,
+    summary: "Stopped",
+  });
   expect(controls.busy).toBe(false);
   await act(async () => {
     completeStart({ ok: false, summary: "Late startup failure" });
     await pendingStart;
   });
-  expect(controls.status).toMatchObject({ running: false, starting: false, summary: "Stopped" });
+  expect(controls.status).toMatchObject({
+    running: false,
+    starting: false,
+    summary: "Stopped",
+  });
   expect(controls.message).not.toContain("Late startup failure");
   expect(controls.busy).toBe(false);
 });
@@ -490,4 +548,84 @@ it("does not claim the camera is off when a Stop request fails", async () => {
   expect(controls.status.running).toBe(true);
   expect(controls.status.summary).toContain("Could not confirm");
   expect(controls.message).toBe("Bridge unavailable");
+});
+
+it("uses reading controls and bookmarks without a running camera or camera support", async () => {
+  await act(async () => {
+    renderer.update(<App {...props} enabled={false} />);
+    controls.changeConfig({
+      mode: "reading",
+      reader: "First page.\n\nSecond page.",
+    });
+  });
+  await act(async () => {
+    controls.act("reader.next");
+  });
+  expect(controls.page).toBe(1);
+  await act(async () => {
+    controls.act("reader.bookmark");
+  });
+  expect(controls.bookmarks[0].page).toBe(1);
+  await act(async () => {
+    controls.renameBookmark(controls.bookmarks[0].at, "My place");
+  });
+  await advance(600);
+  expect(JSON.parse(store.get("jarvis.gesture.bookmarks.v2"))[0].name).toBe(
+    "My place",
+  );
+  expect(camera.start).not.toHaveBeenCalled();
+});
+it("practices poses without running activities and preserves fist stop", async () => {
+  await act(async () => {
+    controls.setPractice(true);
+    controls.setPracticeTarget("PEACE");
+  });
+  await start();
+  await show("PEACE");
+  expect(controls.practicePassed).toContain("PEACE");
+  expect(host.pttStart).not.toHaveBeenCalled();
+  expect(host.perform).not.toHaveBeenCalled();
+  expect(host.speak).not.toHaveBeenCalled();
+  await show("FIST");
+  expect(camera.stop).toHaveBeenCalled();
+});
+it("pauses gesture actions while manual activity controls continue to work", async () => {
+  await act(async () => {
+    controls.changeConfig({ mode: "reading", reader: "One.\n\nTwo." });
+  });
+  await start();
+  await act(async () => {
+    controls.setPaused(true);
+  });
+  await show("PEACE");
+  expect(controls.page).toBe(0);
+  await act(async () => {
+    controls.act("reader.next");
+  });
+  expect(controls.page).toBe(1);
+  await show("FIST");
+  expect(camera.stop).toHaveBeenCalled();
+});
+it("keeps the current step status when older speech finishes after manual navigation", async () => {
+  let finish;
+  host.speak.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await act(async () => {
+    controls.changeConfig({ mode: "cooking", steps: "One\nTwo\nThree" });
+  });
+  await act(async () => {
+    controls.act("steps.repeat");
+  });
+  await act(async () => {
+    controls.selectStep(2);
+  });
+  await act(async () => {
+    finish({ ok: true, summary: "Reading finished." });
+  });
+  expect(controls.step).toBe(2);
+  expect(controls.message).toBe("Step 3.");
 });

@@ -49,7 +49,7 @@ const RECORDERS = [
   { media: "screen", label: "Screen", icon: "monitor", note: "Your whole display" },
 ];
 
-export function SkillsOverlay({ open, onClose, recordings = {}, runAction, allowedDirs = [], onSaveDirs, onShowResult, onOpenCamera }) {
+export function SkillsOverlay({ onOpenHandsFree, open, onClose, recordings = {}, runAction, allowedDirs = [], onSaveDirs, onShowResult, onOpenCamera }) {
   const [tool, setTool] = useState(null);     // null | "qr" | "list" — the open quick-tool form
   const [text, setText] = useState("");
   const rec = (media) => {
@@ -79,6 +79,7 @@ export function SkillsOverlay({ open, onClose, recordings = {}, runAction, allow
       <aside className="sideov-panel" role="dialog" aria-label="Skills">
         <SideHeader title="Skills" sub="Quick tools JARVIS can run for you right now" onClose={onClose} />
         <div className="sideov-body">
+          <button type="button" className="skill-rec" onClick={() => { onClose(); onOpenHandsFree?.(); }}>Hands-free: Read, Steps and Music</button>
           <section className="skill-sec">
             <h4>Recording {recording > 0 && <span className="tag tag--err">{recording} live</span>}</h4>
             {RECORDERS.map((r) => {

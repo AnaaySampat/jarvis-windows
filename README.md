@@ -54,13 +54,13 @@ landed, and corrects itself when it didn't.
 
 ## Hand gestures (preview)
 
-Open **Settings → Gestures**, choose a webcam and a mode, then start.
+Open **Hands-free** on Home, choose Read, Steps, Music or another activity,
+then start the camera when you want gesture control. Reading and step buttons work
+with the camera off. **Learn** offers action-free practice; **Tune** holds presets
+and gesture mappings. Settings → Voice links to the same workspace.
 The local camera worker supports media/TV, presentations, push-to-talk, instructions,
 timers, reading/bookmarks, routines, microphone mute, countdown photos, HUD pinch/drag
 and personal poses. Timing and mappings are adjustable; fist always stops the camera.
-Control has useful touch buttons; Learn teaches one illustrated gesture at a time.
-Pause hand actions, switch activities without restarting, and edit actions on their cards.
-Tune offers response presets. Touch controls work with the camera off (except photos).
 Sessions stop after five minutes or when JARVIS is hidden. See
 [gesture controls](docs/GESTURE-CONTROLS.md) for setup and physical-testing limits.
 
@@ -70,7 +70,8 @@ Grab the installer from the **[latest release](https://github.com/AnaaySampat/ja
 
 - It bundles the backend, Chromium and the Piper voice. Speech recognition needs
   internet and a Groq key; wake-word detection and speech output run locally. No Python needed.
-- On first launch, paste one API key ([Groq](https://console.groq.com/keys) and
+- On first launch, choose **Explore without an AI key** for local reading, steps
+  and gesture practice, or paste one API key ([Groq](https://console.groq.com/keys) and
   [Gemini](https://aistudio.google.com/apikey) both have free tiers) and choose where
   JARVIS saves its files.
 - The installer isn't code-signed yet, so Windows SmartScreen will warn you. Click
